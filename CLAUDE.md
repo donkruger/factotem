@@ -1,6 +1,12 @@
 # NanoClaw
 
-Personal Claude assistant. See [README.md](README.md) for philosophy and setup. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for architecture decisions.
+Personal Claude assistant (fork: `donkruger/benclaw`).
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Full current-state architecture, message flow, security model
+- [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — Philosophy and design decisions
+- [docs/SPEC.md](docs/SPEC.md) — Detailed specification
+- [docs/CHANGE_LOG.md](docs/CHANGE_LOG.md) — Timestamped change history
+- [.cursor/rules/development_conventions.mdc](.cursor/rules/development_conventions.mdc) — Development conventions
 
 ## Quick Context
 
