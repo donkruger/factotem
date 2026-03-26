@@ -21,6 +21,7 @@ import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
 import { logger } from '../logger.js';
 import {
   Channel,
+  MessageMetadata,
   OnInboundMessage,
   OnChatMetadata,
   RegisteredGroup,
@@ -28,6 +29,16 @@ import {
 import { registerChannel, ChannelOpts } from './registry.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function formatModelName(model: string): string {
+  if (model.includes('opus')) return 'Opus';
+  if (model.includes('sonnet')) return 'Sonnet';
+  if (model.includes('haiku')) return 'Haiku';
+  // Fallback: extract the model family name
+  const parts = model.split('-');
+  if (parts.length >= 2) return parts.slice(0, 2).join(' ');
+  return model;
+}
 
 export interface WhatsAppChannelOpts {
   onMessage: OnInboundMessage;
@@ -247,14 +258,21 @@ export class WhatsAppChannel implements Channel {
     });
   }
 
-  async sendMessage(jid: string, text: string): Promise<void> {
+  async sendMessage(
+    jid: string,
+    text: string,
+    metadata?: MessageMetadata,
+  ): Promise<void> {
     // Prefix bot messages with assistant name so users know who's speaking.
     // On a shared number, prefix is also needed in DMs (including self-chat)
     // to distinguish bot output from user messages.
     // Skip only when the assistant has its own dedicated phone number.
+    const modelLabel = metadata?.model
+      ? ` (${formatModelName(metadata.model)})`
+      : '';
     const prefixed = ASSISTANT_HAS_OWN_NUMBER
       ? text
-      : `👱🏻‍♂️${ASSISTANT_NAME} here...\n\n${text}`;
+      : `👱🏻‍♂️${ASSISTANT_NAME} here...${modelLabel}\n\n${text}`;
 
     if (!this.connected) {
       this.outgoingQueue.push({ jid, text: prefixed });

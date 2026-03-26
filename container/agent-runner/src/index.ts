@@ -33,6 +33,7 @@ interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
   newSessionId?: string;
+  model?: string;
   error?: string;
 }
 
@@ -336,7 +337,7 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
+): Promise<{ newSessionId?: string; lastAssistantUuid?: string; model?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
 
@@ -363,6 +364,8 @@ async function runQuery(
 
   let newSessionId: string | undefined;
   let lastAssistantUuid: string | undefined;
+  let detectedModel: string | undefined = process.env.ANTHROPIC_MODEL || process.env.CLAUDE_MODEL || undefined;
+  if (detectedModel) log(`Model from env: ${detectedModel}`);
   let messageCount = 0;
   let resultCount = 0;
 
@@ -433,8 +436,32 @@ async function runQuery(
     const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
     log(`[msg #${messageCount}] type=${msgType}`);
 
-    if (message.type === 'assistant' && 'uuid' in message) {
-      lastAssistantUuid = (message as { uuid: string }).uuid;
+    if (message.type === 'assistant') {
+      if ('uuid' in message) {
+        lastAssistantUuid = (message as { uuid: string }).uuid;
+      }
+      if (!detectedModel) {
+        const msgObj = message as Record<string, unknown>;
+        // Check message and nested message object for model
+        if ('model' in msgObj && msgObj.model) {
+          detectedModel = String(msgObj.model);
+        } else if ('message' in msgObj && typeof msgObj.message === 'object' && msgObj.message !== null) {
+          const inner = msgObj.message as Record<string, unknown>;
+          if ('model' in inner && inner.model) {
+            detectedModel = String(inner.model);
+          }
+        }
+        if (detectedModel) log(`Model detected: ${detectedModel}`);
+      }
+    }
+
+    // Also check system/init for model info
+    if (message.type === 'system') {
+      const sysMsg = message as Record<string, unknown>;
+      if (sysMsg.subtype === 'init' && 'model' in sysMsg && sysMsg.model) {
+        detectedModel = String(sysMsg.model);
+        log(`Model from init: ${detectedModel}`);
+      }
     }
 
     if (message.type === 'system' && message.subtype === 'init') {
@@ -454,14 +481,15 @@ async function runQuery(
       writeOutput({
         status: 'success',
         result: textResult || null,
-        newSessionId
+        newSessionId,
+        model: detectedModel,
       });
     }
   }
 
   ipcPolling = false;
-  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
-  return { newSessionId, lastAssistantUuid, closedDuringQuery };
+  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, model: ${detectedModel || 'unknown'}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
+  return { newSessionId, lastAssistantUuid, model: detectedModel, closedDuringQuery };
 }
 
 async function main(): Promise<void> {

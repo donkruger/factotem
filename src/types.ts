@@ -79,10 +79,18 @@ export interface TaskRunLog {
 
 // --- Channel abstraction ---
 
+export interface MessageMetadata {
+  model?: string;
+}
+
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(
+    jid: string,
+    text: string,
+    metadata?: MessageMetadata,
+  ): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
