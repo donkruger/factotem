@@ -5,6 +5,7 @@
  */
 
 import { getBrowserContext, navigateToTweet, runScript, validateContent, config, ScriptResult } from '../lib/browser.js';
+import { humanClick, humanType, humanWait } from '../lib/human.js';
 
 interface ReplyInput {
   tweetUrl: string;
@@ -34,8 +35,8 @@ async function replyToTweet(input: ReplyInput): Promise<ScriptResult> {
     const tweet = page.locator('article[data-testid="tweet"]').first();
     const replyButton = tweet.locator('[data-testid="reply"]');
     await replyButton.waitFor({ timeout: config.timeouts.elementWait });
-    await replyButton.click();
-    await page.waitForTimeout(config.timeouts.afterClick * 1.5);
+    await humanClick(page, replyButton);
+    await humanWait(config.timeouts.afterClick * 1.5);
 
     // Find dialog with aria-modal="true" to avoid matching other dialogs
     const dialog = page.locator('[role="dialog"][aria-modal="true"]');
@@ -44,10 +45,8 @@ async function replyToTweet(input: ReplyInput): Promise<ScriptResult> {
     // Fill reply content
     const replyInput = dialog.locator('[data-testid="tweetTextarea_0"]');
     await replyInput.waitFor({ timeout: config.timeouts.elementWait });
-    await replyInput.click();
-    await page.waitForTimeout(config.timeouts.afterClick / 2);
-    await replyInput.fill(content);
-    await page.waitForTimeout(config.timeouts.afterFill);
+    await humanType(page, replyInput, content);
+    await humanWait(config.timeouts.afterFill);
 
     // Click submit button
     const submitButton = dialog.locator('[data-testid="tweetButton"]');
@@ -58,8 +57,8 @@ async function replyToTweet(input: ReplyInput): Promise<ScriptResult> {
       return { success: false, message: 'Submit button disabled. Content may be empty or exceed character limit.' };
     }
 
-    await submitButton.click();
-    await page.waitForTimeout(config.timeouts.afterSubmit);
+    await humanClick(page, submitButton);
+    await humanWait(config.timeouts.afterSubmit);
 
     return {
       success: true,

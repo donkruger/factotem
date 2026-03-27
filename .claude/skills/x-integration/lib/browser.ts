@@ -85,6 +85,13 @@ export async function getBrowserContext(): Promise<BrowserContext> {
     ignoreDefaultArgs: config.chromeIgnoreDefaultArgs,
   });
 
+  // Clean residual automation markers that X may detect
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    delete (window as any).__playwright;
+    delete (window as any).__pw_manual;
+  });
+
   return context;
 }
 

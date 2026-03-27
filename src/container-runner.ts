@@ -140,7 +140,6 @@ function buildVolumeMounts(
             // Enable Claude's memory feature (persists user preferences between sessions)
             // https://code.claude.com/docs/en/memory#manage-auto-memory
             CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-            CLAUDE_MODEL: process.env.CLAUDE_MODEL || '',
           },
         },
         null,

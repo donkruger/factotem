@@ -1,0 +1,280 @@
+#!/bin/bash
+set -euo pipefail
+
+# excel-reader — CLI wrapper around Python openpyxl for spreadsheet processing.
+# Provides extract, sheets, info, fetch, list commands.
+
+VERSION="1.0.0"
+
+usage() {
+  cat <<'USAGE'
+excel-reader — Extract data from Excel spreadsheets and CSV files
+
+Usage:
+  excel-reader extract <file> [--sheet <name>] [--rows N-M]
+  excel-reader sheets <file>
+  excel-reader info <file>
+  excel-reader fetch <url> [filename]
+  excel-reader list
+  excel-reader help
+
+Commands:
+  extract   Extract spreadsheet data as CSV to stdout
+  sheets    List all sheet names with dimensions
+  info      Show file metadata and dimensions
+  fetch     Download a spreadsheet from a URL and extract
+  list      List all spreadsheets in current directory tree
+  help      Show this help message
+
+Extract options:
+  --sheet <name>  Extract only the named sheet
+  --rows N-M      Extract only rows N through M (1-based, header always included)
+USAGE
+}
+
+cmd_extract() {
+  local file=""
+  local sheet=""
+  local first_row=""
+  local last_row=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --sheet)
+        if [[ -z "${2:-}" ]]; then
+          echo "Error: --sheet requires a sheet name" >&2
+          exit 1
+        fi
+        sheet="$2"
+        shift 2
+        ;;
+      --rows)
+        if [[ -z "${2:-}" ]]; then
+          echo "Error: --rows requires a range (e.g. 1-50)" >&2
+          exit 1
+        fi
+        local range="$2"
+        first_row="${range%-*}"
+        last_row="${range#*-}"
+        shift 2
+        ;;
+      -*)
+        echo "Error: Unknown option: $1" >&2
+        exit 1
+        ;;
+      *)
+        if [[ -z "$file" ]]; then
+          file="$1"
+        else
+          echo "Error: Unexpected argument: $1" >&2
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$file" ]]; then
+    echo "Error: No file specified" >&2
+    echo "Usage: excel-reader extract <file> [--sheet <name>] [--rows N-M]" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$file" ]]; then
+    echo "Error: File not found: $file" >&2
+    exit 1
+  fi
+
+  # CSV files: output directly
+  if [[ "$file" == *.csv ]]; then
+    if [[ -n "$first_row" && -n "$last_row" ]]; then
+      head -1 "$file"
+      sed -n "$((first_row+1)),$((last_row+1))p" "$file"
+    else
+      cat "$file"
+    fi
+    return
+  fi
+
+  python3 -c "
+import sys, csv, io
+from openpyxl import load_workbook
+
+wb = load_workbook('$file', read_only=True, data_only=True)
+sheet_filter = '''$sheet'''
+first_row = '''$first_row'''
+last_row = '''$last_row'''
+first_row = int(first_row) if first_row else None
+last_row = int(last_row) if last_row else None
+
+sheets = [wb[sheet_filter]] if sheet_filter else wb.worksheets
+
+for ws in sheets:
+    if not sheet_filter and len(wb.sheetnames) > 1:
+        print(f'--- Sheet: {ws.title} ---')
+    out = io.StringIO()
+    writer = csv.writer(out)
+    for i, row in enumerate(ws.iter_rows(values_only=True), 1):
+        # Always include header (row 1)
+        if first_row and i > 1 and (i < first_row + 1 or i > last_row + 1):
+            continue
+        writer.writerow([str(c) if c is not None else '' for c in row])
+    print(out.getvalue(), end='')
+wb.close()
+"
+}
+
+cmd_sheets() {
+  local file="${1:-}"
+  if [[ -z "$file" ]]; then
+    echo "Error: No file specified" >&2
+    echo "Usage: excel-reader sheets <file>" >&2
+    exit 1
+  fi
+  if [[ ! -f "$file" ]]; then
+    echo "Error: File not found: $file" >&2
+    exit 1
+  fi
+
+  if [[ "$file" == *.csv ]]; then
+    local rows
+    rows=$(wc -l < "$file" | tr -d ' ')
+    local cols
+    cols=$(head -1 "$file" | awk -F',' '{print NF}')
+    echo "CSV file: ${rows} rows, ${cols} columns"
+    return
+  fi
+
+  python3 -c "
+from openpyxl import load_workbook
+wb = load_workbook('$file', read_only=True, data_only=True)
+for name in wb.sheetnames:
+    ws = wb[name]
+    print(f'{name}: {ws.max_row or 0} rows, {ws.max_column or 0} columns')
+wb.close()
+"
+}
+
+cmd_info() {
+  local file="${1:-}"
+  if [[ -z "$file" ]]; then
+    echo "Error: No file specified" >&2
+    echo "Usage: excel-reader info <file>" >&2
+    exit 1
+  fi
+  if [[ ! -f "$file" ]]; then
+    echo "Error: File not found: $file" >&2
+    exit 1
+  fi
+
+  local size
+  size=$(du -h "$file" | cut -f1 | tr -d ' ')
+  echo "File: $file"
+  echo "Size: $size"
+
+  if [[ "$file" == *.csv ]]; then
+    local rows
+    rows=$(wc -l < "$file" | tr -d ' ')
+    local cols
+    cols=$(head -1 "$file" | awk -F',' '{print NF}')
+    echo "Format: CSV"
+    echo "Rows: $rows"
+    echo "Columns: $cols"
+    return
+  fi
+
+  python3 -c "
+from openpyxl import load_workbook
+wb = load_workbook('$file', read_only=True, data_only=True)
+print(f'Format: Excel (.xlsx)')
+print(f'Sheets: {len(wb.sheetnames)}')
+print()
+for name in wb.sheetnames:
+    ws = wb[name]
+    print(f'  {name}: {ws.max_row or 0} rows x {ws.max_column or 0} columns')
+wb.close()
+"
+}
+
+cmd_fetch() {
+  local url="${1:-}"
+  local save_as="${2:-}"
+
+  if [[ -z "$url" ]]; then
+    echo "Error: No URL specified" >&2
+    echo "Usage: excel-reader fetch <url> [filename]" >&2
+    exit 1
+  fi
+
+  local tmpfile
+  tmpfile=$(mktemp /tmp/excel-reader-XXXXXX)
+
+  # Detect extension from URL or content-type
+  local ext="xlsx"
+  if [[ "$url" == *.csv ]]; then
+    ext="csv"
+  elif [[ "$url" == *.xls && "$url" != *.xlsx ]]; then
+    ext="xls"
+  fi
+  mv "$tmpfile" "${tmpfile}.${ext}"
+  tmpfile="${tmpfile}.${ext}"
+
+  if ! curl -fsSL -o "$tmpfile" "$url"; then
+    rm -f "$tmpfile"
+    echo "Error: Failed to download from $url" >&2
+    exit 1
+  fi
+
+  if [[ -n "$save_as" ]]; then
+    cp "$tmpfile" "$save_as"
+    echo "Saved to: $save_as"
+  fi
+
+  echo "Downloaded: $(du -h "$tmpfile" | cut -f1 | tr -d ' ')"
+  echo ""
+  cmd_extract "$tmpfile"
+  rm -f "$tmpfile"
+}
+
+cmd_list() {
+  local found=false
+  while IFS= read -r -d '' file; do
+    found=true
+    local size
+    size=$(du -h "$file" | cut -f1 | tr -d ' ')
+    if [[ "$file" == *.csv ]]; then
+      local rows
+      rows=$(wc -l < "$file" | tr -d ' ')
+      echo "$file  ($size, ${rows} rows)"
+    else
+      local sheets
+      sheets=$(python3 -c "
+from openpyxl import load_workbook
+wb = load_workbook('$file', read_only=True, data_only=True)
+print(len(wb.sheetnames))
+wb.close()
+" 2>/dev/null || echo "?")
+      echo "$file  ($size, ${sheets} sheet(s))"
+    fi
+  done < <(find . -type f \( -name '*.xlsx' -o -name '*.xls' -o -name '*.csv' \) -print0 | sort -z)
+
+  if [[ "$found" == false ]]; then
+    echo "No spreadsheet files found in current directory tree."
+  fi
+}
+
+# --- Main dispatcher ---
+case "${1:-help}" in
+  extract)  shift; cmd_extract "$@" ;;
+  sheets)   shift; cmd_sheets "$@" ;;
+  info)     shift; cmd_info "$@" ;;
+  fetch)    shift; cmd_fetch "$@" ;;
+  list)     shift; cmd_list ;;
+  help|-h|--help) usage ;;
+  version|--version) echo "excel-reader $VERSION" ;;
+  *)
+    echo "Error: Unknown command: $1" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

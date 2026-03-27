@@ -5,6 +5,7 @@
  */
 
 import { getBrowserContext, navigateToTweet, runScript, validateContent, config, ScriptResult } from '../lib/browser.js';
+import { humanClick, humanType, humanWait } from '../lib/human.js';
 
 interface QuoteInput {
   tweetUrl: string;
@@ -34,14 +35,14 @@ async function quoteTweet(input: QuoteInput): Promise<ScriptResult> {
     const tweet = page.locator('article[data-testid="tweet"]').first();
     const retweetButton = tweet.locator('[data-testid="retweet"]');
     await retweetButton.waitFor({ timeout: config.timeouts.elementWait });
-    await retweetButton.click();
-    await page.waitForTimeout(config.timeouts.afterClick);
+    await humanClick(page, retweetButton);
+    await humanWait(config.timeouts.afterClick);
 
     // Click quote option
     const quoteOption = page.getByRole('menuitem').filter({ hasText: /Quote/i });
     await quoteOption.waitFor({ timeout: config.timeouts.elementWait });
-    await quoteOption.click();
-    await page.waitForTimeout(config.timeouts.afterClick * 1.5);
+    await humanClick(page, quoteOption);
+    await humanWait(config.timeouts.afterClick * 1.5);
 
     // Find dialog with aria-modal="true"
     const dialog = page.locator('[role="dialog"][aria-modal="true"]');
@@ -50,10 +51,8 @@ async function quoteTweet(input: QuoteInput): Promise<ScriptResult> {
     // Fill comment
     const quoteInput = dialog.locator('[data-testid="tweetTextarea_0"]');
     await quoteInput.waitFor({ timeout: config.timeouts.elementWait });
-    await quoteInput.click();
-    await page.waitForTimeout(config.timeouts.afterClick / 2);
-    await quoteInput.fill(comment);
-    await page.waitForTimeout(config.timeouts.afterFill);
+    await humanType(page, quoteInput, comment);
+    await humanWait(config.timeouts.afterFill);
 
     // Click submit button
     const submitButton = dialog.locator('[data-testid="tweetButton"]');
@@ -64,8 +63,8 @@ async function quoteTweet(input: QuoteInput): Promise<ScriptResult> {
       return { success: false, message: 'Submit button disabled. Content may be empty or exceed character limit.' };
     }
 
-    await submitButton.click();
-    await page.waitForTimeout(config.timeouts.afterSubmit);
+    await humanClick(page, submitButton);
+    await humanWait(config.timeouts.afterSubmit);
 
     return {
       success: true,

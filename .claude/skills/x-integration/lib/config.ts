@@ -46,9 +46,20 @@ export const config = {
     tweetMaxLength: 280,
   },
 
+  // Human-like interaction parameters (used by lib/human.ts)
+  humanisation: {
+    enabled: true,
+    typing: { minDelay: 40, maxDelay: 120, pauseEvery: [8, 15] as [number, number], pauseDuration: [200, 400] as [number, number] },
+    mouse: { steps: [3, 6] as [number, number], stepDelay: [15, 40] as [number, number], overshootChance: 0.3 },
+    click: { preDelay: [50, 150] as [number, number], holdDuration: [80, 200] as [number, number], postDelay: [200, 600] as [number, number] },
+    scroll: { steps: [2, 4] as [number, number], stepDelay: [100, 300] as [number, number] },
+    delayVariance: 0.3, // +/- 30% on all fixed timeouts
+  },
+
   // Chrome launch arguments
   chromeArgs: [
     '--disable-blink-features=AutomationControlled',
+    '--disable-features=IsolateOrigins,site-per-process',
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--no-first-run',

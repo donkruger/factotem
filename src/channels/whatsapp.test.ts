@@ -6,6 +6,7 @@ import { EventEmitter } from 'events';
 // Mock config
 vi.mock('../config.js', () => ({
   STORE_DIR: '/tmp/nanoclaw-test-store',
+  GROUPS_DIR: '/tmp/nanoclaw-test-groups',
   ASSISTANT_NAME: 'Andy',
   ASSISTANT_HAS_OWN_NUMBER: false,
 }));
@@ -36,6 +37,7 @@ vi.mock('fs', async () => {
       ...actual,
       existsSync: vi.fn(() => true),
       mkdirSync: vi.fn(),
+      writeFileSync: vi.fn(),
     },
   };
 });
@@ -84,6 +86,9 @@ vi.mock('@whiskeysockets/baileys', () => {
       timedOut: 408,
       restartRequired: 515,
     },
+    downloadMediaMessage: vi
+      .fn()
+      .mockResolvedValue(Buffer.from('fake-excel-data')),
     fetchLatestWaWebVersion: vi
       .fn()
       .mockResolvedValue({ version: [2, 3000, 0] }),
@@ -931,6 +936,153 @@ describe('WhatsAppChannel', () => {
       await expect(
         channel.setTyping('test@g.us', true),
       ).resolves.toBeUndefined();
+    });
+  });
+
+  // --- Spreadsheet attachment handling ---
+
+  describe('spreadsheet attachment handling', () => {
+    it('downloads and references xlsx attachment', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-xlsx',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            documentMessage: {
+              mimetype:
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              fileName: 'Translation Matrix.xlsx',
+              caption: '@Richard Nel @Ben',
+            },
+          },
+          pushName: 'Alice',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: expect.stringContaining(
+            '[Document: attachments/Translation Matrix.xlsx',
+          ),
+        }),
+      );
+      // Caption should also be included
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: expect.stringContaining('@Richard Nel @Ben'),
+        }),
+      );
+    });
+
+    it('downloads xlsx attachment without caption', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-xlsx-nocaption',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            documentMessage: {
+              mimetype:
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              fileName: 'data.xlsx',
+            },
+          },
+          pushName: 'Bob',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: expect.stringContaining(
+            'excel-reader extract attachments/data.xlsx',
+          ),
+        }),
+      );
+    });
+
+    it('downloads csv attachment', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-csv',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            documentMessage: {
+              mimetype: 'text/csv',
+              fileName: 'export.csv',
+            },
+          },
+          pushName: 'Charlie',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: expect.stringContaining('[Document: attachments/export.csv'),
+        }),
+      );
+    });
+
+    it('ignores unsupported document types (e.g. Word)', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-docx',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            documentMessage: {
+              mimetype:
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+              fileName: 'report.docx',
+            },
+          },
+          pushName: 'Diana',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      // No text content and unsupported mimetype → message should be skipped
+      expect(opts.onMessage).not.toHaveBeenCalled();
     });
   });
 

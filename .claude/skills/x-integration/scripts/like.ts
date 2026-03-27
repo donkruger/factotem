@@ -5,6 +5,7 @@
  */
 
 import { getBrowserContext, navigateToTweet, runScript, config, ScriptResult } from '../lib/browser.js';
+import { humanClick, humanWait } from '../lib/human.js';
 
 interface LikeInput {
   tweetUrl: string;
@@ -37,8 +38,8 @@ async function likeTweet(input: LikeInput): Promise<ScriptResult> {
     }
 
     await likeButton.waitFor({ timeout: config.timeouts.elementWait });
-    await likeButton.click();
-    await page.waitForTimeout(config.timeouts.afterClick);
+    await humanClick(page, likeButton);
+    await humanWait(config.timeouts.afterClick);
 
     // Verify
     const nowLiked = await unlikeButton.isVisible().catch(() => false);

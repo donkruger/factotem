@@ -122,6 +122,8 @@ data/ipc/{group}/
 - Non-main groups can only send to themselves
 - Main group can send to any group
 
+**Skill IPC extensions:** The `processTaskIpc` default case delegates to skill handlers (e.g. `src/skills/x-handler.ts` for `x_*` types). New integrations follow this pattern — MCP tools in the container write IPC task files, the host picks them up and runs skill-specific logic (browser automation, API calls, etc.), then writes results back to `data/ipc/{group}/x_results/` for the container to poll.
+
 ### 6. Task Scheduler (`src/task-scheduler.ts`)
 
 Executes scheduled tasks (cron, interval, or one-time):

@@ -26,6 +26,8 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 | `src/db.ts` | SQLite operations |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
 | `container/skills/` | Skills loaded inside agent containers (browser, status, formatting) |
+| `src/skills/x-handler.ts` | Host-side IPC handler for X (Twitter) integration |
+| `container/skills/excel-reader/` | Excel/CSV extraction CLI for container agents |
 
 ## Secrets / Credentials / Proxy (OneCLI)
 
@@ -78,8 +80,29 @@ systemctl --user restart nanoclaw
 
 ## Troubleshooting
 
+**`spawn npx ENOENT` or exit code 127 from host-side skills:** The launchd service runs with a minimal PATH that does not include `/opt/homebrew/bin`. Never use bare `npx`/`tsx`/`node` or `node_modules/.bin/` stubs (they use `#!/usr/bin/env node` which also fails). Instead use `process.execPath` + the module entry point directly. See "Spawning Subprocesses on the Host" in `.cursor/rules/development_conventions.mdc`.
+
 **WhatsApp not connecting after upgrade:** WhatsApp is now a separate skill, not bundled in core. Run `/add-whatsapp` (or `npx tsx scripts/apply-skill.ts .claude/skills/add-whatsapp && npm run build`) to install it. Existing auth credentials and groups are preserved.
 
 ## Container Build Cache
 
 The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
+
+## Agent-Runner Source Caching (IMPORTANT)
+
+The agent-runner source (`container/agent-runner/src/`) is cached per-group at `data/sessions/{group}/agent-runner-src/` on first container spawn. This cached copy is mounted into containers and **overrides the baked-in image code**.
+
+After modifying `container/agent-runner/src/`, you MUST sync cached copies:
+
+```bash
+for dir in data/sessions/*/agent-runner-src; do
+  [ -d "$dir" ] && cp container/agent-runner/src/*.ts "$dir/"
+done
+```
+
+**Full deployment steps for new integrations:**
+1. `npm run build` — compile host TypeScript
+2. `./container/build.sh` — rebuild container image
+3. Sync agent-runner cache (command above)
+4. `launchctl kickstart -k gui/$(id -u)/com.nanoclaw` — restart service
+5. Verify agent can see new tools

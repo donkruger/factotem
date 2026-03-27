@@ -5,6 +5,7 @@
  */
 
 import { getBrowserContext, navigateToTweet, runScript, config, ScriptResult } from '../lib/browser.js';
+import { humanClick, humanWait } from '../lib/human.js';
 
 interface RetweetInput {
   tweetUrl: string;
@@ -37,14 +38,14 @@ async function retweet(input: RetweetInput): Promise<ScriptResult> {
     }
 
     await retweetButton.waitFor({ timeout: config.timeouts.elementWait });
-    await retweetButton.click();
-    await page.waitForTimeout(config.timeouts.afterClick);
+    await humanClick(page, retweetButton);
+    await humanWait(config.timeouts.afterClick);
 
     // Click retweet confirm option
     const retweetConfirm = page.locator('[data-testid="retweetConfirm"]');
     await retweetConfirm.waitFor({ timeout: config.timeouts.elementWait });
-    await retweetConfirm.click();
-    await page.waitForTimeout(config.timeouts.afterClick * 2);
+    await humanClick(page, retweetConfirm);
+    await humanWait(config.timeouts.afterClick * 2);
 
     // Verify
     const nowRetweeted = await unretweetButton.isVisible().catch(() => false);

@@ -62,6 +62,17 @@ After creating or modifying tickets, regenerate `MAPPING.md` (see brain's CLAUDE
 - Schedule tasks to run later or on a recurring basis
 - Send messages back to the chat
 
+## Scheduling Tasks
+
+NEVER use CronCreate, CronDelete, or CronList — these are session-only and expire when the container exits.
+
+ALWAYS use `mcp__nanoclaw__schedule_task` for any recurring, delayed, or one-shot scheduled work. This is persistent, survives restarts, and supports:
+- Cron expressions (e.g. `0 5 * * *` for daily at 07:00 SAST)
+- Intervals (milliseconds)
+- One-shot future execution
+
+Manage tasks with: `mcp__nanoclaw__list_tasks`, `mcp__nanoclaw__update_task`, `mcp__nanoclaw__pause_task`, `mcp__nanoclaw__resume_task`, `mcp__nanoclaw__cancel_task`.
+
 ## Communication
 
 Your output is sent to the user or group.

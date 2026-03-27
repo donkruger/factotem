@@ -412,6 +412,7 @@ async function runQuery(
         'NotebookEdit',
         'mcp__nanoclaw__*'
       ],
+      disallowedTools: ['CronCreate', 'CronDelete', 'CronList'],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
