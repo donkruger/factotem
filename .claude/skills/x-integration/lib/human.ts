@@ -163,7 +163,11 @@ export async function humanType(
   let charsSincePause = 0;
 
   for (const char of text) {
-    await page.keyboard.press(char === '\n' ? 'Enter' : char);
+    if (char === '\n') {
+      await page.keyboard.press('Enter');
+    } else {
+      await page.keyboard.type(char);
+    }
     await randomDelay(h.typing.minDelay, h.typing.maxDelay);
 
     charsSincePause++;

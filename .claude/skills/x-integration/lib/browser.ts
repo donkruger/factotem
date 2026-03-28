@@ -150,6 +150,6 @@ export async function runScript<T>(
       success: false,
       message: `Script execution failed: ${err instanceof Error ? err.message : String(err)}`
     });
-    process.exit(1);
+    process.exit(0);
   }
 }

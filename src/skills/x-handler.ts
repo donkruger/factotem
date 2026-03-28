@@ -40,8 +40,12 @@ async function runScript(script: string, args: object): Promise<SkillResult> {
     });
 
     let stdout = '';
+    let stderr = '';
     proc.stdout.on('data', (data) => {
       stdout += data.toString();
+    });
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString();
     });
     proc.stdin.write(JSON.stringify(args));
     proc.stdin.end();
@@ -53,17 +57,23 @@ async function runScript(script: string, args: object): Promise<SkillResult> {
 
     proc.on('close', (code) => {
       clearTimeout(timer);
+      // Always try to parse stdout first — the script writes JSON results
+      // even on error, so don't discard them based on exit code alone.
+      try {
+        const lines = stdout.trim().split('\n');
+        const lastLine = lines[lines.length - 1]?.trim();
+        if (lastLine) {
+          resolve(JSON.parse(lastLine));
+          return;
+        }
+      } catch {}
+      // Fallback: stdout wasn't valid JSON
       if (code !== 0) {
         resolve({
           success: false,
-          message: `Script exited with code: ${code}`,
+          message: `Script exited with code: ${code}${stderr ? ` — ${stderr.slice(0, 500)}` : ''}`,
         });
-        return;
-      }
-      try {
-        const lines = stdout.trim().split('\n');
-        resolve(JSON.parse(lines[lines.length - 1]));
-      } catch {
+      } else {
         resolve({
           success: false,
           message: `Failed to parse output: ${stdout.slice(0, 200)}`,
