@@ -66,6 +66,9 @@ A personal Claude assistant with multi-channel support, persistent memory per co
 │  │    • agent-browser (browser automation)                        │    │
 │  │    • mcp__nanoclaw__* (scheduler tools via IPC)                │    │
 │  │                                                                │    │
+│  │  Host-side processing (before container):                      │    │
+│  │    • Voice transcription (whisper.cpp, local, no API cost)     │    │
+│  │                                                                │    │
 │  └──────────────────────────────────────────────────────────────┘    │
 │                                                                       │
 └───────────────────────────────────────────────────────────────────────┘

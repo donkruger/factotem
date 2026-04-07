@@ -33,7 +33,7 @@ async function quoteTweet(input: QuoteInput): Promise<ScriptResult> {
 
     // Click retweet button to open menu
     const tweet = page.locator('article[data-testid="tweet"]').first();
-    const retweetButton = tweet.locator('[data-testid="retweet"]');
+    const retweetButton = tweet.locator('[data-testid="retweet"]').first();
     await retweetButton.waitFor({ timeout: config.timeouts.elementWait });
     await humanClick(page, retweetButton);
     await humanWait(config.timeouts.afterClick);

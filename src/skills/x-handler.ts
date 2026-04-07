@@ -16,7 +16,7 @@ interface SkillResult {
   data?: unknown;
 }
 
-async function runScript(script: string, args: object): Promise<SkillResult> {
+async function runScript(script: string, args: object, timeoutMs = 120000): Promise<SkillResult> {
   const scriptPath = path.join(
     process.cwd(),
     '.claude',
@@ -52,8 +52,8 @@ async function runScript(script: string, args: object): Promise<SkillResult> {
 
     const timer = setTimeout(() => {
       proc.kill('SIGTERM');
-      resolve({ success: false, message: 'Script timed out (120s)' });
-    }, 120000);
+      resolve({ success: false, message: `Script timed out (${timeoutMs / 1000}s)` });
+    }, timeoutMs);
 
     proc.on('close', (code) => {
       clearTimeout(timer);
@@ -179,6 +179,85 @@ export async function handleXIpc(
         tweetUrl: data.tweetUrl,
         comment: data.comment,
       });
+      break;
+
+    case 'x_read_feed':
+      result = await runScript('read-feed', {
+        count: data.count || 10,
+      }, 180000);
+      break;
+
+    case 'x_read_notifications':
+      result = await runScript('read-notifications', {
+        count: data.count || 10,
+        filter: data.filter || 'all',
+      }, 180000);
+      break;
+
+    case 'x_dm':
+      if (!data.username || !data.message) {
+        result = { success: false, message: 'Missing username or message' };
+        break;
+      }
+      result = await runScript('dm', {
+        username: data.username,
+        message: data.message,
+      });
+      break;
+
+    case 'x_get_tweet':
+      if (!data.tweetUrl) {
+        result = { success: false, message: 'Missing tweetUrl' };
+        break;
+      }
+      result = await runScript('get-tweet', { tweetUrl: data.tweetUrl }, 180000);
+      break;
+
+    case 'x_search':
+      if (!data.query) {
+        result = { success: false, message: 'Missing query' };
+        break;
+      }
+      result = await runScript('search', {
+        query: data.query,
+        count: data.count || 10,
+        sort: data.sort || 'latest',
+      }, 180000);
+      break;
+
+    case 'x_read_thread':
+      if (!data.tweetUrl) {
+        result = { success: false, message: 'Missing tweetUrl' };
+        break;
+      }
+      result = await runScript('read-thread', { tweetUrl: data.tweetUrl }, 180000);
+      break;
+
+    case 'x_read_profile':
+      if (!data.username) {
+        result = { success: false, message: 'Missing username' };
+        break;
+      }
+      result = await runScript('read-profile', {
+        username: data.username,
+        tweetCount: data.tweetCount || 5,
+      }, 180000);
+      break;
+
+    case 'x_get_analytics':
+      if (!data.tweetUrl) {
+        result = { success: false, message: 'Missing tweetUrl' };
+        break;
+      }
+      result = await runScript('get-analytics', { tweetUrl: data.tweetUrl }, 180000);
+      break;
+
+    case 'x_follow':
+      if (!data.username) {
+        result = { success: false, message: 'Missing username' };
+        break;
+      }
+      result = await runScript('follow', { username: data.username });
       break;
 
     default:

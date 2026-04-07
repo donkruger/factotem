@@ -4,6 +4,18 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ---
 
+## 2026-04-05
+
+### Voice transcription: local whisper.cpp
+- Merged `skill/voice-transcription` (base voice handling for WhatsApp) and `skill/local-whisper` (replaces OpenAI API with local whisper.cpp)
+- WhatsApp voice notes are now automatically transcribed on-device using `ffmpeg` + `whisper-cli` (whisper.cpp)
+- Pipeline: OGG/Opus → 16kHz mono WAV → whisper.cpp text → stored as `[Voice: <transcript>]` in SQLite
+- No API key required, no network dependency, no per-minute cost
+- Model: `ggml-small.bin` (~466MB) at `data/models/` — configurable via `WHISPER_MODEL` env var
+- Added `/opt/homebrew/bin` to launchd PATH in `com.nanoclaw.plist` (required for `ffmpeg` and `whisper-cli`)
+- New file: `src/transcription.ts` — channel-agnostic transcription module
+- Source: Richard Nel's Jarvis/Telegram implementation, adapted for WhatsApp
+
 ## 2026-03-25
 
 ### Initial fork setup
@@ -36,6 +48,27 @@ Timestamped record of significant changes to this BenClaw fork.
 - Created `.cursor/rules/development_conventions.mdc` — development conventions and rules
 - Updated `CLAUDE.md` with documentation references
 - Elevated Brain documentation from a config bullet point to a first-class architecture section covering data model, board structure, data flow, and mount configuration
+
+## 2026-03-28
+
+### Multi-format WhatsApp attachment support
+- Added text file handling (.txt, .md, .json, .yaml, .xml, .html, .css, .js, .py, .log, .sql, .toml, .ini, .env, and 20+ more extensions)
+- Text files under 50KB are inlined directly in the message; larger files are saved with a reference
+- Added image-as-document handling — images sent "without compression" now go through the vision pipeline
+- Added generic document catch-all — any unrecognized file type (.docx, .pptx, .zip, etc.) is downloaded, saved to attachments/, and referenced for the agent
+- Restructured document handling in whatsapp.ts to use else-if chains so each attachment is handled exactly once
+
+### X (Twitter) strict mode and failure handling
+- Fixed strict mode Playwright error on high-reply-count threads (92+ replies) — added `.first()` to all action button locators in reply.ts, like.ts, retweet.ts, quote.ts
+- Reply script now returns structured `data.failureCategory` for agent-side decision-making: `strict_mode`, `timeout`, `replies_restricted`, `tweet_not_found`, `submit_disabled`
+- Added restricted-reply detection — checks for missing reply button and X's inline restriction notice
+- Added tombstone/suspended account detection in `navigateToTweet`
+
+### Operations runbook
+- Created `docs/OPERATIONS.md` — startup dependency chain, recovery procedures, health checks, common issues
+- Documents the OneCLI gateway setup (docker-compose at ~/.onecli/, ports, CLI commands)
+- Includes post-crash recovery checklist, orphaned container cleanup, WhatsApp re-auth, database recovery
+- Referenced from README.md and CLAUDE.md
 
 ## 2026-03-27
 

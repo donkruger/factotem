@@ -5,6 +5,7 @@ Personal Claude assistant (fork: `donkruger/benclaw`).
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Full current-state architecture, message flow, security model
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — Philosophy and design decisions
 - [docs/SPEC.md](docs/SPEC.md) — Detailed specification
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — Startup, recovery, troubleshooting runbook
 - [docs/CHANGE_LOG.md](docs/CHANGE_LOG.md) — Timestamped change history
 - [.cursor/rules/development_conventions.mdc](.cursor/rules/development_conventions.mdc) — Development conventions
 
@@ -48,7 +49,6 @@ Four types of skills exist in NanoClaw. See [CONTRIBUTING.md](CONTRIBUTING.md) f
 | `/customize` | Adding channels, integrations, changing behavior |
 | `/debug` | Container issues, logs, troubleshooting |
 | `/update-nanoclaw` | Bring upstream NanoClaw updates into a customized install |
-| `/init-onecli` | Install OneCLI Agent Vault and migrate `.env` credentials to it |
 | `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
 | `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
 

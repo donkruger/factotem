@@ -24,12 +24,17 @@ async function retweet(input: RetweetInput): Promise<ScriptResult> {
     const { page, success, error } = await navigateToTweet(context, tweetUrl);
 
     if (!success) {
-      return { success: false, message: error || 'Navigation failed' };
+      const isMissing = error?.includes('not found') || error?.includes('deleted');
+      return {
+        success: false,
+        message: error || 'Navigation failed',
+        data: { errorCode: isMissing ? 'tweet_not_found' : 'navigation_error' },
+      };
     }
 
     const tweet = page.locator('article[data-testid="tweet"]').first();
-    const unretweetButton = tweet.locator('[data-testid="unretweet"]');
-    const retweetButton = tweet.locator('[data-testid="retweet"]');
+    const unretweetButton = tweet.locator('[data-testid="unretweet"]').first();
+    const retweetButton = tweet.locator('[data-testid="retweet"]').first();
 
     // Check if already retweeted
     const alreadyRetweeted = await unretweetButton.isVisible().catch(() => false);
@@ -53,7 +58,7 @@ async function retweet(input: RetweetInput): Promise<ScriptResult> {
       return { success: true, message: 'Retweet successful' };
     }
 
-    return { success: false, message: 'Retweet action completed but could not verify success' };
+    return { success: false, message: 'Retweet action completed but could not verify success', data: { errorCode: 'verification_failed' } };
 
   } finally {
     if (context) await context.close();

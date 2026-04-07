@@ -7,6 +7,7 @@ import { chromium, BrowserContext, Page } from 'playwright';
 import fs from 'fs';
 import path from 'path';
 import { config } from './config.js';
+import { acquireLock, releaseLock } from './lock.js';
 
 export { config };
 
@@ -68,22 +69,34 @@ export function validateContent(content: string | undefined, type = 'Tweet'): Sc
 }
 
 /**
- * Get browser context with persistent profile
+ * Get browser context with persistent profile.
+ * Acquires a file-based lock to prevent concurrent access to the Chrome
+ * profile — call context.close() when done (the lock releases automatically).
  */
 export async function getBrowserContext(): Promise<BrowserContext> {
   if (!fs.existsSync(config.authPath)) {
     throw new Error('X authentication not configured. Run /x-integration to complete login.');
   }
 
+  if (!acquireLock('x-browser')) {
+    throw new Error('Another X operation is in progress. Try again shortly.');
+  }
+
   cleanupLockFiles();
 
-  const context = await chromium.launchPersistentContext(config.browserDataDir, {
-    executablePath: config.chromePath,
-    headless: false,
-    viewport: config.viewport,
-    args: config.chromeArgs,
-    ignoreDefaultArgs: config.chromeIgnoreDefaultArgs,
-  });
+  let context: BrowserContext;
+  try {
+    context = await chromium.launchPersistentContext(config.browserDataDir, {
+      executablePath: config.chromePath,
+      headless: false,
+      viewport: config.viewport,
+      args: config.chromeArgs,
+      ignoreDefaultArgs: config.chromeIgnoreDefaultArgs,
+    });
+  } catch (err) {
+    releaseLock('x-browser');
+    throw err;
+  }
 
   // Clean residual automation markers that X may detect
   await context.addInitScript(() => {
@@ -91,6 +104,9 @@ export async function getBrowserContext(): Promise<BrowserContext> {
     delete (window as any).__playwright;
     delete (window as any).__pw_manual;
   });
+
+  // Release the lock when the context closes (regardless of how)
+  context.on('close', () => releaseLock('x-browser'));
 
   return context;
 }
@@ -123,6 +139,13 @@ export async function navigateToTweet(
   try {
     await page.goto(url, { timeout: config.timeouts.navigation, waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(config.timeouts.pageLoad);
+
+    // Check for explicit "doesn't exist" / suspended / deleted notices
+    const tombstone = page.locator('[data-testid="tombstone"], [data-testid="emptyState"]');
+    const hasTombstone = await tombstone.isVisible().catch(() => false);
+    if (hasTombstone) {
+      return { page, success: false, error: 'Tweet not found — deleted or from a suspended account.' };
+    }
 
     const exists = await page.locator('article[data-testid="tweet"]').first().isVisible().catch(() => false);
     if (!exists) {

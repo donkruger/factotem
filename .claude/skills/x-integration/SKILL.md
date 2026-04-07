@@ -1,6 +1,6 @@
 ---
 name: x-integration
-description: X (Twitter) integration for NanoClaw. Post tweets, like, reply, retweet, and quote. Use for setup, testing, or troubleshooting X functionality. Triggers on "setup x", "x integration", "twitter", "post tweet", "tweet".
+description: X (Twitter) integration for NanoClaw. Post tweets, like, reply, retweet, quote, DM, read feed, and read notifications. Use for setup, testing, or troubleshooting X functionality. Triggers on "setup x", "x integration", "twitter", "post tweet", "tweet", "feed", "notifications", "dm", "direct message".
 ---
 
 # X (Twitter) Integration
@@ -18,6 +18,9 @@ Browser automation for X interactions via WhatsApp.
 | Reply | `x_reply` | Reply to tweets |
 | Retweet | `x_retweet` | Retweet without comment |
 | Quote | `x_quote` | Quote tweet with comment |
+| Read Feed | `x_read_feed` | Read home timeline tweets |
+| Read Notifications | `x_read_notifications` | Read notifications (all or mentions only) |
+| Direct Message | `x_dm` | Send a DM to any user |
 
 ## Prerequisites
 
@@ -144,12 +147,15 @@ Paths relative to project root:
 │   ├── config.ts     # Centralized configuration
 │   └── browser.ts    # Playwright utilities
 └── scripts/
-    ├── setup.ts      # Interactive login
-    ├── post.ts       # Post tweet
-    ├── like.ts       # Like tweet
-    ├── reply.ts      # Reply to tweet
-    ├── retweet.ts    # Retweet
-    └── quote.ts      # Quote tweet
+    ├── setup.ts              # Interactive login
+    ├── post.ts               # Post tweet
+    ├── like.ts               # Like tweet
+    ├── reply.ts              # Reply to tweet
+    ├── retweet.ts            # Retweet
+    ├── quote.ts              # Quote tweet
+    ├── read-feed.ts          # Read home timeline
+    ├── read-notifications.ts # Read notifications
+    └── dm.ts                 # Send direct message
 ```
 
 ### Integration Points
@@ -296,6 +302,16 @@ Replace `@Assistant` with your configured trigger name (`ASSISTANT_NAME` in `.en
 @Assistant retweet https://x.com/user/status/123
 
 @Assistant quote https://x.com/user/status/123 with comment: Interesting
+
+@Assistant what's on my X feed?
+
+@Assistant check my X notifications
+
+@Assistant check my X mentions
+
+@Assistant DM @levelsio and say hi, love what he's building
+
+@Assistant send a DM to @marc_louvion introducing Kanban Pro
 ```
 
 **Note:** Only the main group can use X tools. Other groups will receive an error.
@@ -330,6 +346,25 @@ echo '{"content":"Test tweet - please ignore"}' | npx dotenv -e .env -- npx tsx 
 
 ```bash
 echo '{"tweetUrl":"https://x.com/user/status/123"}' | npx dotenv -e .env -- npx tsx .claude/skills/x-integration/scripts/like.ts
+```
+
+### Test Read Feed
+
+```bash
+echo '{"count":5}' | npx dotenv -e .env -- npx tsx .claude/skills/x-integration/scripts/read-feed.ts
+```
+
+### Test Read Notifications
+
+```bash
+echo '{"count":5}' | npx dotenv -e .env -- npx tsx .claude/skills/x-integration/scripts/read-notifications.ts
+echo '{"count":5,"filter":"mentions"}' | npx dotenv -e .env -- npx tsx .claude/skills/x-integration/scripts/read-notifications.ts
+```
+
+### Test DM
+
+```bash
+echo '{"username":"levelsio","message":"Test DM from automation"}' | npx dotenv -e .env -- npx tsx .claude/skills/x-integration/scripts/dm.ts
 ```
 
 Or export `CHROME_PATH` manually before running:
@@ -396,6 +431,15 @@ If X updates their UI, selectors in scripts may break. Current selectors:
 | Confirm retweet | `[data-testid="retweetConfirm"]` |
 | Modal dialog | `[role="dialog"][aria-modal="true"]` |
 | Modal submit | `[data-testid="tweetButton"]` |
+| Tweet article | `article[data-testid="tweet"]` |
+| Tweet text | `[data-testid="tweetText"]` |
+| User name | `[data-testid="User-Name"]` |
+| Notification cell | `[data-testid="cellInnerDiv"]` |
+| Account switcher | `[data-testid="SideNav_AccountSwitcher_Button"]` |
+| DM from profile | `[data-testid="sendDMFromProfile"]` |
+| DM input | `[data-testid="dmComposerTextInput"]` |
+| DM send button | `[data-testid="dmComposerSendButton"]` |
+| User actions (more) | `[data-testid="userActions"]` |
 
 ### Container Build Issues
 

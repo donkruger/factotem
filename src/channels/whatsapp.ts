@@ -2,10 +2,12 @@ import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+import pino from 'pino';
 import makeWASocket, {
   Browsers,
   DisconnectReason,
   downloadMediaMessage,
+  WAMessageKey,
   WASocket,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
@@ -13,6 +15,9 @@ import makeWASocket, {
   proto,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
+
+// Baileys requires a pino-compatible logger instance
+const baileysLogger = pino({ level: 'silent' });
 
 import {
   ASSISTANT_HAS_OWN_NUMBER,
@@ -102,7 +107,10 @@ export class WhatsAppChannel implements Channel {
       getMessage: async (key: WAMessageKey) => {
         const cached = this.sentMessageCache.get(key.id || '');
         if (cached) {
-          logger.debug({ id: key.id }, 'getMessage: returning cached message for retry');
+          logger.debug(
+            { id: key.id },
+            'getMessage: returning cached message for retry',
+          );
           return cached;
         }
         logger.debug({ id: key.id }, 'getMessage: no cached message found');
@@ -214,7 +222,10 @@ export class WhatsAppChannel implements Channel {
             const phoneJid = pn.includes('@') ? pn : `${pn}@s.whatsapp.net`;
             this.lidToPhoneMap[rawJid.split('@')[0].split(':')[0]] = phoneJid;
             chatJid = phoneJid;
-            logger.info({ lidJid: rawJid, phoneJid }, 'Translated LID via senderPn');
+            logger.info(
+              { lidJid: rawJid, phoneJid },
+              'Translated LID via senderPn',
+            );
           }
 
           const timestamp = new Date(
@@ -244,7 +255,10 @@ export class WhatsAppChannel implements Channel {
             // WhatsApp group mentions use the LID in raw text (e.g. "@80355281346633")
             // instead of the display name. Normalize to @AssistantName for trigger matching.
             if (this.botLidUser && content.includes(`@${this.botLidUser}`)) {
-              content = content.replace(`@${this.botLidUser}`, `@${ASSISTANT_NAME}`);
+              content = content.replace(
+                `@${this.botLidUser}`,
+                `@${ASSISTANT_NAME}`,
+              );
             }
 
             // Spreadsheet/document attachment handling
@@ -359,7 +373,10 @@ export class WhatsAppChannel implements Channel {
                 const transcript = await transcribeAudioMessage(msg, this.sock);
                 if (transcript) {
                   finalContent = `[Voice: ${transcript}]`;
-                  logger.info({ chatJid, length: transcript.length }, 'Transcribed voice message');
+                  logger.info(
+                    { chatJid, length: transcript.length },
+                    'Transcribed voice message',
+                  );
                 } else {
                   finalContent = '[Voice Message - transcription unavailable]';
                 }
@@ -382,7 +399,11 @@ export class WhatsAppChannel implements Channel {
           } else if (chatJid !== rawJid) {
             // LID translation produced a JID that doesn't match any registered group
             logger.warn(
-              { rawJid, translatedJid: chatJid, registeredJids: Object.keys(groups) },
+              {
+                rawJid,
+                translatedJid: chatJid,
+                registeredJids: Object.keys(groups),
+              },
               'Message JID not found in registered groups after translation',
             );
           }

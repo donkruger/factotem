@@ -31,6 +31,8 @@ NanoClaw is a personal Claude assistant that runs as a single Node.js process. I
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │              CONTAINER (Linux)                        │   │
 │  │  Claude Agent SDK + MCP servers + Browser             │   │
+│  │                                                       │   │
+│  │  Voice: whisper.cpp transcription on host (no API)    │   │
 │  │  Mounts: /workspace/group/ (RW), /workspace/extra/ .. │   │
 │  │  Credentials: OneCLI gateway injection                │   │
 │  └──────────────────────────────────────────────────────┘   │
@@ -75,6 +77,8 @@ Channels register at import time via `registerChannel()`. The orchestrator itera
 | -------- | ------------------------- | -------------------------------------- | ---------------------- |
 | WhatsApp | `@whiskeysockets/baileys` | `phone@s.whatsapp.net`, `groupid@g.us` | QR code / pairing code |
 | Telegram | `grammy`                  | `tg:{chatId}`                          | Bot token via OneCLI   |
+
+**Voice transcription:** WhatsApp voice notes are automatically transcribed on the host using local `whisper.cpp` (via `ffmpeg` + `whisper-cli`). The pipeline converts OGG/Opus → 16kHz mono WAV → text, runs entirely on-device with no API cost. Transcripts are delivered to the agent as `[Voice: <text>]`. See `src/transcription.ts`.
 
 
 ### 3. Container Runner (`src/container-runner.ts`)

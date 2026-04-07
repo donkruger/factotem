@@ -8,8 +8,12 @@
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import pino from 'pino';
 
-import { logger } from '../../../src/logger.js';
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  transport: { target: 'pino-pretty', options: { colorize: true } }
+});
 
 interface SkillResult {
   success: boolean;
@@ -139,6 +143,22 @@ export async function handleXIpc(
         break;
       }
       result = await runScript('quote', { tweetUrl: data.tweetUrl, comment: data.comment });
+      break;
+
+    case 'x_read_feed':
+      result = await runScript('read-feed', { count: data.count || 10 });
+      break;
+
+    case 'x_read_notifications':
+      result = await runScript('read-notifications', { count: data.count || 10, filter: data.filter || 'all' });
+      break;
+
+    case 'x_dm':
+      if (!data.username || !data.message) {
+        result = { success: false, message: 'Missing username or message' };
+        break;
+      }
+      result = await runScript('dm', { username: data.username, message: data.message });
       break;
 
     default:

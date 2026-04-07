@@ -30,7 +30,7 @@ async function postTweet(input: PostInput): Promise<ScriptResult> {
     if (!isLoggedIn) {
       const onLoginPage = await page.locator('input[autocomplete="username"]').isVisible().catch(() => false);
       if (onLoginPage) {
-        return { success: false, message: 'X login expired. Run /x-integration to re-authenticate.' };
+        return { success: false, message: 'X login expired. Run /x-integration to re-authenticate.', data: { errorCode: 'session_expired' } };
       }
     }
 
@@ -46,15 +46,30 @@ async function postTweet(input: PostInput): Promise<ScriptResult> {
 
     const isDisabled = await postButton.getAttribute('aria-disabled');
     if (isDisabled === 'true') {
-      return { success: false, message: 'Post button disabled. Content may be empty or exceed character limit.' };
+      return { success: false, message: 'Post button disabled. Content may be empty or exceed character limit.', data: { errorCode: 'submit_disabled' } };
     }
 
     await humanClick(page, postButton);
     await humanWait(config.timeouts.afterSubmit);
 
+    // Try to capture the posted tweet URL from the page.
+    // After posting, X may redirect or show the new tweet in feed.
+    // Best-effort: check for a toast/snackbar link or the latest tweet link.
+    let postedUrl: string | undefined;
+    try {
+      // X sometimes shows a "Your post was sent" toast with a "View" link
+      const toast = page.locator('[data-testid="toast"] a[href*="/status/"]').first();
+      const toastVisible = await toast.isVisible({ timeout: 3000 }).catch(() => false);
+      if (toastVisible) {
+        const href = await toast.getAttribute('href');
+        if (href) postedUrl = `https://x.com${href}`;
+      }
+    } catch {}
+
     return {
       success: true,
-      message: `Tweet posted: ${content.slice(0, 50)}${content.length > 50 ? '...' : ''}`
+      message: `Tweet posted: ${content.slice(0, 50)}${content.length > 50 ? '...' : ''}`,
+      data: { postedUrl },
     };
 
   } finally {
