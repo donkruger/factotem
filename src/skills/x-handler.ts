@@ -16,7 +16,11 @@ interface SkillResult {
   data?: unknown;
 }
 
-async function runScript(script: string, args: object, timeoutMs = 120000): Promise<SkillResult> {
+async function runScript(
+  script: string,
+  args: object,
+  timeoutMs = 120000,
+): Promise<SkillResult> {
   const scriptPath = path.join(
     process.cwd(),
     '.claude',
@@ -52,7 +56,10 @@ async function runScript(script: string, args: object, timeoutMs = 120000): Prom
 
     const timer = setTimeout(() => {
       proc.kill('SIGTERM');
-      resolve({ success: false, message: `Script timed out (${timeoutMs / 1000}s)` });
+      resolve({
+        success: false,
+        message: `Script timed out (${timeoutMs / 1000}s)`,
+      });
     }, timeoutMs);
 
     proc.on('close', (code) => {
@@ -182,16 +189,24 @@ export async function handleXIpc(
       break;
 
     case 'x_read_feed':
-      result = await runScript('read-feed', {
-        count: data.count || 10,
-      }, 180000);
+      result = await runScript(
+        'read-feed',
+        {
+          count: data.count || 10,
+        },
+        180000,
+      );
       break;
 
     case 'x_read_notifications':
-      result = await runScript('read-notifications', {
-        count: data.count || 10,
-        filter: data.filter || 'all',
-      }, 180000);
+      result = await runScript(
+        'read-notifications',
+        {
+          count: data.count || 10,
+          filter: data.filter || 'all',
+        },
+        180000,
+      );
       break;
 
     case 'x_dm':
@@ -210,7 +225,11 @@ export async function handleXIpc(
         result = { success: false, message: 'Missing tweetUrl' };
         break;
       }
-      result = await runScript('get-tweet', { tweetUrl: data.tweetUrl }, 180000);
+      result = await runScript(
+        'get-tweet',
+        { tweetUrl: data.tweetUrl },
+        180000,
+      );
       break;
 
     case 'x_search':
@@ -218,11 +237,15 @@ export async function handleXIpc(
         result = { success: false, message: 'Missing query' };
         break;
       }
-      result = await runScript('search', {
-        query: data.query,
-        count: data.count || 10,
-        sort: data.sort || 'latest',
-      }, 180000);
+      result = await runScript(
+        'search',
+        {
+          query: data.query,
+          count: data.count || 10,
+          sort: data.sort || 'latest',
+        },
+        180000,
+      );
       break;
 
     case 'x_read_thread':
@@ -230,7 +253,11 @@ export async function handleXIpc(
         result = { success: false, message: 'Missing tweetUrl' };
         break;
       }
-      result = await runScript('read-thread', { tweetUrl: data.tweetUrl }, 180000);
+      result = await runScript(
+        'read-thread',
+        { tweetUrl: data.tweetUrl },
+        180000,
+      );
       break;
 
     case 'x_read_profile':
@@ -238,10 +265,14 @@ export async function handleXIpc(
         result = { success: false, message: 'Missing username' };
         break;
       }
-      result = await runScript('read-profile', {
-        username: data.username,
-        tweetCount: data.tweetCount || 5,
-      }, 180000);
+      result = await runScript(
+        'read-profile',
+        {
+          username: data.username,
+          tweetCount: data.tweetCount || 5,
+        },
+        180000,
+      );
       break;
 
     case 'x_get_analytics':
@@ -249,7 +280,11 @@ export async function handleXIpc(
         result = { success: false, message: 'Missing tweetUrl' };
         break;
       }
-      result = await runScript('get-analytics', { tweetUrl: data.tweetUrl }, 180000);
+      result = await runScript(
+        'get-analytics',
+        { tweetUrl: data.tweetUrl },
+        180000,
+      );
       break;
 
     case 'x_follow':
