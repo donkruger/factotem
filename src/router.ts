@@ -10,16 +10,26 @@ export function escapeXml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
+export interface GroupContext {
+  name: string;
+  chatJid: string;
+  isMain: boolean;
+}
+
 export function formatMessages(
   messages: NewMessage[],
   timezone: string,
+  groupContext?: GroupContext,
 ): string {
   const lines = messages.map((m) => {
     const displayTime = formatLocalTime(m.timestamp, timezone);
     return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}">${escapeXml(m.content)}</message>`;
   });
 
-  const header = `<context timezone="${escapeXml(timezone)}" />\n`;
+  let header = `<context timezone="${escapeXml(timezone)}" />\n`;
+  if (groupContext) {
+    header += `<group name="${escapeXml(groupContext.name)}" jid="${escapeXml(groupContext.chatJid)}" is_main="${groupContext.isMain}" />\n`;
+  }
 
   return `${header}<messages>\n${lines.join('\n')}\n</messages>`;
 }

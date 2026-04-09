@@ -76,11 +76,18 @@ export function startIpcWatcher(deps: IpcDeps): void {
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               if (data.type === 'message' && data.chatJid && data.text) {
-                // Authorization: verify this group can send to this chatJid
+                // Authorization: verify this group can send to this chatJid.
+                // Main group can cross-message DMs but NOT other registered groups
+                // (prevents agents from accidentally routing responses to wrong groups).
                 const targetGroup = registeredGroups[data.chatJid];
+                const isCrossGroupAttempt =
+                  targetGroup && targetGroup.folder !== sourceGroup;
                 if (
-                  isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
+                  (isMain && !isCrossGroupAttempt) ||
+                  (isMain &&
+                    isCrossGroupAttempt &&
+                    !data.chatJid.endsWith('@g.us')) ||
+                  (!isMain && targetGroup && targetGroup.folder === sourceGroup)
                 ) {
                   await deps.sendMessage(data.chatJid, data.text);
                   logger.info(

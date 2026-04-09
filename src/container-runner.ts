@@ -42,6 +42,7 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  groupName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   script?: string;
 }

@@ -28,6 +28,7 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  groupName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   script?: string;
 }
@@ -416,6 +417,15 @@ async function runQuery(
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
+  // Build group identity context so the agent knows which group it's serving
+  const groupIdentity = [
+    `You are operating in the group "${containerInput.groupName || containerInput.groupFolder}".`,
+    `Group JID: ${containerInput.chatJid}`,
+    containerInput.isMain
+      ? 'This is the main group. You may send cross-group messages using target_jid.'
+      : 'This is NOT the main group. Only respond in this group. Do not target other groups.',
+  ].join('\n');
+
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
@@ -439,9 +449,11 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
-        : undefined,
+      systemPrompt: {
+        type: 'preset' as const,
+        preset: 'claude_code' as const,
+        append: [groupIdentity, globalClaudeMd].filter(Boolean).join('\n\n'),
+      },
       allowedTools: [
         'Bash',
         'Read', 'Write', 'Edit', 'Glob', 'Grep',
@@ -464,6 +476,7 @@ async function runQuery(
           env: {
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+            NANOCLAW_GROUP_NAME: containerInput.groupName || containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },

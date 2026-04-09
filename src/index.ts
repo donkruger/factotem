@@ -250,7 +250,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  const prompt = formatMessages(missedMessages, TIMEZONE, {
+    name: group.name,
+    chatJid,
+    isMain: isMainGroup,
+  });
   const imageAttachments = parseImageReferences(missedMessages);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
@@ -399,6 +403,7 @@ async function runAgent(
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        groupName: group.name,
         ...(imageAttachments.length > 0 && { imageAttachments }),
       },
       (proc, containerName) =>

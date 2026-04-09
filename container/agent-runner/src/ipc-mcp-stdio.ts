@@ -43,14 +43,21 @@ server.tool(
   'send_message',
   `Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times.
 
-From the main group you can send direct messages to any registered chat by specifying target_jid (e.g. "27845553333@s.whatsapp.net" for a WhatsApp DM). Non-main groups can only message their own chat.`,
+From the main group you can send direct messages to individual users by specifying target_jid (e.g. "27845553333@s.whatsapp.net" for a WhatsApp DM). You CANNOT use target_jid to send to other groups — only to DM/individual chats. Non-main groups can only message their own chat.`,
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
-    target_jid: z.string().optional().describe('(Main group only) JID to send the message to. Defaults to the current chat. Use for cross-chat or direct messages.'),
+    target_jid: z.string().optional().describe('(Main group only) JID of a DM/individual chat to send to. Cannot target other groups. Defaults to the current chat.'),
   },
   async (args) => {
-    const targetJid = isMain && args.target_jid ? args.target_jid : chatJid;
+    // Allow cross-chat only for DM JIDs — never redirect to other groups.
+    // Group JIDs end with @g.us (WhatsApp) or are negative numbers (Telegram).
+    const isGroupJid = (jid: string) =>
+      jid.endsWith('@g.us') || /^-\d+$/.test(jid);
+    const targetJid =
+      isMain && args.target_jid && !isGroupJid(args.target_jid)
+        ? args.target_jid
+        : chatJid;
 
     const data: Record<string, string | undefined> = {
       type: 'message',

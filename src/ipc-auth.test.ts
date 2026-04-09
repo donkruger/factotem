@@ -384,7 +384,7 @@ describe('refresh_groups authorization', () => {
 
 // --- IPC message authorization ---
 // Tests the authorization pattern from startIpcWatcher (ipc.ts).
-// The logic: isMain || (targetGroup && targetGroup.folder === sourceGroup)
+// Main group can send to its own chat and to DM JIDs, but NOT to other registered groups.
 
 describe('IPC message authorization', () => {
   // Replicate the exact check from the IPC watcher
@@ -395,15 +395,53 @@ describe('IPC message authorization', () => {
     registeredGroups: Record<string, RegisteredGroup>,
   ): boolean {
     const targetGroup = registeredGroups[targetChatJid];
-    return isMain || (!!targetGroup && targetGroup.folder === sourceGroup);
+    const isCrossGroupAttempt =
+      targetGroup && targetGroup.folder !== sourceGroup;
+    return (
+      (isMain && !isCrossGroupAttempt) ||
+      (isMain && !!isCrossGroupAttempt && !targetChatJid.endsWith('@g.us')) ||
+      (!isMain && !!targetGroup && targetGroup.folder === sourceGroup)
+    );
   }
 
-  it('main group can send to any group', () => {
+  it('main group can send to its own chat', () => {
+    expect(
+      isMessageAuthorized('whatsapp_main', true, 'main@g.us', groups),
+    ).toBe(true);
+  });
+
+  it('main group cannot send to other registered groups', () => {
     expect(
       isMessageAuthorized('whatsapp_main', true, 'other@g.us', groups),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isMessageAuthorized('whatsapp_main', true, 'third@g.us', groups),
+    ).toBe(false);
+  });
+
+  it('main group can send to registered DM JIDs', () => {
+    const groupsWithDm = {
+      ...groups,
+      '27845553333@s.whatsapp.net': {
+        name: 'DM User',
+        folder: 'whatsapp_dm-user',
+        trigger: 'Ben',
+        added_at: '2026-01-01T00:00:00.000Z',
+      },
+    };
+    expect(
+      isMessageAuthorized(
+        'whatsapp_main',
+        true,
+        '27845553333@s.whatsapp.net',
+        groupsWithDm,
+      ),
+    ).toBe(true);
+  });
+
+  it('main group can send to unregistered JID', () => {
+    expect(
+      isMessageAuthorized('whatsapp_main', true, 'unknown@g.us', groups),
     ).toBe(true);
   });
 
@@ -426,13 +464,6 @@ describe('IPC message authorization', () => {
     expect(
       isMessageAuthorized('other-group', false, 'unknown@g.us', groups),
     ).toBe(false);
-  });
-
-  it('main group can send to unregistered JID', () => {
-    // Main is always authorized regardless of target
-    expect(
-      isMessageAuthorized('whatsapp_main', true, 'unknown@g.us', groups),
-    ).toBe(true);
   });
 });
 
