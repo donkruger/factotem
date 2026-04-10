@@ -184,13 +184,15 @@ Message formatting and outbound routing:
 4. enqueueMessageCheck(groupQueue)
    ↓
 5. processGroupMessages()
-   ├── formatMessages(db.getMessagesSince(cursor))  →  XML prompt
+   ├── formatMessages(db.getMessagesSince(cursor), groupContext)
+   │   → XML prompt with <context>, <group name/jid/is_main>, <messages>
    └── runContainerAgent(group, prompt, sessionId)
        ├── buildVolumeMounts() + validateAdditionalMounts()
        ├── buildContainerArgs() + applyOneCLIConfig()
        └── docker run -i --rm ... < stdin
            ↓
 6. Container: Claude Agent SDK processes prompt
+   ├── System prompt includes group identity (name, JID, routing rules)
    ├── Reads CLAUDE.md from /workspace/group/ and /workspace/extra/
    ├── Has access to MCP servers, browser, bash
    └── Writes output between markers to stdout

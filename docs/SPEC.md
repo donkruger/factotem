@@ -564,7 +564,7 @@ NanoClaw has a built-in scheduler that runs tasks as full agents in their group'
 
 1. **Group Context**: Tasks created in a group run with that group's working directory and memory
 2. **Full Agent Capabilities**: Scheduled tasks have access to all tools (WebSearch, file operations, etc.)
-3. **Optional Messaging**: Tasks can send messages to their group using the `send_message` tool, or complete silently
+3. **Optional Messaging**: Tasks can send messages to their group using the `send_message` tool, or complete silently. Cross-group messaging to other `@g.us` groups is blocked — tasks that need to message a specific group should run in that group's context
 4. **Main Channel Privileges**: The main channel can schedule tasks for any group and view all tasks
 
 ### Schedule Types
@@ -633,7 +633,7 @@ The `nanoclaw` MCP server is created dynamically per agent call with the current
 | `pause_task` | Pause a task |
 | `resume_task` | Resume a paused task |
 | `cancel_task` | Delete a task |
-| `send_message` | Send a message to the group via its channel |
+| `send_message` | Send a message to the group via its channel. `target_jid` restricted to DM JIDs only (no cross-group) |
 
 ---
 

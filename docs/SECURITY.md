@@ -58,11 +58,24 @@ Messages and task operations are verified against group identity:
 | Operation | Main Group | Non-Main Group |
 |-----------|------------|----------------|
 | Send message to own chat | ✓ | ✓ |
-| Send message to other chats | ✓ | ✗ |
+| Send message to DM chats | ✓ | ✗ |
+| Send message to other groups | ✗ | ✗ |
 | Schedule task for self | ✓ | ✓ |
 | Schedule task for others | ✓ | ✗ |
 | View all tasks | ✓ | Own only |
 | Manage other groups | ✓ | ✗ |
+
+**Cross-group messaging restriction:** The `send_message` tool's `target_jid` parameter only accepts DM/individual JIDs (e.g. `@s.whatsapp.net`). Group JIDs (`@g.us`, negative Telegram IDs) are rejected at both the MCP tool level (container) and the IPC watcher level (host). This prevents agents from accidentally routing responses to the wrong group when operating across multiple groups.
+
+### 4a. Group Identity Context
+
+Every agent container receives explicit group identity to prevent cross-group confusion:
+
+- **Prompt header**: `<group name="..." jid="..." is_main="..." />` XML element in each message batch
+- **System prompt**: group name, JID, and main/non-main routing instructions appended to the Claude SDK system prompt
+- **MCP environment**: `NANOCLAW_CHAT_JID`, `NANOCLAW_GROUP_FOLDER`, `NANOCLAW_GROUP_NAME`, `NANOCLAW_IS_MAIN`
+
+This ensures agents know which group they are serving even after context compaction or across long-running sessions.
 
 ### 5. Credential Isolation (OneCLI Agent Vault)
 

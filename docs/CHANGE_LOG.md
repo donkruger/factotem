@@ -4,6 +4,27 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ---
 
+## 2026-04-09
+
+### Group identity injection
+- Agent containers now receive explicit group identity in two layers:
+  - **Prompt header**: `<group name="..." jid="..." is_main="..." />` element in every message batch (via `formatMessages` in `src/router.ts`)
+  - **System prompt**: group name, JID, and main/non-main instructions appended to the Claude SDK system prompt (in `container/agent-runner/src/index.ts`)
+- `ContainerInput` now includes `groupName` field, passed from `src/index.ts` and `src/task-scheduler.ts`
+- MCP server receives `NANOCLAW_GROUP_NAME` environment variable
+- Prevents agents from confusing which group they're serving when operating across multiple groups
+
+### Cross-group messaging restriction
+- The `send_message` MCP tool no longer allows `target_jid` to point to group JIDs (`@g.us` or Telegram groups). Cross-messaging is restricted to DM/individual JIDs only (`@s.whatsapp.net`, etc.)
+- Host-side IPC watcher (`src/ipc.ts`) enforces the same restriction as defense-in-depth: main group cannot send to other registered WhatsApp groups
+- DM cross-messaging from the main group remains allowed
+- Root cause: the main group agent was using `send_message(target_jid=...)` to route responses to the wrong group
+
+### GGApps_Socials group registration
+- Registered GGApps_Socials WhatsApp group (`120363424660887339@g.us`) with trigger `@Ben`, folder `whatsapp_ggapps-socials`
+- Migrated 5 HITL X engagement tasks from `whatsapp_main` to `whatsapp_ggapps-socials` so approval requests flow natively in that group
+- Autonomous/overnight X tasks remain on `whatsapp_main` (they post directly to X without HITL messaging)
+
 ## 2026-04-05
 
 ### Voice transcription: local whisper.cpp
