@@ -34,6 +34,16 @@ open -a Docker
 docker info >/dev/null 2>&1 && echo "Docker OK" || echo "Docker not running"
 ```
 
+**Required settings** (in `~/Library/Group Containers/group.com.docker/settings-store.json`):
+
+| Setting | Required Value | Why |
+|---------|---------------|-----|
+| `UseResourceSaver` | `false` | Resource Saver pauses the VM after idle timeout, killing OneCLI containers and leaving the docker CLI hanging indefinitely. NanoClaw needs Docker available 24/7. |
+| `AutoPauseTimeoutSeconds` | `0` | Backup: even if Resource Saver is re-enabled, a zero timeout prevents auto-pause. |
+| `AutoStart` | `true` | Docker must survive reboots without manual intervention. |
+
+If Docker CLI commands hang (no output, no error), the VM is likely paused. Fix: `killall -9 "Docker Desktop" "com.docker.backend" && open -a Docker`.
+
 ### 2. OneCLI Gateway
 
 OneCLI provides credential injection so containers get API keys without ever seeing the raw secrets. It runs as a Docker Compose stack.
@@ -205,6 +215,7 @@ launchctl kickstart -k gui/$(id -u)/com.nanoclaw
 | Problem | Cause | Fix |
 |---------|-------|-----|
 | `FATAL: Container runtime failed to start` | Docker not running | Start Docker Desktop |
+| Docker CLI hangs (no output) | Docker VM paused by Resource Saver | `killall -9 "Docker Desktop" "com.docker.backend" && open -a Docker` — then verify `UseResourceSaver` is `false` in Docker settings |
 | `OneCLI gateway not reachable` | OneCLI compose stack down | `cd ~/.onecli && docker compose up -d` |
 | `Not logged in · Please run /login` | No API key reaching container | Start OneCLI gateway, restart NanoClaw |
 | `spawn npx ENOENT` / exit 127 | launchd PATH missing Homebrew | Use `process.execPath` not bare `npx` |
