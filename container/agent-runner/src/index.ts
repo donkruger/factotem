@@ -143,6 +143,34 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
+/**
+ * Patterns for upstream auth/connectivity failures that the Claude Agent SDK
+ * surfaces as `result.subtype === 'success'` with an error string in the text.
+ * Without this detection, those strings get forwarded verbatim to WhatsApp as
+ * apparent replies. See ben-log/2026-04-21-*.md for the incidents that motivated
+ * this layer. Anchored with `^` so we don't match legitimate content that
+ * happens to mention these phrases.
+ */
+const TRANSIENT_UPSTREAM_ERROR_PATTERNS: RegExp[] = [
+  /^Invalid API key/,
+  /^API Error: Unable to connect to API/,
+  /^API Error: \d{3}\b/,
+  /^Failed to authenticate\./,
+  /^Credit balance is too low/,
+];
+// Per-retry backoff. Length is the max retry count (3 retries = 4 total
+// attempts with the initial). Spans 17s of tolerance, enough to ride out most
+// observed Anthropic-side transient rejections (typically <10s windows) without
+// noticeably delaying genuinely-failing turns. Extend cautiously — each extra
+// entry delays the user-visible failure by that many seconds when upstream is
+// actually down.
+const QUERY_RETRY_DELAYS_MS: readonly number[] = [2000, 5000, 10000];
+
+function isTransientUpstreamError(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return TRANSIENT_UPSTREAM_ERROR_PATTERNS.some(re => re.test(text));
+}
+
 function getSessionSummary(sessionId: string, transcriptPath: string): string | null {
   const projectDir = path.dirname(transcriptPath);
   const indexPath = path.join(projectDir, 'sessions-index.json');
@@ -362,7 +390,13 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
+  retryCount: number = 0,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; model?: string; closedDuringQuery: boolean }> {
+  // retryCount is how many retries have already happened. On the initial call
+  // it's 0; on the first retry 1; etc. We may still suppress+retry as long as
+  // we have an entry left in QUERY_RETRY_DELAYS_MS.
+  const retryAllowed = retryCount < QUERY_RETRY_DELAYS_MS.length;
+  let suppressedRetryableError: string | undefined;
   const stream = new MessageStream();
   stream.push(prompt);
 
@@ -450,6 +484,7 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
+      model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
       systemPrompt: {
         type: 'preset' as const,
         preset: 'claude_code' as const,
@@ -533,6 +568,17 @@ async function runQuery(
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      if (retryAllowed && isTransientUpstreamError(textResult)) {
+        log(`Transient upstream error detected in result text; suppressing WhatsApp reply and scheduling one retry`);
+        suppressedRetryableError = textResult ?? 'unknown';
+        // Explicitly tear down this query so the retry can start promptly:
+        // stop the IPC poller, close the user-turn stream so the SDK iterator
+        // resolves, and break out of the for-await regardless. `continue` here
+        // used to hang the loop because the SDK iterator was still live.
+        ipcPolling = false;
+        stream.end();
+        break;
+      }
       writeOutput({
         status: 'success',
         result: textResult || null,
@@ -544,6 +590,16 @@ async function runQuery(
 
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, model: ${detectedModel || 'unknown'}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
+
+  if (suppressedRetryableError && !closedDuringQuery) {
+    const delayMs = QUERY_RETRY_DELAYS_MS[retryCount];
+    const nextAttempt = retryCount + 1;
+    const totalAttempts = QUERY_RETRY_DELAYS_MS.length + 1;
+    log(`Retrying query (attempt ${nextAttempt + 1}/${totalAttempts}) after ${delayMs}ms backoff; reason: ${suppressedRetryableError.slice(0, 100)}`);
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+    return runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, nextAttempt);
+  }
+
   return { newSessionId, lastAssistantUuid, model: detectedModel, closedDuringQuery };
 }
 

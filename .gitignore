@@ -22,6 +22,9 @@ groups/global/*
 *.keys.json
 .env
 
+# Host-specific auth mode marker (see scripts/set-auth-mode.sh)
+.auth-mode
+
 # Temp files
 .tmp-*
 

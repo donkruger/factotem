@@ -79,6 +79,32 @@ const queue = new GroupQueue();
 
 const onecli = new OneCLI({ url: ONECLI_URL });
 
+/**
+ * Agent-reasoning leakage guardrail.
+ *
+ * The agent is instructed (groups/global/CLAUDE.md) to wrap internal
+ * deliberation in <internal>…</internal> tags, and we strip those before
+ * sending. But when the agent emits the same kind of deliberation without the
+ * tags — e.g. "No response needed — already replied…" or "Already responded to
+ * this screenshot when Don shared it…" — it would otherwise land in the
+ * WhatsApp channel verbatim. These anchored patterns suppress the most common
+ * shapes before the send. Keep them narrow: match only utterances a real reply
+ * would never start with.
+ */
+const INTERNAL_REASONING_LEAK_PATTERNS: RegExp[] = [
+  /^No response needed\b/i,
+  /^Already responded\b/i,
+  /^Side conversation\b/i,
+  /^<internal\b/i,
+  /^\[internal\b/i,
+  /^\(No response\b/i,
+  /^Staying quiet\b/i,
+];
+
+function looksLikeInternalReasoningLeak(text: string): boolean {
+  return INTERNAL_REASONING_LEAK_PATTERNS.some((re) => re.test(text));
+}
+
 function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
   if (group.isMain) return;
   const identifier = group.folder.toLowerCase().replace(/_/g, '-');
@@ -303,8 +329,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
         logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text) {
-          await channel.sendMessage(chatJid, text, { model: result.model });
-          outputSentToUser = true;
+          if (looksLikeInternalReasoningLeak(text)) {
+            logger.warn(
+              { group: group.name, preview: text.slice(0, 160) },
+              'Suppressed agent-reasoning leak (looked like internal deliberation sent without <internal> tags)',
+            );
+          } else {
+            await channel.sendMessage(chatJid, text, { model: result.model });
+            outputSentToUser = true;
+          }
         }
         // Only reset idle timer on actual results, not session-update markers (result: null)
         resetIdleTimer();

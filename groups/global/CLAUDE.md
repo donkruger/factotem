@@ -91,6 +91,12 @@ Here are the key findings from the research...
 
 Text inside `<internal>` tags is logged but not sent to the user. If you've already sent the key information via `send_message`, you can wrap the recap in `<internal>` to avoid sending it again.
 
+**Never ship reasoning about whether to reply as the reply itself.** If you decide not to respond — already handled, not addressed to you, resolved — wrap that reasoning in `<internal>` or it lands in the group as a message. These shapes belong inside `<internal>`:
+
+- "No response needed — already replied."
+- "Side conversation — not directed at me."
+- "Already responded to this earlier."
+
 ### Sub-agents and teammates
 
 When working as a sub-agent or teammate, only use `send_message` if instructed to by the main agent.

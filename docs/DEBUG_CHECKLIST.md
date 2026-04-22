@@ -121,6 +121,42 @@ grep -E 'Starting container|Container active|concurrency limit' logs/nanoclaw.lo
 sqlite3 store/messages.db "SELECT chat_jid, MAX(timestamp) as latest FROM messages GROUP BY chat_jid ORDER BY latest DESC LIMIT 5;"
 ```
 
+## Agent Replies Contain Literal API Error Text
+
+**Symptom:** the WhatsApp reply is an error string instead of an answer — e.g. `API Error: Unable to connect to API (UND_ERR_ABORTED)`, `Invalid API key · Fix external API key`, or `Failed to authenticate. API Error: 401 api.anthropic.com credentials exist in OneCLI but this agent does not have access`. The host log reports these as successful sends (`Message sent jid=... length=NN`) because the agent-runner classifies any SDK output as success regardless of content. Length often looks normal (38–220 chars) and won't stand out in log scans.
+
+As of 2026-04-21, `container/agent-runner/src/index.ts` has a first-line guardrail: if the SDK's result text matches any pattern in `TRANSIENT_UPSTREAM_ERROR_PATTERNS` (anchored with `^` to avoid matching legitimate content), the agent-runner suppresses the reply, sleeps 2s, and retries the query once before returning. The retry runs with `retryAllowed=false` so at most one retry happens per user turn. Container logs show `Transient upstream error detected in result text; suppressing WhatsApp reply and scheduling one retry` and then `Retrying query after transient upstream error: ...` when this fires. If the retry also produces an error string, it passes through to the user unchanged — at which point it's a real incident, not a blip. Patterns are defined in the same file; extend there if a new upstream-error shape shows up in container logs.
+
+**Fingerprint:** usually only non-main groups are affected (Water Watchers, DMs, etc.) while GGA keeps working. Main group uses the OneCLI Default Agent with `secretMode: "all"`; non-main groups use named agents with `secretMode: "selective"`, which are far more sensitive to credential changes (see `OPERATIONS.md` "Per-Group Agent Architecture").
+
+```bash
+# 1. Inspect the running container's first-query output — this is where the real error lives
+docker ps --format '{{.Names}}' | grep '^nanoclaw-' | while read name; do
+  echo "=== $name ==="
+  docker logs --tail 40 "$name" 2>&1 \
+    | grep -E 'Result #|subtype=|Failed to authenticate|Invalid API|credential_not_found|UND_ERR'
+done
+
+# 2. Verify each selective agent is bound to a real secret ID
+onecli secrets list | jq -r '.[] | "\(.id)  \(.name)"'
+for aid in $(onecli agents list | jq -r '.[] | select(.isDefault==false) | .id'); do
+  name=$(onecli agents list | jq -r ".[] | select(.id==\"$aid\") | .identifier")
+  echo "$name ($aid):"
+  onecli agents secrets --id "$aid"
+done
+```
+
+Common first-query error strings and what they mean:
+
+| Container output | Cause |
+|------------------|-------|
+| `credentials exist in OneCLI but this agent does not have access` | Selective agent has no binding for the matching secret — usually left over from a `secrets delete` + `create`. |
+| `Invalid API key · Fix external API key` | Anthropic rejected the credential. Causes: injection forwarded the placeholder (typically `--value-format 'Bearer {value}'` instead of `{value}`, or wrong `--header-name`); the OneCLI-stored value is wrong/revoked (in `api-key` mode: revoked or rotated API key; in `oauth-workaround` mode: stale `sk-ant-oat01-...` snapshot invalidated by a local `claude` CLI refresh). Distinguish using a direct curl to Anthropic vs curl-through-proxy: if direct auth works but the proxy returns `invalid x-api-key`, the stored value is stale — `scripts/set-auth-mode.sh status` runs the probe leg for you. Fix: `onecli secrets update --value <correct>` (or in oauth-workaround mode, `scripts/set-auth-mode.sh oauth-workaround` pulls the current keychain token). |
+| `credential_not_found` | Secret's `hostPattern`/`pathPattern` doesn't match `api.anthropic.com/v1/messages`. Default `pathPattern: null` is a common culprit. |
+| `API Error: Unable to connect to API (UND_ERR_ABORTED)` / `UND_ERR_SOCKET` | Transient upstream error OR (more often) the SDK session cached a prior error state from an earlier failed query in the same persistent container. |
+
+**Fix:** follow the Credential Rotation Runbook in `OPERATIONS.md`. If bindings and injection already look correct — common pattern, where OneCLI was fixed earlier but the persistent container wasn't restarted — jump straight to step 4 (stop non-main containers) and retest.
+
 ## Container Mount Issues
 
 ```bash
