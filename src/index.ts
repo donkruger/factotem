@@ -105,6 +105,65 @@ function looksLikeInternalReasoningLeak(text: string): boolean {
   return INTERNAL_REASONING_LEAK_PATTERNS.some((re) => re.test(text));
 }
 
+// WhatsApp's 'composing' presence auto-expires after ~25–30s if not refreshed.
+// Ping well inside that window so the typing dot stays visible for the full
+// duration of an agent turn. 20s gives ~5–10s of margin against clock skew
+// and network jitter.
+const TYPING_REFRESH_MS = 20_000;
+
+/**
+ * Start a self-refreshing typing indicator for a chat.
+ *
+ * Returns a stop function that clears the refresh timer and sends a single
+ * 'paused' presence. Safe to call the stop function more than once.
+ */
+function startTypingRefresh(
+  channel: Channel,
+  chatJid: string,
+): () => Promise<void> {
+  const ping = (): void => {
+    channel
+      .setTyping?.(chatJid, true)
+      ?.catch((err) => logger.debug({ chatJid, err }, 'Typing refresh failed'));
+  };
+  ping();
+  const timer = setInterval(ping, TYPING_REFRESH_MS);
+  let stopped = false;
+  return async () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    try {
+      await channel.setTyping?.(chatJid, false);
+    } catch {
+      // Ignore — WhatsApp socket may be mid-reconnect. The 'composing'
+      // presence will expire on its own within ~30s.
+    }
+  };
+}
+
+// Per-jid typing controllers so the main turn path and the IPC pipe-in path
+// can coordinate. Streaming containers outlive a single turn, so we can no
+// longer scope typing to runAgent's promise (would keep the bubble up for the
+// full IDLE_TIMEOUT after the last reply — see ben-log 2026-04-23).
+const activeTyping = new Map<string, () => Promise<void>>();
+
+function ensureTypingActive(channel: Channel, chatJid: string): void {
+  if (activeTyping.has(chatJid)) return;
+  activeTyping.set(chatJid, startTypingRefresh(channel, chatJid));
+}
+
+async function stopTypingFor(chatJid: string): Promise<void> {
+  const stop = activeTyping.get(chatJid);
+  if (!stop) return;
+  activeTyping.delete(chatJid);
+  await stop();
+}
+
+function newTurnId(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
+
 function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
   if (group.isMain) return;
   const identifier = group.folder.toLowerCase().replace(/_/g, '-');
@@ -223,7 +282,10 @@ export function getAvailableGroups(): import('./container-runner.js').AvailableG
   const registeredJids = new Set(Object.keys(registeredGroups));
 
   return chats
-    .filter((c) => c.jid !== '__group_sync__' && c.is_group)
+    .filter(
+      (c) =>
+        c.jid !== '__group_sync__' && (c.is_group || registeredJids.has(c.jid)),
+    )
     .map((c) => ({
       jid: c.jid,
       name: c.name,
@@ -290,8 +352,24 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     missedMessages[missedMessages.length - 1].timestamp;
   saveState();
 
+  const turnId = newTurnId();
+  const turnStartMs = Date.now();
+  const lastMsgTsMs = Date.parse(
+    missedMessages[missedMessages.length - 1].timestamp,
+  );
   logger.info(
-    { group: group.name, messageCount: missedMessages.length },
+    {
+      turnId,
+      chatJid,
+      phase: 'msg.picked_up',
+      ms: Number.isFinite(lastMsgTsMs) ? turnStartMs - lastMsgTsMs : null,
+      messageCount: missedMessages.length,
+    },
+    'Latency: messages picked up from DB',
+  );
+
+  logger.info(
+    { group: group.name, messageCount: missedMessages.length, turnId },
     'Processing messages',
   );
 
@@ -309,52 +387,78 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
-  await channel.setTyping?.(chatJid, true);
+  // Typing indicator is scoped to per-turn activity, not container lifetime.
+  // Started here, cleared on each result.status === 'success' (end of turn),
+  // and re-armed on IPC pipe-in from startMessageLoop. Outer finally is a
+  // safety net for errors / container exit.
+  ensureTypingActive(channel, chatJid);
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(
-    group,
-    prompt,
-    chatJid,
-    imageAttachments,
-    async (result) => {
-      // Streaming output callback — called for each agent result
-      if (result.result) {
-        const raw =
-          typeof result.result === 'string'
-            ? result.result
-            : JSON.stringify(result.result);
-        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-        if (text) {
-          if (looksLikeInternalReasoningLeak(text)) {
-            logger.warn(
-              { group: group.name, preview: text.slice(0, 160) },
-              'Suppressed agent-reasoning leak (looked like internal deliberation sent without <internal> tags)',
-            );
-          } else {
-            await channel.sendMessage(chatJid, text, { model: result.model });
-            outputSentToUser = true;
+  let output: 'success' | 'error';
+  try {
+    output = await runAgent(
+      group,
+      prompt,
+      chatJid,
+      imageAttachments,
+      turnId,
+      async (result) => {
+        // Streaming output callback — called for each agent result
+        if (result.result) {
+          const raw =
+            typeof result.result === 'string'
+              ? result.result
+              : JSON.stringify(result.result);
+          // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+          const text = raw
+            .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+            .trim();
+          logger.info(
+            { group: group.name, turnId },
+            `Agent output: ${raw.length} chars`,
+          );
+          if (text) {
+            if (looksLikeInternalReasoningLeak(text)) {
+              logger.warn(
+                { group: group.name, preview: text.slice(0, 160), turnId },
+                'Suppressed agent-reasoning leak (looked like internal deliberation sent without <internal> tags)',
+              );
+            } else {
+              await channel.sendMessage(chatJid, text, { model: result.model });
+              outputSentToUser = true;
+            }
           }
+          // Only reset idle timer on actual results, not session-update markers (result: null)
+          resetIdleTimer();
         }
-        // Only reset idle timer on actual results, not session-update markers (result: null)
-        resetIdleTimer();
-      }
 
-      if (result.status === 'success') {
-        queue.notifyIdle(chatJid);
-      }
+        if (result.status === 'success') {
+          await stopTypingFor(chatJid);
+          queue.notifyIdle(chatJid);
+        }
 
-      if (result.status === 'error') {
-        hadError = true;
-      }
+        if (result.status === 'error') {
+          hadError = true;
+        }
+      },
+    );
+  } finally {
+    await stopTypingFor(chatJid);
+    if (idleTimer) clearTimeout(idleTimer);
+  }
+
+  logger.info(
+    {
+      turnId,
+      chatJid,
+      phase: 'turn.completed',
+      ms: Date.now() - turnStartMs,
+      status: hadError || output === 'error' ? 'error' : 'success',
+      outputSentToUser,
     },
+    'Latency: turn completed',
   );
-
-  await channel.setTyping?.(chatJid, false);
-  if (idleTimer) clearTimeout(idleTimer);
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
@@ -384,6 +488,7 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   imageAttachments: Array<{ relativePath: string; mediaType: string }>,
+  turnId: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
@@ -437,6 +542,7 @@ async function runAgent(
         isMain,
         assistantName: ASSISTANT_NAME,
         groupName: group.name,
+        turnId,
         ...(imageAttachments.length > 0 && { imageAttachments }),
       },
       (proc, containerName) =>
@@ -545,15 +651,23 @@ async function startMessageLoop(): Promise<void> {
               { chatJid, count: messagesToSend.length },
               'Piped messages to active container',
             );
+            const lastTsMs = Date.parse(
+              messagesToSend[messagesToSend.length - 1].timestamp,
+            );
+            logger.info(
+              {
+                chatJid,
+                phase: 'msg.piped_in',
+                ms: Number.isFinite(lastTsMs) ? Date.now() - lastTsMs : null,
+                count: messagesToSend.length,
+              },
+              'Latency: messages piped into warm container',
+            );
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
-            // Show typing indicator while the container processes the piped message
-            channel
-              .setTyping?.(chatJid, true)
-              ?.catch((err) =>
-                logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
-              );
+            // Re-arm typing: the previous turn stopped it at status=success.
+            ensureTypingActive(channel, chatJid);
           } else {
             // No active container — enqueue for a new one
             queue.enqueueMessageCheck(chatJid);

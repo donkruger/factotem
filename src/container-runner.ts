@@ -45,6 +45,11 @@ export interface ContainerInput {
   groupName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   script?: string;
+  // Correlation id for latency logs. Threaded through from the host so log
+  // lines across index.ts, container-runner.ts, and the agent-runner can be
+  // joined for a single turn. Optional to keep non-turn callers (scheduled
+  // tasks) working without change.
+  turnId?: string;
 }
 
 export interface ContainerOutput {
@@ -339,6 +344,17 @@ export async function runContainerAgent(
 
     onProcess(container, containerName);
 
+    logger.info(
+      {
+        turnId: input.turnId,
+        chatJid: input.chatJid,
+        phase: 'container.spawned',
+        ms: Date.now() - startTime,
+        containerName,
+      },
+      'Latency: container spawn returned',
+    );
+
     let stdout = '';
     let stderr = '';
     let stdoutTruncated = false;
@@ -351,6 +367,7 @@ export async function runContainerAgent(
     let parseBuffer = '';
     let newSessionId: string | undefined;
     let outputChain = Promise.resolve();
+    let firstOutputLogged = false;
 
     container.stdout.on('data', (data) => {
       const chunk = data.toString();
@@ -387,6 +404,18 @@ export async function runContainerAgent(
             const parsed: ContainerOutput = JSON.parse(jsonStr);
             if (parsed.newSessionId) {
               newSessionId = parsed.newSessionId;
+            }
+            if (!firstOutputLogged) {
+              firstOutputLogged = true;
+              logger.info(
+                {
+                  turnId: input.turnId,
+                  chatJid: input.chatJid,
+                  phase: 'container.first_output',
+                  ms: Date.now() - startTime,
+                },
+                'Latency: first agent output parsed',
+              );
             }
             hadStreamingOutput = true;
             // Activity detected — reset the hard timeout
@@ -602,7 +631,13 @@ export async function runContainerAgent(
       if (onOutput) {
         outputChain.then(() => {
           logger.info(
-            { group: group.name, duration, newSessionId },
+            {
+              group: group.name,
+              duration,
+              newSessionId,
+              turnId: input.turnId,
+              chatJid: input.chatJid,
+            },
             'Container completed (streaming mode)',
           );
           resolve({
@@ -639,6 +674,8 @@ export async function runContainerAgent(
             duration,
             status: output.status,
             hasResult: !!output.result,
+            turnId: input.turnId,
+            chatJid: input.chatJid,
           },
           'Container completed',
         );

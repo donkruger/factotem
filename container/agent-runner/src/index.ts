@@ -31,6 +31,7 @@ interface ContainerInput {
   groupName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   script?: string;
+  turnId?: string;
 }
 
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
@@ -139,8 +140,15 @@ function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_END_MARKER);
 }
 
+// Prefix every log line with the turn id once it's known, so host-side
+// stderr capture joins cleanly with the host's structured latency logs.
+let currentTurnId: string | undefined;
+
 function log(message: string): void {
-  console.error(`[agent-runner] ${message}`);
+  const prefix = currentTurnId
+    ? `[agent-runner turnId=${currentTurnId}]`
+    : '[agent-runner]';
+  console.error(`${prefix} ${message}`);
 }
 
 /**
@@ -484,6 +492,12 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
+      // SDK >= 0.2.111 auto-detects the platform-native claude binary from
+      // @anthropic-ai/claude-agent-sdk-{platform} optional deps. On node:22-slim
+      // (glibc 2.36, arm64) the detection misfires and selects the musl variant,
+      // whose dynamic loader is absent, producing a "binary not found" error.
+      // Pin to the glibc variant explicitly — the container platform is known.
+      pathToClaudeCodeExecutable: '/app/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude',
       model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
       systemPrompt: {
         type: 'preset' as const,
@@ -658,6 +672,7 @@ async function main(): Promise<void> {
   try {
     const stdinData = await readStdin();
     containerInput = JSON.parse(stdinData);
+    currentTurnId = containerInput.turnId;
     try { fs.unlinkSync('/tmp/input.json'); } catch { /* may not exist */ }
     log(`Received input for group: ${containerInput.groupFolder}`);
   } catch (err) {
