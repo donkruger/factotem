@@ -22,7 +22,9 @@ groups/global/*
 *.keys.json
 .env
 
-# Host-specific auth mode marker (see scripts/set-auth-mode.sh)
+# Historical: the auth-mode marker used to live here until 2026-04-24, when it
+# moved to ~/.config/nanoclaw/auth-mode (launchd watcher TCC issue — see
+# docs/OPERATIONS.md § Auth Mode). Kept gitignored in case a stale file appears.
 .auth-mode
 
 # Temp files

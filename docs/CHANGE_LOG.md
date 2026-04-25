@@ -4,6 +4,17 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ---
 
+## 2026-04-24
+
+### OAuth watcher made reliable under launchd; marker moved out of Documents/
+- Root cause: the 2026-04-21 `com.nanoclaw.oauth-refresh` watcher read its mode marker from `nanoclaw/.auth-mode`. On macOS, launchd-spawned processes cannot read paths under `~/Documents/` without an explicit TCC grant (`Full Disk Access`). Every watcher tick since install returned `Operation not permitted` on the `head` call, fell through the empty-mode branch, and exited 0 — `runs` counter and `last exit code` both green, silent no-op. Took Ben down for ~2 h the first time the project was actually in `oauth-workaround` mode. Evidence and reproduction in `ben-log/2026-04-24-oauth-watcher-cannot-read-keychain-under-launchd.md`.
+- Moved the marker to `~/.config/nanoclaw/auth-mode` (same dir as the existing `mount-allowlist.json`). This location is outside TCC-protected roots and readable from launchd context. Updated readers (`scripts/set-auth-mode.sh`, `/Users/support/.local/bin/nanoclaw-oauth-refresh.sh`), `CLAUDE.md`, `docs/OPERATIONS.md`, and removed the stale `.auth-mode` gitignore entry.
+- Rewrote `nanoclaw-oauth-refresh.sh` with **visible observability**: each tick emits a single status line (`ok | rotated | disarmed | probe-skipped | warn`) to stdout (captured by the plist's `StandardOutPath`) and overwrites `/tmp/nanoclaw-oauth-refresh.health`. `scripts/set-auth-mode.sh status` now reads the health file and reports tick age. The prior revision logged via `/usr/bin/logger` to syslog, which was silently discarded by the unified log — a design decision that hid the outage entirely.
+- Probe match loosened from `authentication_error` + `invalid x-api-key` (two literal-string ANDs) to just `authentication_error`. Catches a broader set of server-side rejections (e.g. rotated token revocations that return `Invalid bearer token` instead) without losing precision — the only `authentication_error` path through the OneCLI proxy is a credential problem.
+- No API changes. `scripts/set-auth-mode.sh {status|api-key|oauth-workaround}` unchanged; backup of the old watcher kept at `/Users/support/.local/bin/nanoclaw-oauth-refresh.sh.bak-2026-04-24` for rollback.
+
+---
+
 ## 2026-04-21
 
 ### Auth-mode toggle (`scripts/set-auth-mode.sh`)

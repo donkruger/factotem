@@ -443,7 +443,7 @@ cd ~/.onecli && docker compose down && docker compose up -d
 
 ### Auth Mode
 
-NanoClaw has two supported auth modes, tracked by a single marker file at `nanoclaw/.auth-mode`. As of 2026-04-21 the project runs in `api-key` mode (stable Anthropic API key in OneCLI, OAuth watcher disabled). `oauth-workaround` is retained as a reversible fallback.
+NanoClaw has two supported auth modes, tracked by a single marker file at `~/.config/nanoclaw/auth-mode` (outside Documents/ — the launchd-spawned watcher cannot traverse TCC-protected folders; see the 2026-04-24 lesson below). `api-key` is the stable long-term state; `oauth-workaround` is retained as a reversible fallback.
 
 | Mode | When to use | What's active |
 |------|-------------|---------------|
@@ -499,7 +499,7 @@ Anthropic accepts subscription OAuth tokens (`sk-ant-oat01-...`) via `x-api-key`
 
 #### Applicable only in oauth-workaround mode
 
-The rest of this subsection covers the rotating-OAuth-token workaround. It is **only relevant when `nanoclaw/.auth-mode` is `oauth-workaround`**. In `api-key` mode the caveats and watcher below do not apply and should not be reintroduced — see the "Auth Mode" section above for the toggle.
+The rest of this subsection covers the rotating-OAuth-token workaround. It is **only relevant when `~/.config/nanoclaw/auth-mode` is `oauth-workaround`**. In `api-key` mode the caveats and watcher below do not apply and should not be reintroduced — see the "Auth Mode" section above for the toggle.
 
 **Caveat for OAuth tokens:** subscription OAuth tokens rotate silently whenever the local Claude Code CLI refreshes them. The CLI revokes the previous access token on refresh, so every active `claude` session on the same host will invalidate the OneCLI-stored snapshot well before its `expiresAt` — the channel will start replying with literal `Invalid API key · Fix external API key` mid-day with no other state change. If Ben is a long-running service on a host where the CLI is also used interactively, prefer a real API key (`sk-ant-api...`) in OneCLI; OAuth requires manual re-rotation every time the CLI refreshes.
 
@@ -515,15 +515,19 @@ onecli secrets update --id <anthropic-secret-id> --value "$TOKEN"
 A launchd agent `com.nanoclaw.oauth-refresh` runs every 60 seconds and rotates the OneCLI Anthropic secret under two conditions:
 
 1. **Keychain diff** — the current OAuth token from the macOS keychain differs from the last-pushed value (in `/tmp/nanoclaw-oauth-last-pushed`). Catches local refreshes by the Claude Code CLI.
-2. **Active auth probe** — if the keychain hasn't changed, the watcher sends a tiny curl-through-proxy request (1 token max) to Anthropic and checks for `authentication_error` + `invalid x-api-key`. Catches server-side rejections where the locally-stored token is identical but Anthropic has invalidated it.
+2. **Active auth probe** — if the keychain hasn't changed, the watcher sends a tiny curl-through-proxy request (1 token max) to Anthropic and checks for `authentication_error`. Catches server-side rejections where the locally-stored token is identical but Anthropic has invalidated it.
 
 On either trigger, the watcher calls `onecli secrets update` and stops all `nanoclaw-*` containers so they respawn with working credentials. This is a **workaround** for the rotation problem above; remove it once the Anthropic secret is switched to a non-rotating API key (`sk-ant-api...`) or OneCLI learns to resolve from the keychain at injection time.
 
-Files:
-- Script: `/Users/support/.local/bin/nanoclaw-oauth-refresh.sh` (with symlink at `nanoclaw/scripts/nanoclaw-oauth-refresh.sh` — the real file lives outside `~/Documents` because launchd cannot traverse TCC-protected folders).
+**Observability (since 2026-04-24):** every run emits one status line to stdout (captured by the plist's `StandardOutPath`) and writes it to `/tmp/nanoclaw-oauth-refresh.health`. Status keywords: `ok` (healthy tick, nothing to do), `rotated` (pushed new token), `disarmed` (mode != oauth-workaround), `probe-skipped` (no CA cert or agent token yet), `warn` (non-fatal error with detail). `scripts/set-auth-mode.sh status` reads the health file and shows tick age. The earlier revision (pre-2026-04-24) logged via `/usr/bin/logger` and was silently swallowed by the unified log, hiding a ~2 h Ben outage when the watcher TCC-failed and looked healthy on every external metric.
+
+**Files:**
+- Script: `/Users/support/.local/bin/nanoclaw-oauth-refresh.sh`. Must live outside `~/Documents` because launchd-spawned processes cannot traverse TCC-protected folders (`Operation not permitted` on `open()`).
 - launchd plist: `~/Library/LaunchAgents/com.nanoclaw.oauth-refresh.plist`.
+- Mode marker (read by watcher): `~/.config/nanoclaw/auth-mode`. Also outside Documents/ for the same TCC reason — this moved on 2026-04-24 after the watcher was discovered to have been silently failing since its 2026-04-21 install.
 - Cache: `/tmp/nanoclaw-oauth-last-pushed` (holds the last-pushed token so polls are no-ops when nothing has rotated).
-- Logs: `nanoclaw/logs/oauth-refresh.log` and `oauth-refresh.error.log`.
+- Health file: `/tmp/nanoclaw-oauth-refresh.health` (most-recent status line, mtime = last tick).
+- Logs: `nanoclaw/logs/oauth-refresh.log` (append of every status line) and `oauth-refresh.error.log` (should be empty — any content is an unhandled zsh error, investigate).
 
 Preferred inspect/disable path is `scripts/set-auth-mode.sh status` / `scripts/set-auth-mode.sh api-key --value ...`. The raw launchctl commands below are a fallback for direct control:
 
@@ -532,8 +536,7 @@ launchctl list | grep oauth-refresh                                 # PID/exit s
 launchctl kickstart -k gui/$(id -u)/com.nanoclaw.oauth-refresh      # force immediate run
 launchctl bootout gui/$(id -u)/com.nanoclaw.oauth-refresh           # stop
 rm ~/Library/LaunchAgents/com.nanoclaw.oauth-refresh.plist \
-   /Users/support/.local/bin/nanoclaw-oauth-refresh.sh \
-   ~/Documents/NanoClaw/nanoclaw/scripts/nanoclaw-oauth-refresh.sh  # fully remove
+   /Users/support/.local/bin/nanoclaw-oauth-refresh.sh                # fully remove
 ```
 
 Worst-case window: ~60s between rotation and auto-recovery. A single message sent in that window will still surface the `Invalid API key` error string; the next message after the watcher fires will succeed.

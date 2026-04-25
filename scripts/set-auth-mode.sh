@@ -28,7 +28,11 @@ WATCHER_CACHE="/tmp/nanoclaw-oauth-last-pushed"
 
 SCRIPT_DIR="$(cd "$(dirname "${(%):-%x}")" && pwd)"
 NANOCLAW_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-MARKER_FILE="$NANOCLAW_DIR/.auth-mode"
+# Marker must live outside Documents/ so the launchd-spawned oauth watcher can
+# read it — TCC blocks launchd reads of Documents/ on macOS. Same dir as the
+# existing mount-allowlist.json NanoClaw config.
+MARKER_DIR="$HOME/.config/nanoclaw"
+MARKER_FILE="$MARKER_DIR/auth-mode"
 
 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin"
 
@@ -39,6 +43,7 @@ read_mode() {
 }
 
 write_mode() {
+  mkdir -p "$MARKER_DIR"
   printf '%s\n' "$1" > "$MARKER_FILE"
 }
 
@@ -118,6 +123,14 @@ cmd_status() {
   echo "  marker file: $MARKER_FILE"
   echo "  mode: $(read_mode)"
   watcher_status
+  local health="/tmp/nanoclaw-oauth-refresh.health"
+  if [[ -f "$health" ]]; then
+    local age
+    age=$(( $(date +%s) - $(stat -f %m "$health") ))
+    echo "  watcher last tick: ${age}s ago — $(cat "$health")"
+  else
+    echo "  watcher last tick: no health file (watcher has not run yet, or not in oauth-workaround mode)"
+  fi
   probe_auth
 }
 
@@ -135,8 +148,8 @@ cmd_api_key() {
   unload_watcher
   if [[ -n "$new_value" ]]; then
     push_secret "$new_value"
-    rm -f "$WATCHER_CACHE"
-    echo "  watcher cache cleared"
+    rm -f "$WATCHER_CACHE" /tmp/nanoclaw-oauth-refresh.health
+    echo "  watcher cache + health file cleared"
   else
     echo "  NOTE: no --value supplied; OneCLI still holds the previous credential"
   fi

@@ -34,7 +34,7 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 
 API keys, secret keys, OAuth tokens, and auth credentials are managed by the OneCLI gateway — which handles secret injection into containers at request time, so no keys or tokens are ever passed to containers directly. Run `onecli --help`.
 
-**Auth mode:** the Anthropic credential in OneCLI can be a stable API key (`sk-ant-api...`) or a rotating subscription OAuth token (`sk-ant-oat01-...`). Current mode is recorded in `nanoclaw/.auth-mode` (gitignored); switch with `scripts/set-auth-mode.sh {status|api-key --value ...|oauth-workaround}`. OAuth mode additionally runs a launchd watcher (`com.nanoclaw.oauth-refresh`) that re-syncs OneCLI from the keychain on each rotation. See `docs/OPERATIONS.md` § Auth Mode.
+**Auth mode:** the Anthropic credential in OneCLI can be a stable API key (`sk-ant-api...`) or a rotating subscription OAuth token (`sk-ant-oat01-...`). Current mode is recorded in `~/.config/nanoclaw/auth-mode` (outside Documents/ so the launchd-spawned oauth watcher can read it past macOS TCC); switch with `scripts/set-auth-mode.sh {status|api-key --value ...|oauth-workaround}`. OAuth mode additionally runs a launchd watcher (`com.nanoclaw.oauth-refresh`) that re-syncs OneCLI from the keychain on each rotation and writes its last tick to `/tmp/nanoclaw-oauth-refresh.health` (also surfaced in `set-auth-mode.sh status`). See `docs/OPERATIONS.md` § Auth Mode.
 
 ## Skills
 
