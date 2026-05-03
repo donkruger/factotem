@@ -243,17 +243,33 @@ Each `RegisteredGroup` has an optional `agentProfile` field on its `containerCon
 
 See `OPERATIONS.md` § "Open DM Mode" for the operator runbook on enabling, disabling, and monitoring `open_dm`.
 
+### `ContainerConfig` field reference
+
+Per-group settings live in the `container_config` JSON column on `registered_groups` and deserialise into `ContainerConfig` (see `nanoclaw/src/types.ts` for the canonical definition). All fields are optional. Operators set them via SQLite `UPDATE` + restart (`launchctl kickstart -k`).
+
+| Field | Type | Purpose | Notes |
+|---|---|---|---|
+| `additionalMounts` | `AdditionalMount[]` | Extra host paths to mount into the container | Validated against `~/.config/nanoclaw/mount-allowlist.json`. For `agentProfile === 'open_dm'`, host-side filter strips entries whose `containerPath` is in `{'brain', 'global'}`. |
+| `timeout` | `number` (ms) | Override the container's hard timeout | Default 30 min via `CONTAINER_TIMEOUT`. Real timeout is `max(this, IDLE_TIMEOUT + 30s)`. |
+| `agentProfile` | `'main' \| 'standard' \| 'open_dm'` | Selects the trust profile | See "Agent Profiles" section above. `'main'` derived from `is_main = 1`; `'open_dm'` set by `evaluateOpenMode` on auto-onboarding; otherwise unset (= `'standard'`). |
+| `model` | `string` | Per-group SDK model override | Phase 0 of T-1777809840000. Resolution: this → `process.env.ANTHROPIC_MODEL` → `'claude-sonnet-4-6'` hardcoded. See `OPERATIONS.md` § "Per-Group Model Override". |
+| `openMode` | `OpenModeConfig` | Deployment-policy: enable open_dm auto-onboarding | Lives **only** on the main group (`is_main = 1`); ignored elsewhere. Fields: `enabled`, `agentProfile`, `rateLimit`, `dailyBudgetCents` (required when enabled), `estCostCentsPerInvocation`. See `OPERATIONS.md` § "Open DM Mode". |
+
+**Adding a new field:** the `container_config` JSON column accepts arbitrary keys with no schema migration. Define the field in `ContainerConfig` (`src/types.ts`), thread it through `ContainerInput` in `src/container-runner.ts` if the agent-runner needs to see it, and update this table. Three of the five existing fields landed today via this pattern (`agentProfile`, `openMode`, `model`).
+
 ---
 
 ## Memory System
 
 
-| Scope            | Location                            | Access                           |
-| ---------------- | ----------------------------------- | -------------------------------- |
-| Per-group memory | `groups/{name}/CLAUDE.md`           | Read-write by group's container  |
-| Global memory    | `groups/global/CLAUDE.md`           | Read-only for non-main groups    |
-| Agent SDK memory | `data/sessions/{group}/.claude/`    | Auto-managed by Claude Agent SDK |
-| External mounts  | `data/ipc/{group}/` validated paths | Per allowlist rules              |
+| Scope            | Location                            | Access                                                            |
+| ---------------- | ----------------------------------- | ----------------------------------------------------------------- |
+| Per-group memory | `groups/{name}/CLAUDE.md`           | Read-write by group's container; **not seeded for `open_dm`**     |
+| Global memory    | `groups/global/CLAUDE.md`           | Read-only for non-main groups; **mount skipped for `open_dm`**    |
+| Agent SDK memory | `data/sessions/{group}/.claude/`    | Auto-managed by Claude Agent SDK                                  |
+| External mounts  | `data/ipc/{group}/` validated paths | Per allowlist rules; **`brain`/`global` containerPaths stripped for `open_dm` host-side** |
+
+**`open_dm` exclusions** are enforced at three points: `registerGroup` skips the CLAUDE.md template seed, `buildVolumeMounts` skips the `/workspace/global` mount, and the `additionalMounts` post-filter strips `brain`/`global` containerPaths. The `Read` tool is in the open_dm allow-list so the agent can read its own group folder, but everything operator-curated is absent from the filesystem entirely — not merely tool-gated.
 
 
 ---
