@@ -6,6 +6,17 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-03
 
+### Global flip to Haiku (config-only) — "no Sonnet, no Opus"
+
+Don directed all scenarios to default to Haiku to maximise cost certainty during the T-1777809840000 convention-spike runway. Pure config change, no code:
+
+- `ANTHROPIC_MODEL` in `~/Library/LaunchAgents/com.nanoclaw.plist` flipped from `claude-sonnet-4-6` → `claude-haiku-4-5-20251001` via `plutil -replace`.
+- All per-group `containerConfig.model` overrides cleared via `UPDATE registered_groups SET container_config = json_remove(container_config, '$.model')`. GGA's Opus override and GGApps_Socials's redundant Haiku override are both gone.
+- `evaluateOpenMode`'s hardcoded `model: 'claude-haiku-4-5-20251001'` default for new auto-registered open_dm groups **kept** as defense-in-depth — open_dm stays on Haiku even if `ANTHROPIC_MODEL` is later changed back.
+- `launchctl bootout` + `launchctl bootstrap` to reload plist env (kickstart alone doesn't re-read), then `docker stop` running nanoclaw containers so they respawn with the new env.
+
+Reversal: edit plist, `bootout`/`bootstrap`. Per-group overrides can be re-set via SQLite if specific groups need Sonnet/Opus back.
+
 ### Per-group model override (Phase 0 of T-1777809840000) — stop the Sonnet bleed
 
 Cost-unblock: Don's Sonnet spend was the trigger for the Agent Configuration Convention spike (T-1777809840000), but the convention itself is 2-3 weeks of design work. This change lands the minimal mechanism *now* so cost-sensitive groups can swap models today, without prejudging the convention's profile schema.

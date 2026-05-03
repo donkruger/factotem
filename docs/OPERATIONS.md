@@ -616,18 +616,32 @@ launchctl kickstart -k gui/$(id -u)/com.nanoclaw
 
 In-memory `registeredGroups` is loaded once at startup, so a restart is required to pick up the change.
 
-### Current assignments (2026-05-03)
+### Current assignments (2026-05-03 — global Haiku)
 
-| Group | Profile | Model | Rationale |
+Don directed "default all scenarios to Haiku, no Sonnet, no Opus" to maximise cost certainty during the convention-spike runway. Implementation:
+
+- **Plist global:** `ANTHROPIC_MODEL=claude-haiku-4-5-20251001` (was `claude-sonnet-4-6`).
+- **All per-group `containerConfig.model` overrides cleared.** Every group resolves to the plist global via the fallback chain.
+- **`evaluateOpenMode`'s hardcoded `model: 'claude-haiku-4-5-20251001'` default for new open_dm groups is retained** as defense-in-depth — open_dm sessions stay on Haiku even if `ANTHROPIC_MODEL` is later changed.
+
+| Group | Profile | Model | Source |
 |---|---|---|---|
-| `whatsapp_main` (GGA) | unset (`main` via `is_main=1`) | `claude-opus-4-7` | Dev-facing main, multi-step reasoning |
-| `whatsapp_ggapps-socials` | unset | `claude-haiku-4-5-20251001` | X engagement tasks, pattern execution |
-| `whatsapp_example` (Water Watch) | unset | inherits Sonnet | Customer-facing, procedural |
-| `whatsapp_don-kruger-dm` | unset | inherits Sonnet | Operator DM |
-| `whatsapp_richard-nel-dm` | unset | inherits Sonnet | Operator DM |
-| `whatsapp_open-dm-*` | `open_dm` | `claude-haiku-4-5-20251001` | Stranger sessions, narrowed tools, cheap |
+| `whatsapp_main` (GGA) | unset (`main` via `is_main=1`) | `claude-haiku-4-5-20251001` | inherits plist global |
+| `whatsapp_ggapps-socials` | unset | `claude-haiku-4-5-20251001` | inherits plist global |
+| `whatsapp_example` (Water Watch) | unset | `claude-haiku-4-5-20251001` | inherits plist global |
+| `whatsapp_don-kruger-dm` | unset | `claude-haiku-4-5-20251001` | inherits plist global |
+| `whatsapp_richard-nel-dm` | unset | `claude-haiku-4-5-20251001` | inherits plist global |
+| `whatsapp_open-dm-*` | `open_dm` | `claude-haiku-4-5-20251001` | per-group override (defense-in-depth) |
 
-`evaluateOpenMode` defaults new auto-registered open_dm groups to Haiku at registration time, so future strangers automatically get the cheap profile.
+To put a single group back on Opus or Sonnet, set the per-group override and restart:
+
+```bash
+sqlite3 store/messages.db \
+  "UPDATE registered_groups SET container_config = json_set(COALESCE(container_config, '{}'), '\$.model', 'claude-opus-4-7') WHERE folder='whatsapp_main';"
+launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+```
+
+To flip the entire fleet back to Sonnet/Opus, edit `~/Library/LaunchAgents/com.nanoclaw.plist` and reload via `launchctl bootout` + `launchctl bootstrap` (kickstart alone does not re-read plist env vars; see "Agent Model" section).
 
 ### Inspecting current models
 
