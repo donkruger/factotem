@@ -33,6 +33,12 @@ interface ContainerInput {
   script?: string;
   turnId?: string;
   agentProfile?: 'main' | 'standard' | 'open_dm';
+  // Per-group model override (Phase 0 of T-1777809840000).
+  // Resolution order at the SDK call site below:
+  //   containerInput.model (per-group) →
+  //   process.env.ANTHROPIC_MODEL (host plist global) →
+  //   'claude-sonnet-4-6' (hardcoded fallback)
+  model?: string;
 }
 
 // R1: tool/permission profile for unsolicited DM senders.
@@ -539,7 +545,7 @@ async function runQuery(
       // whose dynamic loader is absent, producing a "binary not found" error.
       // Pin to the glibc variant explicitly — the container platform is known.
       pathToClaudeCodeExecutable: '/app/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude',
-      model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
+      model: containerInput.model || process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
       systemPrompt: {
         type: 'preset' as const,
         preset: 'claude_code' as const,

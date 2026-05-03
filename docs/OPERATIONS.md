@@ -593,6 +593,57 @@ No NanoClaw host restart is needed — the container-runner spawns a fresh conta
 
 ---
 
+## Per-Group Model Override
+
+Phase 0 of T-1777809840000 (Agent Configuration Convention spike). Per-group model selection lives in `containerConfig.model` on `registered_groups`. Resolution order in the agent-runner:
+
+```
+containerInput.model (per-group)
+  → process.env.ANTHROPIC_MODEL (host plist global)
+  → 'claude-sonnet-4-6' (hardcoded fallback)
+```
+
+Scheduled tasks inherit the host group's model (no per-task override yet — Option C of T-1777030260003 deferred to follow-up under T-1777809840000).
+
+### Setting a model
+
+```bash
+sqlite3 /Users/support/Documents/NanoClaw/nanoclaw/store/messages.db \
+  "UPDATE registered_groups SET container_config = json_set(COALESCE(container_config, '{}'), '\$.model', 'claude-opus-4-7') WHERE folder='whatsapp_main';"
+
+launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+```
+
+In-memory `registeredGroups` is loaded once at startup, so a restart is required to pick up the change.
+
+### Current assignments (2026-05-03)
+
+| Group | Profile | Model | Rationale |
+|---|---|---|---|
+| `whatsapp_main` (GGA) | unset (`main` via `is_main=1`) | `claude-opus-4-7` | Dev-facing main, multi-step reasoning |
+| `whatsapp_ggapps-socials` | unset | `claude-haiku-4-5-20251001` | X engagement tasks, pattern execution |
+| `whatsapp_example` (Water Watch) | unset | inherits Sonnet | Customer-facing, procedural |
+| `whatsapp_don-kruger-dm` | unset | inherits Sonnet | Operator DM |
+| `whatsapp_richard-nel-dm` | unset | inherits Sonnet | Operator DM |
+| `whatsapp_open-dm-*` | `open_dm` | `claude-haiku-4-5-20251001` | Stranger sessions, narrowed tools, cheap |
+
+`evaluateOpenMode` defaults new auto-registered open_dm groups to Haiku at registration time, so future strangers automatically get the cheap profile.
+
+### Inspecting current models
+
+```bash
+sqlite3 /Users/support/Documents/NanoClaw/nanoclaw/store/messages.db \
+  "SELECT folder, json_extract(container_config, '\$.model') AS model, json_extract(container_config, '\$.agentProfile') AS profile FROM registered_groups ORDER BY is_main DESC, folder;"
+```
+
+### Open questions / known limits
+
+- **No task-level override.** Scheduled tasks inherit their group's model. If GGA is on Opus, an X-engagement task scheduled in GGA also runs on Opus. Workaround for now: schedule low-cognitive-load tasks in `whatsapp_ggapps-socials` (Haiku) instead of GGA.
+- **No subscription-auth interaction check.** If `auth-mode` is `oauth-workaround` and the configured model isn't covered by the subscription quota, the agent-runner will get an upstream error and trip the transient-retry loop. T-1777809840000 will resolve this with explicit policy-level mismatch errors.
+- **Phase 0 only — will migrate to profile-shaped resolution under T-1777809840000.** `containerConfig.model` is the placement of convenience for v1; the convention spike will move it into `profile.model` and reference it via the profile pointer.
+
+---
+
 ## Open DM Mode
 
 Opt-in mode that lets WhatsApp DMs from previously-unknown senders auto-onboard into a narrowed `open_dm` agent profile. Disabled by default. Spike: `T-1746026520000` in Brain. Architecture: `ARCHITECTURE.md` § "Agent Profiles".

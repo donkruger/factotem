@@ -571,6 +571,9 @@ async function runAgent(
         groupName: group.name,
         turnId,
         agentProfile,
+        // Per-group model override (Phase 0 of T-1777809840000). When unset,
+        // agent-runner falls back to ANTHROPIC_MODEL env var, then to Sonnet.
+        model: group.containerConfig?.model,
         ...(imageAttachments.length > 0 && { imageAttachments }),
       },
       (proc, containerName) =>

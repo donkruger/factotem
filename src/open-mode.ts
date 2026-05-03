@@ -11,10 +11,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { STORE_DIR } from './config.js';
-import {
-  getOpenSpendForDate,
-  recordOpenSpend,
-} from './db.js';
+import { getOpenSpendForDate, recordOpenSpend } from './db.js';
 import { logger } from './logger.js';
 import { OpenModeConfig, RegisteredGroup } from './types.js';
 
@@ -164,6 +161,10 @@ export function evaluateOpenMode(
     isMain: false,
     containerConfig: {
       agentProfile: 'open_dm',
+      // Default open_dm sessions to Haiku — cheap pattern execution, fits
+      // the narrowed-tool stranger-facing profile. Operator can override
+      // per-group later. Phase 0 of T-1777809840000.
+      model: 'claude-haiku-4-5-20251001',
       // No additionalMounts — Brain stays absent. Even if added later,
       // container-runner's host-side filter strips brain/global for open_dm.
     },
@@ -189,6 +190,7 @@ export function isOverBudget(openMode: OpenModeConfig): boolean {
  * spawns are accounted for promptly.
  */
 export function recordSpawnSpend(openMode: OpenModeConfig): void {
-  const cents = openMode.estCostCentsPerInvocation ?? DEFAULT_EST_COST_CENTS_PER_INVOCATION;
+  const cents =
+    openMode.estCostCentsPerInvocation ?? DEFAULT_EST_COST_CENTS_PER_INVOCATION;
   recordOpenSpend(todayUtcDate(), cents);
 }

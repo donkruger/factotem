@@ -52,6 +52,11 @@ export interface ContainerConfig {
   // Lives on a host group (typically main). When enabled, unregistered DM JIDs
   // hitting the channel can be auto-registered as 'open_dm' groups.
   openMode?: OpenModeConfig;
+  // Per-group model override. Resolution order in the agent-runner:
+  // containerConfig.model → process.env.ANTHROPIC_MODEL → 'claude-sonnet-4-6'.
+  // Phase 0 of T-1777809840000 — will migrate into a profile.model field
+  // once the configuration convention spike lands.
+  model?: string;
 }
 
 export interface RegisteredGroup {

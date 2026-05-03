@@ -54,6 +54,9 @@ export interface ContainerInput {
   // 'open_dm' restricts allowedTools, sets permissionMode='default', and
   // disables allowDangerouslySkipPermissions for unsolicited DM senders.
   agentProfile?: 'main' | 'standard' | 'open_dm';
+  // Per-group model override. Falls back to ANTHROPIC_MODEL env var, then
+  // to claude-sonnet-4-6 in the agent-runner. Phase 0 of T-1777809840000.
+  model?: string;
 }
 
 export interface ContainerOutput {

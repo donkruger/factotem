@@ -6,6 +6,39 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-03
 
+### Per-group model override (Phase 0 of T-1777809840000) — stop the Sonnet bleed
+
+Cost-unblock: Don's Sonnet spend was the trigger for the Agent Configuration Convention spike (T-1777809840000), but the convention itself is 2-3 weeks of design work. This change lands the minimal mechanism *now* so cost-sensitive groups can swap models today, without prejudging the convention's profile schema.
+
+**Code change.** New `model?: string` field on `ContainerConfig` (`src/types.ts`), threaded through `ContainerInput` in both `src/container-runner.ts` and `container/agent-runner/src/index.ts`, surfaced at the SDK call site (`container/agent-runner/src/index.ts:501`). Resolution order:
+
+```
+containerInput.model (per-group)
+  → process.env.ANTHROPIC_MODEL (host plist global)
+  → 'claude-sonnet-4-6' (hardcoded fallback)
+```
+
+`runAgent` in `src/index.ts` and `runScheduledTask` in `src/task-scheduler.ts` both pass `group.containerConfig?.model`. Scheduled tasks inherit the host group's model — task-level override (Option C from T-1777030260003) deferred to a follow-up under T-1777809840000.
+
+**`evaluateOpenMode` defaults new open_dm groups to Haiku** at auto-registration time (`src/open-mode.ts`), so future strangers automatically get the cheap profile without operator intervention.
+
+**Per-group assignments configured (Mark's recommendation 2026-04-24):**
+
+| Group | Model | Why |
+|---|---|---|
+| `whatsapp_main` (GGA) | `claude-opus-4-7` | Dev-facing, multi-step reasoning |
+| `whatsapp_ggapps-socials` | `claude-haiku-4-5-20251001` | X tasks, pattern execution |
+| `whatsapp_open-dm-*` (3 existing + future) | `claude-haiku-4-5-20251001` | Stranger sessions, narrowed tools |
+| `whatsapp_example` (Water Watch), `whatsapp_don-kruger-dm`, `whatsapp_richard-nel-dm` | inherits `claude-sonnet-4-6` from `ANTHROPIC_MODEL` env | Customer-facing + operator DMs |
+
+**Configuration via SQLite + restart** (no DB schema migration — `container_config` JSON already accepts arbitrary keys; same pattern as `agentProfile` and `openMode` from the open_dm spike). Operator runbook: `OPERATIONS.md` § "Per-Group Model Override".
+
+**Phase relationship:** This is Phase 0 of T-1777809840000. Phase 1 (the convention spike) will migrate `containerConfig.model` into a profile-shaped schema (`profile.model`), with groups referencing profiles by name. The migration is mechanical — no behavioural change for the operator.
+
+**Files changed.** Modified: `src/types.ts`, `src/container-runner.ts`, `src/index.ts`, `src/task-scheduler.ts`, `src/open-mode.ts`, `container/agent-runner/src/index.ts`, `docs/OPERATIONS.md`. Recovery point: git tag `pre-phase-0-2026-05-03` on origin.
+
+---
+
 ### Open DM mode (`agentProfile: 'open_dm'`) — accept WhatsApp DMs from any sender
 
 Ben previously dropped any message from a chat that wasn't pre-registered. This change adds an opt-in mode that auto-onboards unknown WhatsApp DM senders into a narrowed agent profile. Spike ticket: `T-1746026520000` in Brain.

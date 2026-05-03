@@ -182,6 +182,11 @@ async function runTask(
         assistantName: ASSISTANT_NAME,
         groupName: group.name,
         script: task.script || undefined,
+        // Per-group model override (Phase 0 of T-1777809840000). Scheduled
+        // tasks inherit the host group's model — no task-level override yet
+        // (Option C of T-1777030260003 deferred to follow-up).
+        agentProfile: group.containerConfig?.agentProfile,
+        model: group.containerConfig?.model,
       },
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
