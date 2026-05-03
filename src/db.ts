@@ -82,6 +82,16 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+    CREATE TABLE IF NOT EXISTS open_rate_buckets (
+      sender_jid TEXT PRIMARY KEY,
+      tokens REAL NOT NULL,
+      last_refill TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS open_spend_log (
+      date TEXT PRIMARY KEY,
+      container_count INTEGER NOT NULL DEFAULT 0,
+      est_cost_cents INTEGER NOT NULL DEFAULT 0
+    );
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -667,6 +677,43 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+// --- Open DM mode: rate-limit buckets and daily spend log ---
+
+export interface OpenRateBucket {
+  sender_jid: string;
+  tokens: number;
+  last_refill: string;
+}
+
+export function getOpenRateBucket(senderJid: string): OpenRateBucket | undefined {
+  return db
+    .prepare('SELECT sender_jid, tokens, last_refill FROM open_rate_buckets WHERE sender_jid = ?')
+    .get(senderJid) as OpenRateBucket | undefined;
+}
+
+export function setOpenRateBucket(bucket: OpenRateBucket): void {
+  db.prepare(
+    `INSERT INTO open_rate_buckets (sender_jid, tokens, last_refill) VALUES (?, ?, ?)
+     ON CONFLICT(sender_jid) DO UPDATE SET tokens = excluded.tokens, last_refill = excluded.last_refill`,
+  ).run(bucket.sender_jid, bucket.tokens, bucket.last_refill);
+}
+
+export function getOpenSpendForDate(date: string): { container_count: number; est_cost_cents: number } {
+  const row = db
+    .prepare('SELECT container_count, est_cost_cents FROM open_spend_log WHERE date = ?')
+    .get(date) as { container_count: number; est_cost_cents: number } | undefined;
+  return row ?? { container_count: 0, est_cost_cents: 0 };
+}
+
+export function recordOpenSpend(date: string, addCents: number): void {
+  db.prepare(
+    `INSERT INTO open_spend_log (date, container_count, est_cost_cents) VALUES (?, 1, ?)
+     ON CONFLICT(date) DO UPDATE SET
+       container_count = container_count + 1,
+       est_cost_cents = est_cost_cents + excluded.est_cost_cents`,
+  ).run(date, addCents);
 }
 
 // --- JSON migration ---

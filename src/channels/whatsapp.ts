@@ -54,6 +54,11 @@ export interface WhatsAppChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
+  // Optional hook fired when an unregistered chat sends a message. The
+  // orchestrator may auto-register the JID (open_dm mode) so the gate
+  // below succeeds on the SAME event. Synchronous so re-fetching
+  // registeredGroups() afterward sees any new registration.
+  tryAutoRegister?: (chatJid: string) => void;
 }
 
 export class WhatsAppChannel implements Channel {
@@ -242,8 +247,17 @@ export class WhatsAppChannel implements Channel {
             isGroup,
           );
 
-          // Only deliver full message for registered groups
-          const groups = this.opts.registeredGroups();
+          // Only deliver full message for registered groups.
+          // Give the orchestrator a chance to auto-register first
+          // (open_dm mode for unsolicited DM senders). Skip auto-register
+          // for our own outbound — Baileys fires upsert for fromMe messages
+          // (incl. echoes from other linked devices) and the chatJid in
+          // those events can be the bot's own JID, which we must not onboard.
+          let groups = this.opts.registeredGroups();
+          if (!groups[chatJid] && !msg.key.fromMe && this.opts.tryAutoRegister) {
+            this.opts.tryAutoRegister(chatJid);
+            groups = this.opts.registeredGroups();
+          }
           if (groups[chatJid]) {
             let content =
               normalized.conversation ||

@@ -27,9 +27,31 @@ export interface AllowedRoot {
   description?: string;
 }
 
+export interface OpenModeRateLimit {
+  tokensPerHour: number;
+  burstMax: number;
+}
+
+export interface OpenModeConfig {
+  enabled: boolean;
+  agentProfile?: 'open_dm';
+  rateLimit?: OpenModeRateLimit;
+  // Daily host-side cost cap. When exceeded, further open_dm message routing is dropped silently.
+  // Required when enabled is true; null/undefined makes auto-registration fail closed.
+  dailyBudgetCents?: number | null;
+  // Per-invocation cost estimate in cents. Used to accumulate against dailyBudgetCents.
+  estCostCentsPerInvocation?: number;
+}
+
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
+  // 'main' = elevated, full tools; 'standard' = current default for non-main groups;
+  // 'open_dm' = narrowed tool/permission/mount profile for unsolicited DM senders.
+  agentProfile?: 'main' | 'standard' | 'open_dm';
+  // Lives on a host group (typically main). When enabled, unregistered DM JIDs
+  // hitting the channel can be auto-registered as 'open_dm' groups.
+  openMode?: OpenModeConfig;
 }
 
 export interface RegisteredGroup {

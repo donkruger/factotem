@@ -32,7 +32,48 @@ interface ContainerInput {
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   script?: string;
   turnId?: string;
+  agentProfile?: 'main' | 'standard' | 'open_dm';
 }
+
+// R1: tool/permission profile for unsolicited DM senders.
+// Narrowed allowlist + explicit denylist (defense-in-depth) + permissionMode='default'
+// so any new SDK tool defaults to denied. Brain isolation is enforced HOST-SIDE
+// via mount filtering in container-runner.ts; this is the second wall.
+const OPEN_DM_ALLOWED_TOOLS = [
+  'Read',
+  'WebFetch',
+  'WebSearch',
+  'Glob',
+  'Grep',
+  'TodoWrite',
+  'mcp__nanoclaw__send_self',
+];
+const OPEN_DM_DISALLOWED_TOOLS = [
+  'Bash',
+  'Write', 'Edit',
+  'Task', 'TaskOutput', 'TaskStop',
+  'TeamCreate', 'TeamDelete',
+  'SendMessage',
+  'NotebookEdit', 'Skill', 'ToolSearch',
+  'CronCreate', 'CronDelete', 'CronList',
+  // Disable everything from the broad mcp__nanoclaw__* tool surface; the only
+  // open_dm-allowed MCP tool is send_self (whitelisted above).
+  'mcp__nanoclaw__send_message',
+  'mcp__nanoclaw__schedule_task',
+  'mcp__nanoclaw__update_task', 'mcp__nanoclaw__pause_task',
+  'mcp__nanoclaw__resume_task', 'mcp__nanoclaw__cancel_task',
+  'mcp__nanoclaw__list_tasks', 'mcp__nanoclaw__register_group',
+  'mcp__nanoclaw__x_post', 'mcp__nanoclaw__x_like', 'mcp__nanoclaw__x_reply',
+  'mcp__nanoclaw__x_retweet', 'mcp__nanoclaw__x_quote', 'mcp__nanoclaw__x_dm',
+  'mcp__nanoclaw__x_read_feed', 'mcp__nanoclaw__x_read_notifications',
+  'mcp__nanoclaw__x_get_tweet', 'mcp__nanoclaw__x_search',
+  'mcp__nanoclaw__x_read_thread', 'mcp__nanoclaw__x_read_profile',
+  'mcp__nanoclaw__x_get_analytics', 'mcp__nanoclaw__x_follow',
+  'mcp__nanoclaw__kp_open_project', 'mcp__nanoclaw__kp_create_ticket',
+  'mcp__nanoclaw__kp_move_ticket', 'mcp__nanoclaw__kp_open_ticket',
+  'mcp__nanoclaw__kp_update_field', 'mcp__nanoclaw__kp_switch_view',
+  'mcp__nanoclaw__kp_search', 'mcp__nanoclaw__kp_add_comment',
+];
 
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 interface ImageContentBlock {
@@ -504,20 +545,24 @@ async function runQuery(
         preset: 'claude_code' as const,
         append: [groupIdentity, globalClaudeMd].filter(Boolean).join('\n\n'),
       },
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*'
-      ],
-      disallowedTools: ['CronCreate', 'CronDelete', 'CronList'],
+      allowedTools: containerInput.agentProfile === 'open_dm'
+        ? OPEN_DM_ALLOWED_TOOLS
+        : [
+            'Bash',
+            'Read', 'Write', 'Edit', 'Glob', 'Grep',
+            'WebSearch', 'WebFetch',
+            'Task', 'TaskOutput', 'TaskStop',
+            'TeamCreate', 'TeamDelete', 'SendMessage',
+            'TodoWrite', 'ToolSearch', 'Skill',
+            'NotebookEdit',
+            'mcp__nanoclaw__*'
+          ],
+      disallowedTools: containerInput.agentProfile === 'open_dm'
+        ? OPEN_DM_DISALLOWED_TOOLS
+        : ['CronCreate', 'CronDelete', 'CronList'],
       env: sdkEnv,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
+      permissionMode: containerInput.agentProfile === 'open_dm' ? 'default' : 'bypassPermissions',
+      allowDangerouslySkipPermissions: containerInput.agentProfile !== 'open_dm',
       settingSources: ['project', 'user'],
       mcpServers: {
         nanoclaw: {

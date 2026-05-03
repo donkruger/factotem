@@ -54,6 +54,13 @@ import {
   startRemoteControl,
   stopRemoteControl,
 } from './remote-control.js';
+import { consume as openConsumeRateLimit } from './open-rate-limit.js';
+import {
+  evaluateOpenMode,
+  isOverBudget as openIsOverBudget,
+  loadOpenMode,
+  recordSpawnSpend as openRecordSpawnSpend,
+} from './open-mode.js';
 import {
   isSenderAllowed,
   isTriggerAllowed,
@@ -246,8 +253,12 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
 
   // Copy CLAUDE.md template into the new group folder so agents have
   // identity and instructions from the first run.  (Fixes #1391)
+  // Skipped for open_dm profile: stranger sessions must not inherit the
+  // operator's curated global memory. They start with no per-group prompt
+  // and run only with the SDK preset until an open-template is added.
+  const isOpenDm = group.containerConfig?.agentProfile === 'open_dm';
   const groupMdFile = path.join(groupDir, 'CLAUDE.md');
-  if (!fs.existsSync(groupMdFile)) {
+  if (!isOpenDm && !fs.existsSync(groupMdFile)) {
     const templateFile = path.join(
       GROUPS_DIR,
       group.isMain ? 'main' : 'global',
@@ -531,6 +542,22 @@ async function runAgent(
       }
     : undefined;
 
+  // Open DM cost cap: enforce daily budget BEFORE spawn for open_dm groups.
+  // Drop silently when exceeded — no canned reply (revealing the cap to a
+  // flooder gives feedback, and an outbound costs additional money).
+  const agentProfile = group.containerConfig?.agentProfile;
+  if (agentProfile === 'open_dm') {
+    const openMode = loadOpenMode(registeredGroups);
+    if (!openMode || openIsOverBudget(openMode)) {
+      logger.warn(
+        { group: group.name, chatJid },
+        'open-mode: daily budget exceeded — dropping spawn silently',
+      );
+      return 'success';
+    }
+    openRecordSpawnSpend(openMode);
+  }
+
   try {
     const output = await runContainerAgent(
       group,
@@ -543,6 +570,7 @@ async function runAgent(
         assistantName: ASSISTANT_NAME,
         groupName: group.name,
         turnId,
+        agentProfile,
         ...(imageAttachments.length > 0 && { imageAttachments }),
       },
       (proc, containerName) =>
@@ -776,6 +804,32 @@ async function main(): Promise<void> {
 
   // Channel callbacks (shared by all channels)
   const channelOpts = {
+    // Channel-side hook fired BEFORE the channel's registered-groups gate.
+    // Lets us auto-register an unsolicited DM sender so the gate succeeds on
+    // the same event. No rate limiting here — that lives in onMessage so it
+    // also covers subsequent messages from already-registered open_dm groups.
+    tryAutoRegister: (chatJid: string) => {
+      if (registeredGroups[chatJid]) return;
+      const openMode = loadOpenMode(registeredGroups);
+      if (!openMode?.enabled) return;
+      const decision = evaluateOpenMode(chatJid, registeredGroups);
+      if (!decision.eligible || !decision.group) {
+        logger.debug(
+          { chatJid, reason: decision.reason },
+          'open-mode: not eligible for onboarding',
+        );
+        return;
+      }
+      try {
+        registerGroup(chatJid, decision.group);
+        logger.info(
+          { chatJid, folder: decision.group.folder },
+          'open-mode: onboarded new sender',
+        );
+      } catch (err) {
+        logger.error({ chatJid, err }, 'open-mode: registerGroup failed');
+      }
+    },
     onMessage: (chatJid: string, msg: NewMessage) => {
       // Remote control commands — intercept before storage
       const trimmed = msg.content.trim();
@@ -784,6 +838,42 @@ async function main(): Promise<void> {
           logger.error({ err, chatJid }, 'Remote control command error'),
         );
         return;
+      }
+
+      // Open DM rate limit: applies to open_dm groups (both freshly auto-
+      // registered and ones receiving subsequent messages). Skips human DMs
+      // for any other profile so legacy registered DMs are unaffected.
+      if (
+        !msg.is_from_me &&
+        !msg.is_bot_message &&
+        registeredGroups[chatJid]?.containerConfig?.agentProfile === 'open_dm'
+      ) {
+        const openMode = loadOpenMode(registeredGroups);
+        if (openMode?.rateLimit) {
+          const rl = openConsumeRateLimit(msg.sender, openMode.rateLimit);
+          if (!rl.allowed) {
+            const channel = findChannel(channels, chatJid);
+            if (channel) {
+              const mins = Math.max(1, Math.ceil(rl.retryAfterSec / 60));
+              channel
+                .sendMessage(
+                  chatJid,
+                  `I can only handle a few messages per hour. Please retry in ~${mins} min.`,
+                )
+                .catch((err) =>
+                  logger.warn(
+                    { chatJid, err },
+                    'open-mode: rate-limit reply failed',
+                  ),
+                );
+            }
+            logger.info(
+              { chatJid, sender: msg.sender, retryAfterSec: rl.retryAfterSec },
+              'open-mode: rate-limited inbound',
+            );
+            return;
+          }
+        }
       }
 
       // Sender allowlist drop mode: discard messages from denied senders before storing

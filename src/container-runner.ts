@@ -50,6 +50,10 @@ export interface ContainerInput {
   // joined for a single turn. Optional to keep non-turn callers (scheduled
   // tasks) working without change.
   turnId?: string;
+  // Routes the agent-runner to a narrowed tool/permission profile.
+  // 'open_dm' restricts allowedTools, sets permissionMode='default', and
+  // disables allowDangerouslySkipPermissions for unsolicited DM senders.
+  agentProfile?: 'main' | 'standard' | 'open_dm';
 }
 
 export interface ContainerOutput {
@@ -113,13 +117,20 @@ function buildVolumeMounts(
 
     // Global memory directory (read-only for non-main)
     // Only directory mounts are supported, not file mounts
-    const globalDir = path.join(GROUPS_DIR, 'global');
-    if (fs.existsSync(globalDir)) {
-      mounts.push({
-        hostPath: globalDir,
-        containerPath: '/workspace/global',
-        readonly: true,
-      });
+    // R2: open_dm profile must not see /workspace/global. The shared global
+    // memory may contain operator notes/contacts/strategy. Stranger DMs run
+    // with no global memory; operator can opt them in via a separate template
+    // (e.g. groups/open-template/CLAUDE.md) in a follow-up.
+    const isOpenDm = group.containerConfig?.agentProfile === 'open_dm';
+    if (!isOpenDm) {
+      const globalDir = path.join(GROUPS_DIR, 'global');
+      if (fs.existsSync(globalDir)) {
+        mounts.push({
+          hostPath: globalDir,
+          containerPath: '/workspace/global',
+          readonly: true,
+        });
+      }
     }
   }
 
@@ -220,11 +231,30 @@ function buildVolumeMounts(
 
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
-    const validatedMounts = validateAdditionalMounts(
+    let validatedMounts = validateAdditionalMounts(
       group.containerConfig.additionalMounts,
       group.name,
       isMain,
     );
+    // R2: host-side filter for open_dm profile. Even if the operator
+    // configures a Brain (or global) mount on an open_dm group's
+    // containerConfig — by mistake or via a copied template — strip it
+    // here so the mount is absent from the container filesystem entirely.
+    // This is the primary control for Brain isolation; the agent-runner
+    // tool gate is defense-in-depth, not the load-bearing barrier.
+    if (group.containerConfig?.agentProfile === 'open_dm') {
+      const denyContainerPaths = new Set(['brain', 'global']);
+      validatedMounts = validatedMounts.filter((m) => {
+        if (denyContainerPaths.has(m.containerPath)) {
+          logger.warn(
+            { group: group.name, containerPath: m.containerPath },
+            'open_dm profile: dropping denylisted mount',
+          );
+          return false;
+        }
+        return true;
+      });
+    }
     mounts.push(...validatedMounts);
   }
 
@@ -302,7 +332,16 @@ export async function runContainerAgent(
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   // Main group uses the default OneCLI agent; others use their own agent.
-  const agentIdentifier = input.isMain
+  // open_dm sessions also reuse the default agent so unsolicited DM senders
+  // don't each require a manual OneCLI access grant — auto-registered
+  // strangers would otherwise hit 401 "agent does not have access" until an
+  // operator clicks through the OneCLI dashboard for every new sender. Cost
+  // is still bounded by the application-layer daily budget cap (open_spend_log
+  // + dailyBudgetCents). Trade-off: open_dm spend mixes with main attribution
+  // in OneCLI; acceptable for v1 because the host-side cap is the real ceiling.
+  const usesDefaultAgent =
+    input.isMain || group.containerConfig?.agentProfile === 'open_dm';
+  const agentIdentifier = usesDefaultAgent
     ? undefined
     : group.folder.toLowerCase().replace(/_/g, '-');
   const containerArgs = await buildContainerArgs(

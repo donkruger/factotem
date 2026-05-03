@@ -590,3 +590,89 @@ docker ps --format '{{.Names}}' | grep '^nanoclaw-' | grep -v whatsapp-main | xa
 No NanoClaw host restart is needed — the container-runner spawns a fresh container on the next message and re-applies current OneCLI config. Main-group containers often respawn naturally during testing and mask the problem in other groups, so don't skip this step even if GGA looks healthy.
 
 **Step 5 — Send a real test message in each affected group.** If the reply is still an error string, the fix didn't take — go back to step 3 and re-check the injection for that group's agent token specifically.
+
+---
+
+## Open DM Mode
+
+Opt-in mode that lets WhatsApp DMs from previously-unknown senders auto-onboard into a narrowed `open_dm` agent profile. Disabled by default. Spike: `T-1746026520000` in Brain. Architecture: `ARCHITECTURE.md` § "Agent Profiles".
+
+### Enable
+
+Lives on the **main group's `containerConfig.openMode`** (one source of truth per NanoClaw process). Edit via SQLite + restart:
+
+```bash
+sqlite3 /Users/support/Documents/NanoClaw/nanoclaw/store/messages.db "UPDATE registered_groups SET container_config = json_set(container_config, '\$.openMode', json('{\"enabled\":true,\"agentProfile\":\"open_dm\",\"rateLimit\":{\"tokensPerHour\":5,\"burstMax\":3},\"dailyBudgetCents\":500,\"estCostCentsPerInvocation\":4}')) WHERE is_main=1;"
+
+launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+```
+
+Config keys:
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Master switch. **Required.** |
+| `agentProfile` | `'open_dm'` | The profile to assign auto-onboarded groups. Currently only `open_dm` is implemented. |
+| `rateLimit.tokensPerHour` | `5` | Per-sender refill rate. |
+| `rateLimit.burstMax` | `3` | Maximum tokens accumulated. First contact gets `burstMax` tokens. |
+| `dailyBudgetCents` | **must be set** | Host-side cost cap in cents. **Auto-onboarding fails closed if this is null/absent.** |
+| `estCostCentsPerInvocation` | `4` | Per-spawn cost estimate used to accumulate against the daily budget. Adjust based on observed actuals. |
+
+### Kill switch
+
+```bash
+sqlite3 /Users/support/Documents/NanoClaw/nanoclaw/store/messages.db "UPDATE registered_groups SET container_config = json_set(container_config, '\$.openMode.enabled', json('false')) WHERE is_main=1;"
+
+launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+```
+
+This stops *new* auto-onboarding immediately. **Already-registered `open_dm` groups stay registered** and continue receiving messages until you explicitly remove them. To remove an existing one:
+
+```bash
+# replace 27721619382 with the actual JID
+sqlite3 /Users/support/Documents/NanoClaw/nanoclaw/store/messages.db "DELETE FROM registered_groups WHERE jid='27721619382@s.whatsapp.net';"
+sqlite3 /Users/support/Documents/NanoClaw/nanoclaw/store/messages.db "DELETE FROM open_rate_buckets WHERE sender_jid='27721619382@s.whatsapp.net';"
+rm -rf /Users/support/Documents/NanoClaw/nanoclaw/groups/whatsapp_open-dm-27721619382 \
+       /Users/support/Documents/NanoClaw/nanoclaw/data/sessions/whatsapp_open-dm-27721619382 \
+       /Users/support/Documents/NanoClaw/nanoclaw/data/ipc/whatsapp_open-dm-27721619382
+launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+```
+
+### Monitoring
+
+Day-to-day inspection of the open_dm path:
+
+```bash
+# Active open_dm groups
+sqlite3 /Users/support/Documents/NanoClaw/nanoclaw/store/messages.db \
+  "SELECT jid, folder, added_at FROM registered_groups WHERE folder LIKE 'whatsapp_open-dm-%';"
+
+# Per-sender rate-limit state
+sqlite3 /Users/support/Documents/NanoClaw/nanoclaw/store/messages.db \
+  "SELECT * FROM open_rate_buckets;"
+
+# Today's spend against the daily cap
+sqlite3 /Users/support/Documents/NanoClaw/nanoclaw/store/messages.db \
+  "SELECT * FROM open_spend_log WHERE date = date('now');"
+
+# Onboarding events in the log
+grep 'open-mode: onboarded' /Users/support/Documents/NanoClaw/nanoclaw/logs/nanoclaw.log
+
+# Rate-limited inbounds
+grep 'open-mode: rate-limited' /Users/support/Documents/NanoClaw/nanoclaw/logs/nanoclaw.log
+
+# Budget-exceeded drops
+grep 'open-mode: daily budget exceeded' /Users/support/Documents/NanoClaw/nanoclaw/logs/nanoclaw.log
+```
+
+### Known gotchas
+
+- **Brain stays out of `open_dm` containers** by host-side mount filter (`src/container-runner.ts`). Even if you accidentally add `brain` to an `open_dm` group's `additionalMounts`, the filter strips it. Don't rely on this — set the profile correctly in the first place.
+- **Same physical sender can register twice** — once keyed by `@lid` (Multi-Device first contact) and once by `@s.whatsapp.net` (after key exchange resolves). Cosmetic for v1; cleanup is manual via the DELETE above. Long-term: canonicalise to phone JID once translated.
+- **`open_dm` reuses the main OneCLI agent identifier** so per-stranger sessions don't each need a manual OneCLI dashboard grant. Spend isn't separately attributable in the OneCLI dashboard — the `open_spend_log` table is the only per-profile counter. Application-layer `dailyBudgetCents` is the real cost ceiling, not OneCLI.
+- **Open_dm sessions have no per-group CLAUDE.md template** by default. The agent runs only with the SDK preset prompt — replies will be generic. To customise, drop a `groups/open-template/CLAUDE.md` and uncomment the future template-copy branch (out of scope for v1).
+- **The bot's own JID is excluded from auto-onboarding.** Both the channel-side `msg.key.fromMe` filter and a defense-in-depth `me.id` check in `evaluateOpenMode` (parsed once from `store/auth/creds.json`). If you re-pair to a new WhatsApp number, restart NanoClaw so the cache refreshes.
+
+### Configuration changes that need a restart
+
+The in-memory `registeredGroups` map is loaded once at startup. Any change to `container_config` JSON in SQLite (including `openMode.enabled`) only takes effect after `launchctl kickstart -k gui/$(id -u)/com.nanoclaw`.

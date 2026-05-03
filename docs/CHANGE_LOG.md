@@ -4,6 +4,48 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ---
 
+## 2026-05-03
+
+### Open DM mode (`agentProfile: 'open_dm'`) — accept WhatsApp DMs from any sender
+
+Ben previously dropped any message from a chat that wasn't pre-registered. This change adds an opt-in mode that auto-onboards unknown WhatsApp DM senders into a narrowed agent profile. Spike ticket: `T-1746026520000` in Brain.
+
+**Routing change.** New optional `tryAutoRegister` callback on `WhatsAppChannelOpts` is invoked at the channel gate (`src/channels/whatsapp.ts:246-252`) before the `if (groups[chatJid])` drop check. The orchestrator's implementation in `src/index.ts` `channelOpts` registers the JID iff (a) `openMode.enabled` on the main group, (b) chat is unregistered, (c) JID looks like a personal DM (`@s.whatsapp.net` or `@lid`), (d) `dailyBudgetCents` is configured (fail-closed), (e) JID is not the bot's own `me.id` from `store/auth/creds.json`, and (f) the inbound is not `msg.key.fromMe`. The gate then re-fetches `registeredGroups()` so the same event proceeds with the new group registered.
+
+**`agentProfile` field on `ContainerConfig`.** New string field (`'main' | 'standard' | 'open_dm'`, optional) persisted in the existing `container_config` JSON column — no schema migration. Threaded into `ContainerInput` and used by the agent-runner and container-runner to switch behaviour without per-callsite branching.
+
+**Tool / permission narrowing for `open_dm` (R1).** In `container/agent-runner/src/index.ts:507`, `containerInput.agentProfile === 'open_dm'` selects:
+- `allowedTools: ['Read', 'WebFetch', 'WebSearch', 'Glob', 'Grep', 'TodoWrite', 'mcp__nanoclaw__send_self']`
+- `disallowedTools` explicitly enumerates Bash, Write/Edit, Task*/TaskOutput*/TeamCreate/TeamDelete, SendMessage, NotebookEdit/Skill/ToolSearch, all crons, and every other `mcp__nanoclaw__*` tool (defense-in-depth)
+- `permissionMode: 'default'` (NOT `bypassPermissions`)
+- `allowDangerouslySkipPermissions: false`
+
+**Brain isolation (R2).** Host-side filter in `src/container-runner.ts:222-238`: when `agentProfile === 'open_dm'`, the `additionalMounts` allowlist is post-filtered to drop any mount whose `containerPath` is in `{'brain', 'global'}`. Also skips the `/workspace/global` read-only mount unconditionally for `open_dm`. The Brain is *absent from the filesystem*, not just tool-gated. open_dm groups also skip the `groups/global/CLAUDE.md` template copy in `registerGroup` so they don't inherit the operator's curated memory.
+
+**`send_self` MCP tool.** New narrow tool in `container/agent-runner/src/ipc-mcp-stdio.ts` that only emits a message back to the originating chat — never accepts `target_jid`. Replaces `send_message` for `open_dm` sessions.
+
+**Token-bucket rate limiter, SQLite-backed.** `src/open-rate-limit.ts` exposes `consume(senderJid, limit) → {allowed, retryAfterSec}`. State persists in `open_rate_buckets (sender_jid PK, tokens REAL, last_refill TEXT)` so restarts don't reset attacker quota. Gated in `onMessage` for `agentProfile === 'open_dm'` chats only — legacy DMs unaffected. Defaults `tokensPerHour: 5, burstMax: 3`. On deny, sends a single canned reply via `channel.sendMessage` and returns; no agent invocation.
+
+**Daily host-side cost cap.** `src/open-mode.ts` `isOverBudget` / `recordSpawnSpend` against `open_spend_log (date PK, container_count, est_cost_cents)`. Checked in `runAgent` before spawning an `open_dm` container. On exceed, logs warning and returns success without spawning (silent drop — no canned reply, since revealing the cap to a flooder gives feedback). `dailyBudgetCents` and `estCostCentsPerInvocation` (default 4) live on the main group's `containerConfig.openMode`.
+
+**OneCLI agent identifier sharing.** `src/container-runner.ts:305-313` — `open_dm` containers reuse the default OneCLI agent (the one main uses) instead of provisioning per-stranger agent identifiers. Per-stranger identifiers would each require a manual `OneCLI dashboard → Grant access` click; not viable for "open to anyone". Spend mixes with main's attribution in OneCLI; the application-layer daily-budget cap is the real ceiling.
+
+**Kill switch.** Flipping `containerConfig.openMode.enabled = false` on the main group (and restarting NanoClaw to reload the in-memory `registeredGroups`) immediately stops new auto-onboarding. Existing `open_dm` groups remain registered until removed manually.
+
+**Iterative bugs found and fixed during live testing (same day):**
+1. Original orchestrator-side `onMessage` hook never fired for unregistered chats — channel layer drops them at line 247 before calling `onMessage`. Fix: moved the hook to a channel-side `tryAutoRegister` callback called *before* the gate. Logged in `ben-log/2026-05-03-open-dm-test-channel-gate-and-wa-delivery.md`.
+2. Bot's own JID got auto-registered (`whatsapp_open-dm-27752007263`) via WA self-chat / cross-device echo events. Fix: skip `tryAutoRegister` when `msg.key.fromMe === true`; also reject `chatJid` matching the bot's own phone JID in `evaluateOpenMode`.
+3. External-sender chatJid arrives as `@lid` (Multi-Device protocol) when key exchange hasn't completed; my `isOpenableDmJid` only accepted `@s.whatsapp.net`. Fix: accept `@lid` too. Folder slug from LID is digits-only and valid.
+4. Per-stranger OneCLI agent identifiers required manual dashboard grants → 401 retry-storms in agent-runner. Fix: `open_dm` reuses main's agent identifier. Logged in `ben-log/2026-05-03-open-dm-onecli-agent-401-and-trigger-removal.md`.
+
+**Trigger-requirement removed for legacy personal DMs (`whatsapp_don-kruger-dm`, `whatsapp_richard-nel-dm`).** `requires_trigger` flipped from 1 → 0 via SQL after the open_dm rollout exposed how restrictive the default felt. Every inbound now spawns the agent. No daily cost cap on legacy DMs (the cap is `open_dm`-only). One-shot: `UPDATE registered_groups SET requires_trigger=0 WHERE folder IN ('whatsapp_don-kruger-dm','whatsapp_richard-nel-dm');` + restart.
+
+**Files changed.** New: `src/open-rate-limit.ts`, `src/open-mode.ts`. Modified: `src/types.ts`, `src/db.ts`, `src/index.ts`, `src/container-runner.ts`, `src/channels/whatsapp.ts`, `container/agent-runner/src/index.ts`, `container/agent-runner/src/ipc-mcp-stdio.ts`. Recovery point: git tag `pre-open-dm-spike-2026-05-03` on origin.
+
+**Operational runbook.** See `OPERATIONS.md` § "Open DM Mode" for enable/disable, monitoring, kill switch, daily budget config.
+
+---
+
 ## 2026-04-24
 
 ### OAuth watcher made reliable under launchd; marker moved out of Documents/

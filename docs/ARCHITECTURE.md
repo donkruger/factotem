@@ -215,8 +215,33 @@ Message formatting and outbound routing:
 | Credentials      | OneCLI gateway injection (never in `.env` or containers) |
 | IPC auth         | Source group from directory path (tamper-proof)          |
 | Sender filtering | Per-chat allowlists (trigger/drop modes)                 |
+| Agent profiles   | Profile-bound tool/permission/mount narrowing (`open_dm`) |
 | Container user   | Non-root `node:1000`                                     |
 
+
+---
+
+## Agent Profiles
+
+Each `RegisteredGroup` has an optional `agentProfile` field on its `containerConfig` that selects which **tool, permission, and mount surface** the spawned container gets. A profile is the unit of trust — flipping a group's profile changes what the agent can do without changing any other code.
+
+| Profile | Used for | `permissionMode` | Tools | Mounts (additional) |
+|---|---|---|---|---|
+| `main` (`isMain=true`) | Operator's main group (e.g. GGA) | `bypassPermissions` | All including `Bash`, `Write`, `Task*`, `SendMessage` with cross-chat `target_jid` | Project root RO + group RW + everything in mount allowlist (Brain RW) |
+| `standard` / unset (`isMain=false`) | Trusted registered groups (other group chats, manually-added DMs) | `bypassPermissions` | All except `mcp__nanoclaw__send_message`'s cross-group targeting and the explicit `disallowedTools` (currently just crons) | Group RW + global memory RO + per-group `additionalMounts` |
+| `open_dm` | Auto-onboarded WhatsApp DM senders (`openMode`) | `default` (NOT bypass) | Narrowed: `Read`, `WebFetch`, `WebSearch`, `Glob`, `Grep`, `TodoWrite`, `mcp__nanoclaw__send_self`. Explicit `disallowedTools` enumerates the rest as defense-in-depth. | Group RW + per-group `additionalMounts` filtered to drop `brain`/`global` host-side. **Brain is absent from the filesystem**, not merely tool-gated. |
+
+**Where profiles are enforced.**
+- Tool / permission selection: `container/agent-runner/src/index.ts:507` branches on `containerInput.agentProfile`. The narrowed `allowedTools` for `open_dm` is the load-bearing tool gate.
+- Mount filtering: `src/container-runner.ts:222-238` post-filters the `additionalMounts` allowlist when `agentProfile === 'open_dm'`. The host-side filter is the *primary* control for Brain isolation. The agent-runner tool gate is defense-in-depth.
+- OneCLI agent identifier: `src/container-runner.ts:305-313` — `main` and `open_dm` reuse the default OneCLI agent (already authorised); `standard` non-main groups get per-folder agent identifiers (require operator dashboard grant).
+- CLAUDE.md template copy: `src/index.ts` `registerGroup` skips the `groups/global/CLAUDE.md` template seed for `open_dm` so stranger sessions don't inherit operator-curated memory.
+
+**Why `string` rather than booleans.** Forward-compatible. Adding `verified_resident` or `paying_user` profiles later is one new branch in each enforcement point, not a new combinator over existing booleans.
+
+**Trust-boundary invariant.** A profile change must be the only thing required to flip the trust level for a group. Anything that cares about trust reads `agentProfile`; nothing reads ad-hoc combinations of `isMain` + folder name + flags. This is what makes "open to anyone" tractable as a single operational toggle.
+
+See `OPERATIONS.md` § "Open DM Mode" for the operator runbook on enabling, disabling, and monitoring `open_dm`.
 
 ---
 
