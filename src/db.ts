@@ -687,9 +687,13 @@ export interface OpenRateBucket {
   last_refill: string;
 }
 
-export function getOpenRateBucket(senderJid: string): OpenRateBucket | undefined {
+export function getOpenRateBucket(
+  senderJid: string,
+): OpenRateBucket | undefined {
   return db
-    .prepare('SELECT sender_jid, tokens, last_refill FROM open_rate_buckets WHERE sender_jid = ?')
+    .prepare(
+      'SELECT sender_jid, tokens, last_refill FROM open_rate_buckets WHERE sender_jid = ?',
+    )
     .get(senderJid) as OpenRateBucket | undefined;
 }
 
@@ -700,10 +704,17 @@ export function setOpenRateBucket(bucket: OpenRateBucket): void {
   ).run(bucket.sender_jid, bucket.tokens, bucket.last_refill);
 }
 
-export function getOpenSpendForDate(date: string): { container_count: number; est_cost_cents: number } {
+export function getOpenSpendForDate(date: string): {
+  container_count: number;
+  est_cost_cents: number;
+} {
   const row = db
-    .prepare('SELECT container_count, est_cost_cents FROM open_spend_log WHERE date = ?')
-    .get(date) as { container_count: number; est_cost_cents: number } | undefined;
+    .prepare(
+      'SELECT container_count, est_cost_cents FROM open_spend_log WHERE date = ?',
+    )
+    .get(date) as
+    | { container_count: number; est_cost_cents: number }
+    | undefined;
   return row ?? { container_count: 0, est_cost_cents: 0 };
 }
 

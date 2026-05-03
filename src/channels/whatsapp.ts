@@ -254,7 +254,11 @@ export class WhatsAppChannel implements Channel {
           // (incl. echoes from other linked devices) and the chatJid in
           // those events can be the bot's own JID, which we must not onboard.
           let groups = this.opts.registeredGroups();
-          if (!groups[chatJid] && !msg.key.fromMe && this.opts.tryAutoRegister) {
+          if (
+            !groups[chatJid] &&
+            !msg.key.fromMe &&
+            this.opts.tryAutoRegister
+          ) {
             this.opts.tryAutoRegister(chatJid);
             groups = this.opts.registeredGroups();
           }

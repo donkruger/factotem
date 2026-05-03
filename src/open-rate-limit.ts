@@ -56,10 +56,8 @@ export function consume(
     last_refill: nowIso,
   });
   const needed = 1 - tokens;
-  const retryAfterSec = tokensPerMs > 0 ? Math.ceil(needed / (tokensPerMs * 1000)) : 3600;
-  logger.debug(
-    { senderJid, tokens, retryAfterSec },
-    'open-rate-limit: denied',
-  );
+  const retryAfterSec =
+    tokensPerMs > 0 ? Math.ceil(needed / (tokensPerMs * 1000)) : 3600;
+  logger.debug({ senderJid, tokens, retryAfterSec }, 'open-rate-limit: denied');
   return { allowed: false, retryAfterSec };
 }
