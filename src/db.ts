@@ -132,6 +132,22 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_agent_turns_started ON agent_turns(started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_turns_group ON agent_turns(group_folder, started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_turns_machine ON agent_turns(machine_id, started_at DESC);
+    -- Operator-action audit trail. Phase 0.5 (T-1778236000000).
+    -- One row per state-changing API call (PATCH/POST /api/*).
+    -- Per Q1 (Tailscale-trust), actor is constant 'operator' in v1 —
+    -- multi-operator attribution arrives in v1.5 with auth.
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      machine_id TEXT NOT NULL,
+      ts TEXT NOT NULL,
+      actor TEXT NOT NULL DEFAULT 'operator',
+      action TEXT NOT NULL,
+      target TEXT,
+      payload_before TEXT,
+      payload_after TEXT,
+      reversible_until TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)

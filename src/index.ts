@@ -5,6 +5,7 @@ import { OneCLI } from '@onecli-sh/sdk';
 
 import {
   ASSISTANT_NAME,
+  DATA_DIR,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
@@ -549,7 +550,11 @@ async function runAgent(
         // (status === 'success' with usage data). For now we accept that
         // older cached agent-runner-src may not emit usage; those rows
         // simply won't get written.
-        if (output.status === 'success' && output.started_at && output.finished_at) {
+        if (
+          output.status === 'success' &&
+          output.started_at &&
+          output.finished_at
+        ) {
           try {
             const machine = getMachineIdentity();
             const inputTokens = output.usage?.input_tokens ?? 0;
@@ -588,7 +593,8 @@ async function runAgent(
               num_turns: output.num_turns ?? null,
               outcome: 'success',
               prompt_chars: prompt.length,
-              response_chars: output.response_chars ?? output.result?.length ?? 0,
+              response_chars:
+                output.response_chars ?? output.result?.length ?? 0,
               session_id: output.newSessionId ?? null,
               is_main: isMain ? 1 : 0,
               is_scheduled_task: 0,
@@ -1047,9 +1053,54 @@ async function main(): Promise<void> {
   recoverPendingMessages();
 
   // Start the HTTP server for the Factotem dashboard's /health and
-  // (later) /api/* routes. Tailscale-local; no app-level auth in v1.
-  // T-1778233000000 (Phase 0.1).
-  startHttpServer();
+  // /api/* routes. Tailscale-local; no app-level auth in v1.
+  // T-1778233000000 (Phase 0.1) + T-1778236000000 (Phase 0.5).
+  startHttpServer({
+    getRegisteredGroups: () => registeredGroups,
+    reloadConfig: () => {
+      try {
+        process.kill(process.pid, 'SIGHUP');
+      } catch (err) {
+        logger.warn({ err }, 'reloadConfig: failed to send SIGHUP to self');
+      }
+    },
+    injectIpcMessage: (groupFolder, text) => {
+      const ipcInputDir = path.join(
+        DATA_DIR,
+        'ipc',
+        groupFolder,
+        'input',
+      );
+      fs.mkdirSync(ipcInputDir, { recursive: true });
+      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+      const tempPath = path.join(ipcInputDir, `${filename}.tmp`);
+      const finalPath = path.join(ipcInputDir, filename);
+      fs.writeFileSync(
+        tempPath,
+        JSON.stringify({ type: 'message', text }),
+      );
+      fs.renameSync(tempPath, finalPath);
+    },
+  });
+
+  // SIGHUP handler — reload registeredGroups from DB without a full
+  // service restart. Triggered by the dashboard API after a PATCH to
+  // a group's container_config. In-flight containers continue on the
+  // old config (kill-on-apply per blueprint v2 § "Phase 8 — Operator-
+  // action safety"; drain semantics are tracked under T-1777809840000
+  // R4 and out of scope for v1).
+  process.on('SIGHUP', () => {
+    try {
+      const next = getAllRegisteredGroups();
+      registeredGroups = next;
+      logger.info(
+        { groupCount: Object.keys(next).length },
+        'SIGHUP: reloaded registered groups from DB',
+      );
+    } catch (err) {
+      logger.error({ err }, 'SIGHUP: reload failed');
+    }
+  });
 
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');

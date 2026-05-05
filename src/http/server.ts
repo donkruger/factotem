@@ -15,11 +15,15 @@ import express, { type Express } from 'express';
 
 import { NANOCLAW_HTTP_PORT } from '../config.js';
 import { logger } from '../logger.js';
+import { mountApi, type ApiDeps } from './api.js';
 import { getHealthSnapshot } from './health.js';
 
 let app: Express | undefined;
 
-export function startHttpServer(port: number = NANOCLAW_HTTP_PORT): void {
+export function startHttpServer(
+  deps: ApiDeps,
+  port: number = NANOCLAW_HTTP_PORT,
+): void {
   if (app) {
     logger.warn('http server: already started, skipping');
     return;
@@ -37,7 +41,8 @@ export function startHttpServer(port: number = NANOCLAW_HTTP_PORT): void {
     }
   });
 
-  // Future: mount /api/* routes here (T-1778236000000)
+  // Mount /api/* routes (T-1778236000000)
+  mountApi(app, deps);
 
   // Graceful error handling — never crash NanoClaw because the dashboard
   // port is unavailable. WhatsApp + container orchestration must keep
