@@ -37,6 +37,7 @@ export type AuditAction =
   | 'profile.update'
   | 'openMode.update'
   | 'test_message.send'
+  | 'restart_stack.invoke'
   | 'audit.undo';
 
 const REVERSIBILITY_BY_ACTION: Record<AuditAction, number> = {
@@ -48,6 +49,7 @@ const REVERSIBILITY_BY_ACTION: Record<AuditAction, number> = {
   'profile.update': 60 * 60 * 1000, // 1h (more consequential)
   'openMode.update': 5 * 60 * 1000,
   'test_message.send': 0, // not reversible (already sent)
+  'restart_stack.invoke': 0, // not reversible (process already killed)
   'audit.undo': 0, // an undo is not itself undoable
 };
 

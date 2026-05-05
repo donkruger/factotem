@@ -124,12 +124,37 @@ export interface CostDaily {
 export interface AuditEntry {
   id: number;
   machine_id: string;
+  ts: string;
+  actor: string;
   action: string;
   target?: string | null;
   payload_before?: string | null;
   payload_after?: string | null;
-  created_at: string;
   reversible_until?: string | null;
+}
+
+export type AlertSeverity = 'critical' | 'warning' | 'info';
+
+export interface Alert {
+  id:
+    | 'docker_wedge'
+    | 'error_string_in_reply'
+    | 'auth_mode_freshness'
+    | 'ghost_action_divergence'
+    | 'wa_respawn_counter';
+  severity: AlertSeverity;
+  title: string;
+  detail: string;
+  recommendation?: string;
+  recovery_url?: string;
+  recovery_action?: 'restart_stack';
+  detected_at: string;
+}
+
+export interface AlertsResponse {
+  alerts: Alert[];
+  restart_stack_enabled: boolean;
+  detected_at: string;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -367,6 +392,39 @@ export async function postCostTestAlert(
   body: TestCostAlertBody = {},
 ): Promise<{ ok: true; audit_id: number; target_folder: string }> {
   return send('POST', '/api/cost/test-alert', body, undefined);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Alerts + audit-undo + Restart Stack (Wave 7)
+// ──────────────────────────────────────────────────────────────────────────
+
+export async function getAlerts(): Promise<AlertsResponse> {
+  return getJson<AlertsResponse>('/api/alerts');
+}
+
+export interface RestartStackResult {
+  ok: true;
+  audit_id: number;
+  results: { command: string; ok: boolean; detail?: string }[];
+}
+
+export async function postRestartStack(): Promise<RestartStackResult> {
+  return send<RestartStackResult>('POST', '/api/restart-stack', undefined, undefined);
+}
+
+export interface AuditUndoResult {
+  ok: true;
+  audit_id: number;
+  undid: number;
+}
+
+export async function postAuditUndo(id: number): Promise<AuditUndoResult> {
+  return send<AuditUndoResult>(
+    'POST',
+    `/api/audit/${id}/undo`,
+    undefined,
+    undefined,
+  );
 }
 
 /**

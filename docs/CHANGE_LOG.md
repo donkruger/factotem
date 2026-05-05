@@ -6,6 +6,56 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-05
 
+### Phase 6 — Alerts panel + audit_log + Restart Stack (T12 / Wave 7)
+
+Wave 7 ships the second-to-last v1 panel: `/alerts` + `/audit`. Surfaces the Round 7 ben-log-grounded top-5 failure modes as proactive alerts, exposes the audit log with reversible-undo affordances, and adds the env-gated Restart Stack recovery action per the Q6 cascade. Recovery tags `pre-wave-7-2026-05-05` and `post-wave-7-2026-05-05` bookend the wave on origin.
+
+**Server-side additions.** Three:
+
+- NEW: `nanoclaw/src/http/alerts.ts` — alert-detection module. Computes the 5 Round 7 alerts lazily on each `/api/alerts` request, with a 30s cache so log-tailing doesn't thrash. Detection logic per alert:
+  1. **`docker_wedge`** — pulls from the existing health snapshot. Triggered when `docker.running === false` OR `onecli.reachable === false`. When BOTH are down, the response includes `recovery_action: 'restart_stack'` so the dashboard renders the recovery button. Severity: critical.
+  2. **`error_string_in_reply`** — tails the last 2,000 lines of `logs/nanoclaw.log` for the patterns `Invalid API key | API Error: | Failed to authenticate | 401 Unauthorized` within a 1-hour window. Severity: critical.
+  3. **`auth_mode_freshness`** — only fires when `auth-mode == oauth-workaround`. Reads `/tmp/nanoclaw-oauth-refresh.health` mtime. Critical when missing or > 300s old; warning at 90–300s.
+  4. **`ghost_action_divergence`** — v1 heuristic. SQLite query: count `agent_turns` rows in the last 24h with `outcome=success`, `tool_use_count=0`, AND `prompt_chars > 200`. Severity: warning. Includes a deep link to the canonical ghost-tickets ben-log entry.
+  5. **`wa_respawn_counter`** — tails `nanoclaw.log` for `Reconnecting | Connection terminated | Connection closed` lines in the last 60 seconds. Severity: warning when count > 3.
+- MODIFIED: `nanoclaw/src/http/api.ts` — two new endpoints:
+  - `GET /api/alerts` — returns `{ alerts, restart_stack_enabled, detected_at }`. The `restart_stack_enabled` flag is read from the `NANOCLAW_DASHBOARD_ENABLE_RESTART_STACK` env var (must be exactly `"1"` to be true).
+  - `POST /api/restart-stack` — env-var-gated destructive recovery. **Returns 404 (not 403) when the env var isn't set, per the Q6 spec — the endpoint should appear not to exist.** When enabled: runs `pkill -9 -f 'Docker Desktop'` followed by `pkill -9 -f 'com.docker.backend'` (per Round 7 Rank 1 — both must be killed; UI process alone is insufficient). pkill exit code 1 (no matching process) is treated as success. Audited as `restart_stack.invoke`.
+- MODIFIED: `nanoclaw/src/audit-log.ts` — `restart_stack.invoke` added to the `AuditAction` union with 0 reversibility (the kill already happened).
+
+**Dashboard routes.** Two new top-level routes at `/alerts` and `/audit`, plus 5 new components:
+
+- `app/alerts/page.tsx` + `panels/AlertsList.tsx` — top-level Alerts panel polling `/api/alerts` every 10s. Sorts critical → warning → info; calm "no active alerts" state when the list is empty (with a green check + the signals it watches). Refresh-nonce pattern lets the Restart Stack button trigger an immediate re-poll after invocation.
+- `panels/AlertCard.tsx` — single alert rendering. Severity-coloured left border + matching Lucide icon (AlertTriangle critical, AlertCircle warning, Info info). Title + detail + italic recommendation + footer with relative-time stamp, optional recovery-procedure link (ExternalLink icon), and inline `<RestartStackButton>` when the alert carries `recovery_action: 'restart_stack'`.
+- `panels/RestartStackButton.tsx` — typed-confirm action. Returns `null` when `enabled === false` (the dashboard never shows the button if the operator hasn't opted in via env var). When enabled: red-accented Button → ConfirmDialog with `confirmText: "RESTART STACK"` → `postRestartStack()` on confirm. Success banner auto-clears after 5s. Reuses the existing `ConfirmDialog` primitive shipped in Wave 6.
+- `app/audit/page.tsx` + `panels/AuditLogTable.tsx` — Audit log viewer polling `/api/audit?limit=200` every 30s. Five-column Table (When / Action / Target / Reversible / Actions) with row-expand to reveal pretty-printed `payload_before` / `payload_after` JSON. JID-shaped targets become deep links to `/groups/:jid`. Reversibility badge auto-flips to "Expired" when `reversible_until` passes (recomputed on render against `Date.now()`, no separate timer needed). Action label map renders friendly short names (e.g. `group.config.update` → "Config update"). Undo flow: typed-confirm (`confirmText: "UNDO"`, non-destructive variant) → `postAuditUndo(id)` → bumpRefresh.
+
+**Dashboard infrastructure additions (`dashboard/src/lib/nanoclaw.ts`).** Three new helpers + three new types:
+
+- Types: `Alert`, `AlertSeverity`, `AlertsResponse` mirroring the server's response shapes
+- Helpers: `getAlerts()`, `postRestartStack()`, `postAuditUndo(id)`
+- The existing `AuditEntry` interface was updated to add the missing `ts` and `actor` fields (always returned by the server but previously not surfaced in the type).
+
+**Nav update.** `NavLinks.tsx` extended with Alerts + Audit links — six routes total now (Server Health / Activity / Groups / Cost / Alerts / Audit).
+
+**Pre-deploy + restart.** Standard discipline: lsof :7842 confirmed Ben's PID 56663, creds backed up, recovery tag pushed, `bootout`/`bootstrap` cycle. New PID 97826 came up clean.
+
+**Live verification (post-restart, PID 97826).**
+
+- All endpoints 200: existing six + new `/api/alerts`. `/api/restart-stack` returns 404 as designed (env var not set on Don's plist, so button is hidden and endpoint appears not to exist).
+- `/api/alerts` returns `{ alerts: [], restart_stack_enabled: false, detected_at }` — system is healthy with no active alerts.
+- All six dashboard routes return 200: `/`, `/activity`, `/groups`, `/cost`, `/alerts`, `/audit`. 9 static routes generated total.
+
+**Restart Stack opt-in procedure (operator runbook).** To enable the button: add `<key>NANOCLAW_DASHBOARD_ENABLE_RESTART_STACK</key><string>1</string>` to the `EnvironmentVariables` dict in `~/Library/LaunchAgents/com.nanoclaw.plist`, then `launchctl bootout` + `launchctl bootstrap` to reload. The `/api/alerts` response will flip `restart_stack_enabled: true`, the dashboard's button surface re-enables on the next 10s poll, and `POST /api/restart-stack` becomes available. To disable: remove the env var and bootout/bootstrap.
+
+**Convention check.** Pure additive: 1 new server module, 2 new endpoints, 1 new audit action type, 5 new dashboard components, 2 new routes, 3 new lib helpers + 3 types. ⚠ **Convention impact (medium):** the Restart Stack endpoint invokes destructive host commands (`pkill -9` of Docker Desktop + the docker backend). Mitigation per Q6: env-var opt-in (route returns 404 when env var unset; button hidden in UI) + typed-confirm "RESTART STACK". Rollback: unset the env var; both surfaces disappear. No Sensitive-functionality-list touch.
+
+**Brain ticket.** `T-1778244000000` (T12) flipped to `col_done`. Epic `T-1778232000000` checkpoint updated.
+
+**Phase 6 status: COMPLETE.** Wave 8 (T13 — Profile/Policy editor) remains gated on the Agent Configuration Convention spike `T-1777809840000`. If T13 slips, Wave 9 (T14 — E2E verification + WA test) can run as the v1 closeout independently.
+
+---
+
 ### Phase 4 + Phase 5 — Group Management + Cost Tracking panels (T10 + T11 / Wave 6)
 
 Wave 6 ships two parallel routes: `/groups` (Phase 4 — Group Management) and `/cost` (Phase 5 — Cost Tracking). Both panels share zero files, so they were built simultaneously by parallel agents after a single backend pass added the new endpoints + helpers. Recovery tags `pre-wave-6-2026-05-05` and `post-wave-6-2026-05-05` bookend the wave on origin.

@@ -8,6 +8,8 @@ const LINKS = [
   { href: '/activity', label: 'Activity' },
   { href: '/groups', label: 'Groups' },
   { href: '/cost', label: 'Cost' },
+  { href: '/alerts', label: 'Alerts' },
+  { href: '/audit', label: 'Audit' },
 ];
 
 export function NavLinks() {

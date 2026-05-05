@@ -28,10 +28,12 @@ import {
 } from '../audit-log.js';
 import { AgentTurnRow, getAllTasks, setRegisteredGroup } from '../db.js';
 import Database from 'better-sqlite3';
+import { execSync } from 'child_process';
 import path from 'path';
 import { STORE_DIR } from '../config.js';
 import { logger } from '../logger.js';
 import { RegisteredGroup } from '../types.js';
+import { getAlertsSnapshot, isRestartStackEnabled } from './alerts.js';
 import { getMachineIdentity } from './machine-identity.js';
 
 export interface ApiDeps {
@@ -172,7 +174,9 @@ export function mountApi(app: Express, deps: ApiDeps): void {
       // Additive merge — preserves existing keys not in the patch. The
       // operator-supplied `version` key is dropped because version
       // monotonicity is the server's concern, not the client's.
-      const supplied = { ...(body.container_config as Record<string, unknown>) };
+      const supplied = {
+        ...(body.container_config as Record<string, unknown>),
+      };
       delete supplied.version;
       group.containerConfig = {
         ...(group.containerConfig ?? {}),
@@ -480,6 +484,73 @@ export function mountApi(app: Express, deps: ApiDeps): void {
       .prepare(sql)
       .all(...params);
     res.json({ messages: rows, query: q });
+  });
+
+  // ---- alerts (Round 7 ben-log-grounded top-5) ----
+
+  app.get('/api/alerts', async (_req: Request, res: Response) => {
+    try {
+      const snapshot = await getAlertsSnapshot();
+      res.json(snapshot);
+    } catch (err) {
+      logger.error({ err }, 'api: alerts snapshot failed');
+      res.status(500).json({ error: 'alerts snapshot failed' });
+    }
+  });
+
+  // ---- restart stack (env-gated destructive recovery) ----
+
+  app.post('/api/restart-stack', (_req: Request, res: Response) => {
+    // Per Q6 cascade: button is hidden by default; enabled only when the
+    // operator opts in via the launchd plist env var
+    // NANOCLAW_DASHBOARD_ENABLE_RESTART_STACK=1.
+    if (!isRestartStackEnabled()) {
+      // 404 (rather than 403) to match the ticket spec — the route should
+      // appear not to exist when the operator hasn't opted in.
+      res.status(404).json({ error: 'route not enabled' });
+      return;
+    }
+
+    // Per Round 7 Rank 1 — both the UI process AND the docker backend
+    // must be killed; killing only Docker Desktop leaves the daemon
+    // wedged. macOS launchd (or the user's Docker Desktop launchctl
+    // entry) respawns both.
+    const commands = [
+      "pkill -9 -f 'Docker Desktop'",
+      "pkill -9 -f 'com.docker.backend'",
+    ];
+    const results: { command: string; ok: boolean; detail?: string }[] = [];
+    for (const cmd of commands) {
+      try {
+        execSync(cmd, { encoding: 'utf-8', timeout: 3_000 });
+        results.push({ command: cmd, ok: true });
+      } catch (err) {
+        // pkill exits 1 when no matching process — that's not an error
+        // here (the process was already gone). Other failures get logged.
+        const code = (err as NodeJS.ErrnoException & { status?: number })
+          .status;
+        if (code === 1) {
+          results.push({ command: cmd, ok: true, detail: 'no matching process' });
+        } else {
+          logger.error({ err, cmd }, 'api: restart-stack pkill failed');
+          results.push({
+            command: cmd,
+            ok: false,
+            detail: (err as Error).message,
+          });
+        }
+      }
+    }
+
+    const machine = getMachineIdentity();
+    const auditId = writeAudit({
+      machineId: machine.id,
+      action: 'restart_stack.invoke',
+      target: 'docker',
+      payloadAfter: { commands, results },
+    });
+
+    res.json({ ok: true, audit_id: auditId, results });
   });
 
   // ---- daily cost rollup ----
