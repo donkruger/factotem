@@ -1,0 +1,25 @@
+/*
+ * Dark-mode token overrides.
+ *
+ * Mirrors the light tokens defined in tokens.css. Inverts ink/bg/hairline;
+ * brand accents (--color-accent, --color-accent-secondary, --color-focus-ring)
+ * stay verbatim so the brand reads consistently across modes.
+ *
+ * Activated by setting `data-theme="dark"` on <html>. The ThemeToggle
+ * component in src/components/layout/ThemeToggle.tsx writes that attribute.
+ */
+
+[data-theme='dark'] {
+  --color-bg: #0a0a0c;
+  --color-bg-subtle: #131316;
+  --color-bg-elevated: #1c1c20;
+  --color-ink: #f5f5f7;
+  --color-ink-muted: #86868b;
+  --color-hairline: #2c2c30;
+  --color-accent: #ff7a3a;
+  --color-accent-secondary: #6a00ff;
+  --color-focus-ring: #0071e3;
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-2: 0 8px 24px rgba(0,0,0,0.4);
+  --shadow-3: 0 24px 56px rgba(0,0,0,0.5);
+}

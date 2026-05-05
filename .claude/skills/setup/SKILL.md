@@ -169,8 +169,8 @@ Tell the user to run `claude setup-token` in another terminal and copy the token
 
 Once they have the token, they register it with OneCLI. AskUserQuestion with two options:
 
-1. **Dashboard** — description: "Best if you have a browser on this machine. Open http://127.0.0.1:10254 and add the secret in the UI. Use type 'anthropic' and paste your token as the value."
-2. **CLI** — description: "Best for remote/headless servers. Run: `onecli secrets create --name Anthropic --type anthropic --value YOUR_TOKEN --host-pattern api.anthropic.com`"
+1. **Dashboard** — description: "Best if you have a browser on this machine. Open http://127.0.0.1:10254 and add the secret in the UI. Use type 'generic' and paste your token as the value."
+2. **CLI** — description: "Best for remote/headless servers. Run: `onecli secrets create --name Anthropic --type generic --value YOUR_TOKEN --host-pattern api.anthropic.com`"
 
 ### API key path
 
@@ -179,7 +179,7 @@ Tell the user to get an API key from https://console.anthropic.com/settings/keys
 Then AskUserQuestion with two options:
 
 1. **Dashboard** — description: "Best if you have a browser on this machine. Open http://127.0.0.1:10254 and add the secret in the UI."
-2. **CLI** — description: "Best for remote/headless servers. Run: `onecli secrets create --name Anthropic --type anthropic --value YOUR_KEY --host-pattern api.anthropic.com`"
+2. **CLI** — description: "Best for remote/headless servers. Run: `onecli secrets create --name Anthropic --type generic --value YOUR_KEY --host-pattern api.anthropic.com`"
 
 ### After either path
 

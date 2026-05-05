@@ -11,9 +11,12 @@
  * T-1778233000000 (Phase 0.1 of Factotem Dashboard v1 epic).
  */
 
+import fs from 'fs';
+import path from 'path';
+
 import express, { type Express } from 'express';
 
-import { NANOCLAW_HTTP_PORT } from '../config.js';
+import { NANOCLAW_HTTP_PORT, PROJECT_ROOT } from '../config.js';
 import { logger } from '../logger.js';
 import { mountApi, type ApiDeps } from './api.js';
 import { getHealthSnapshot } from './health.js';
@@ -43,6 +46,22 @@ export function startHttpServer(
 
   // Mount /api/* routes (T-1778236000000)
   mountApi(app, deps);
+
+  // Mount the dashboard static export (T-1778239000000 / Wave 3).
+  // The dashboard builds to `dashboard/out/` via `next build` with
+  // `output: 'export'`. Mounting is conditional so the orchestrator still
+  // starts cleanly when the dashboard hasn't been built yet (e.g. fresh
+  // checkout, CI, or after `npm run clean`).
+  const dashboardOut = path.join(PROJECT_ROOT, 'dashboard', 'out');
+  if (fs.existsSync(dashboardOut)) {
+    app.use(express.static(dashboardOut));
+    logger.info({ dashboardOut }, 'dashboard static export mounted');
+  } else {
+    logger.warn(
+      { dashboardOut },
+      'dashboard/out not found — run `cd dashboard && npm run build`',
+    );
+  }
 
   // Graceful error handling — never crash NanoClaw because the dashboard
   // port is unavailable. WhatsApp + container orchestration must keep

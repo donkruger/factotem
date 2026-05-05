@@ -46,3 +46,8 @@ groups/global/*
 .nanoclaw/
 
 agents-sdk-docs
+
+# Dashboard build artefacts (T-1778239000000 / Wave 3)
+dashboard/out/
+dashboard/.next/
+dashboard/node_modules/

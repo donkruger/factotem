@@ -1065,20 +1065,12 @@ async function main(): Promise<void> {
       }
     },
     injectIpcMessage: (groupFolder, text) => {
-      const ipcInputDir = path.join(
-        DATA_DIR,
-        'ipc',
-        groupFolder,
-        'input',
-      );
+      const ipcInputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
       fs.mkdirSync(ipcInputDir, { recursive: true });
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
       const tempPath = path.join(ipcInputDir, `${filename}.tmp`);
       const finalPath = path.join(ipcInputDir, filename);
-      fs.writeFileSync(
-        tempPath,
-        JSON.stringify({ type: 'message', text }),
-      );
+      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
       fs.renameSync(tempPath, finalPath);
     },
   });

@@ -26,11 +26,7 @@ import {
   readAuditEntries,
   writeAudit,
 } from '../audit-log.js';
-import {
-  AgentTurnRow,
-  getAllTasks,
-  setRegisteredGroup,
-} from '../db.js';
+import { AgentTurnRow, getAllTasks, setRegisteredGroup } from '../db.js';
 import Database from 'better-sqlite3';
 import path from 'path';
 import { STORE_DIR } from '../config.js';
@@ -233,7 +229,10 @@ export function mountApi(app: Express, deps: ApiDeps): void {
   app.get('/api/turns', (req: Request, res: Response) => {
     const groupFolder = (req.query.group as string) || undefined;
     const since = (req.query.since as string) || undefined;
-    const limit = Math.min(parseInt((req.query.limit as string) || '100', 10) || 100, 500);
+    const limit = Math.min(
+      parseInt((req.query.limit as string) || '100', 10) || 100,
+      500,
+    );
 
     const where: string[] = [];
     const params: unknown[] = [];
@@ -260,7 +259,10 @@ export function mountApi(app: Express, deps: ApiDeps): void {
   app.get('/api/cost/daily', (req: Request, res: Response) => {
     const groupFolder = (req.query.group as string) || undefined;
     const model = (req.query.model as string) || undefined;
-    const days = Math.min(parseInt((req.query.days as string) || '30', 10) || 30, 90);
+    const days = Math.min(
+      parseInt((req.query.days as string) || '30', 10) || 30,
+      90,
+    );
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
       .toISOString()
       .slice(0, 10);
@@ -297,7 +299,10 @@ export function mountApi(app: Express, deps: ApiDeps): void {
   // ---- audit log ----
 
   app.get('/api/audit', (req: Request, res: Response) => {
-    const limit = Math.min(parseInt((req.query.limit as string) || '50', 10) || 50, 500);
+    const limit = Math.min(
+      parseInt((req.query.limit as string) || '50', 10) || 50,
+      500,
+    );
     res.json({ entries: readAuditEntries(limit) });
   });
 
@@ -319,7 +324,11 @@ export function mountApi(app: Express, deps: ApiDeps): void {
       });
       return;
     }
-    if (entry.action === 'group.config.update' || entry.action === 'group.disable' || entry.action === 'group.enable') {
+    if (
+      entry.action === 'group.config.update' ||
+      entry.action === 'group.disable' ||
+      entry.action === 'group.enable'
+    ) {
       if (!entry.target || !entry.payload_before) {
         res.status(409).json({ error: 'audit entry missing payload_before' });
         return;

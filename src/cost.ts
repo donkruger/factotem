@@ -20,11 +20,31 @@ interface ModelCost {
 }
 
 const MODEL_COSTS: Record<string, ModelCost> = {
-  'claude-opus-4-7': { input: 1500, output: 7500, cache_create: 1875, cache_read: 150 },
-  'claude-sonnet-4-6': { input: 300, output: 1500, cache_create: 375, cache_read: 30 },
-  'claude-haiku-4-5-20251001': { input: 100, output: 500, cache_create: 125, cache_read: 10 },
+  'claude-opus-4-7': {
+    input: 1500,
+    output: 7500,
+    cache_create: 1875,
+    cache_read: 150,
+  },
+  'claude-sonnet-4-6': {
+    input: 300,
+    output: 1500,
+    cache_create: 375,
+    cache_read: 30,
+  },
+  'claude-haiku-4-5-20251001': {
+    input: 100,
+    output: 500,
+    cache_create: 125,
+    cache_read: 10,
+  },
   // Older / fallback Haiku
-  'claude-haiku-4-5': { input: 100, output: 500, cache_create: 125, cache_read: 10 },
+  'claude-haiku-4-5': {
+    input: 100,
+    output: 500,
+    cache_create: 125,
+    cache_read: 10,
+  },
 };
 
 /**

@@ -6,6 +6,87 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-05
 
+### Phase 1 first wave — claw-cli wizard + dashboard scaffold (T6 + T7)
+
+Phase 1 of the Factotem Dashboard v1 epic (`epic_factotem_dash_v1`) ships its two scaffolds in parallel: the cold-start onboarding wizard (`cli/claw-setup/`) and the dashboard scaffold (`dashboard/`) that subsequent waves fill with panels. Both are purely additive new directories sharing zero files; T7 also lands a single `app.use(express.static(...))` line in `src/http/server.ts` to mount the dashboard's static export under NanoClaw's HTTP server. Recovery tags `pre-wave-3-2026-05-05` and `post-wave-3-2026-05-05` bookend the wave on origin.
+
+**T7 — Dashboard scaffold (`T-1778239000000`).** Next.js 16 (App Router, Turbopack) + React 19 + Tailwind v4 + Comfortaa via `next/font/google`, with the marketing-site design tokens copied verbatim from `~/Documents/Factotem/src/styles/tokens.css` (radius/colour/shadow/motion variables) plus a dashboard-specific `[data-theme='dark']` extension that mirrors the light tokens. `next.config.ts` uses `output: 'export'` so production builds produce static HTML at `dashboard/out/` that NanoClaw serves directly — no separate Next runtime, no `/_next/image` server.
+
+UI primitives: `Button` (primary/ghost variants matching marketing's rounded-pill bg-ink), `Card` (rounded-2xl hairline-bordered), `Badge` (success/warning/error/neutral with light + dark Tailwind classes), `Stat`, `Table`, `Dialog`, `AppShell` (sticky nav with backdrop blur), `ThemeToggle` (Sun/Moon Lucide icons, persists to `localStorage['theme']`). Hooks: `usePoll<T>(fn, intervalMs)` for polling, `useTheme()` for light/dark with `prefers-color-scheme` default. Lib: `nanoclaw.ts` with typed `getHealth/getGroups/getTurns/getCostDaily/getAudit` fetchers, `kp.ts` with `ticketUrl()` + `useBrainPath()` hook reading `brain_path` from `/health.machine.brain_path` per Q9, `format.ts` for relative time / cost cents / duration formatters.
+
+`src/http/server.ts` mounts the dashboard's static export AFTER the `/api/*` routes (so API takes precedence) and is graceful when `dashboard/out/` doesn't exist yet — the orchestrator must still start cleanly on a fresh checkout, in CI, or after `npm run clean`. Confirmed at deploy: `dashboard static export mounted` log line + `curl http://localhost:7842/` returns the placeholder Server Health page with `<title>Factotem · Operator Dashboard</title>`.
+
+**T6 — `claw-setup` cold-start wizard (`T-1778238000000`).** New npm subpackage `cli/claw-setup/` published as `bin: { "claw-setup": "dist/index.js" }`. Tech: pure TypeScript Node CLI built with `tsc` (no bundler), `@clack/prompts` for UI (matches V2 NanoClaw upstream choice per R2), `chalk` + `ora` + `qrcode-terminal` for terminal rendering, `zod` for state schema, `better-sqlite3` for the register-main-group step.
+
+Step pipeline (idempotency-first triad): `check()` → optional `prepare()` → `execute()` → `verify()` per step. Twelve steps from `00-profile-mode` through `11-handoff` covering Q4 + R13 personas (solo / hobbyist / collaborator-invite), preflight (Node ≥24, Docker, Tailscale, TCC hard-stop), prerequisite installation, OneCLI configuration with the R3 friction 1 fix verbatim (`--type generic --header-name x-api-key`), mounts allowlist (wraps existing `setup --step mounts` skill, doesn't replace), container build, WhatsApp pairing, main-group registration, optional openMode, launchd plist install, smoke test, handoff cheat-sheet.
+
+Atomic state file at `~/.config/nanoclaw/setup-state.json` (mode 0o600, in `~/.config/` to be TCC-safe per R3 friction 2 — NOT under `~/Documents/`). Resume semantics: state preserved on SIGINT, `--resume` picks up at the next non-`done` step. Pre-step refusal: if `store/auth/creds.json` exists and `--force` not passed, exit 1 with friendly message. Confirmed: `node cli/claw-setup/dist/index.js` from the orchestrator root with Don's live creds.json present prints the refusal and exits 1.
+
+Step 06 (pair-whatsapp) framework is in place but the live capture-pairing-code-and-render-QR loop is marked TODO — exercising it against Don's running deployment is too risky; will be tested end-to-end on the next clean install. Step 09 (install-launchd) generates the plist with `EnvironmentVariables.PATH` including `/opt/homebrew/bin:/usr/local/bin` (R3 friction 5 fix) but never invokes `launchctl bootstrap` itself — the operator runs it manually after reviewing the generated plist.
+
+**Q8 fix bundled.** `nanoclaw/.claude/skills/setup/SKILL.md` had three occurrences of `--type anthropic` / `type 'anthropic'` (lines 172, 173, 182) — all corrected to `--type generic` / `type 'generic'` to match the working OneCLI configuration. `diagnostics.md` checked, no further matches needed.
+
+**Files changed.**
+
+- New: `dashboard/` directory (package.json, next.config.ts, tsconfig.json, postcss.config.mjs, src/{app,components,lib,hooks,styles}, public/favicon.svg)
+- New: `cli/claw-setup/` directory (package.json, tsconfig.json, src/{index.ts, state.ts, types.ts, ui.ts, steps/00–11})
+- New: `docs/SETUP_WIZARD.md` — operator runbook for the wizard
+- Modified: `src/http/server.ts` — single `app.use(express.static(...))` block guarded by `fs.existsSync()`
+- Modified: `.claude/skills/setup/SKILL.md` — Q8 fix
+- Modified: `.gitignore` — adds `dashboard/{out,.next,node_modules}/`
+
+**Live verification.** PID 83893 healthy on port 7842, `/health` returns 200, WA authenticated, OneCLI reachable, image tag `072e6af` unchanged. Dashboard renders at `http://localhost:7842/` with the placeholder Server Health panel. Wizard `--help` prints flags; `--resume` framework in place; refuse-on-existing-creds verified.
+
+**Phase 1 status: scaffolds COMPLETE.** Phase 2 (Wave 4 / T8 — Server Health panel content, 4h) becomes the next single-session sprint.
+
+**Convention check.** Pure additive: two new directories, one one-line static-mount addition, one text-only SKILL.md correction. No Sensitive-functionality-list touch beyond the SKILL.md doc-layer text fix. Rollback path: revert `src/http/server.ts`, delete `dashboard/` and `cli/claw-setup/` directories, revert SKILL.md.
+
+**Brain tickets.** `T-1778238000000` (T6) and `T-1778239000000` (T7) flipped to `col_done`. Epic `T-1778232000000` checkpoint updated.
+
+---
+
+### Phase 0 second wave — agent_turns telemetry + operator-action API (T2 + T4)
+
+Completes Phase 0 of the Factotem Dashboard v1 epic (`epic_factotem_dash_v1`). Two commits, one wave: agent_turns telemetry capture + the `/api/*` REST surface the dashboard will consume. Recovery tags `pre-wave-2-2026-05-05` and `post-wave-2-2026-05-05` bookend the wave on origin.
+
+**T2 — `agent_turns` SQLite table + per-turn telemetry capture (`T-1778234000000`).** Commit `611f2b2`. New 30-column SQLite table indexed by `started_at`, `(group_folder, started_at)`, and `(machine_id, started_at)` for federation-readiness. Schema captures: identity (turn_id PK, machine_id, group_folder, group_jid, agent_profile), model + tokens (model, input/output_tokens, cache_creation/read tokens, est_cost_cents), timing (started_at, finished_at, duration_ms, duration_api_ms, ttft_ms), reliability (tool_use_count, tool_error_count, retry_count, compaction_count, num_turns, exit_code, outcome, error_class), privacy-aware sizes (prompt_chars, response_chars), and linkage (session_id, is_main, is_scheduled_task, attachment_count, truncated_output).
+
+New `src/cost.ts` module with model→cents-per-million-tokens table for Opus 4.7, Sonnet 4.6, and Haiku 4.5 (incl. cache create/read multipliers per Anthropic documented pricing). `Math.ceil` for conservative budget tracking; INTEGER cents to avoid float drift.
+
+Wire format extended on both sides of the container boundary. The host's `ContainerOutput` and the container's `ContainerOutput` interfaces both gain the same optional telemetry fields, so older cached agent-runner-src remains compatible. The agent-runner extracts `usage`, `duration_ms`, `duration_api_ms`, `num_turns` from the SDK's result message; tracks `ttft_ms` locally on the first non-system message; counts assistant messages containing tool_use blocks. The host's `wrappedOnOutput` in `src/index.ts:runAgent` writes one `agent_turns` row per result, computing `est_cost_cents` via `estimateCostCents()`. Telemetry write failures are warn-logged and swallowed — they must not block the message-send round-trip.
+
+**T4 — Operator-action `/api/*` routes + SIGHUP reload + `audit_log` table (`T-1778236000000`).** Commit `4b57f11`. New REST surface served by NanoClaw's HTTP server (T1) on port 7842, Tailscale-reachable. Per Q1 of the dashboard decisions, no auth middleware in v1 — Tailscale-trust is the only network boundary.
+
+Endpoints:
+- `GET /api/groups` — list with full container_config
+- `GET /api/groups/:jid` — single-group detail
+- `PATCH /api/groups/:jid` — additive merge into container_config + audit + SIGHUP
+- `POST /api/groups/:jid/disable` — reversible flag flip + audit + SIGHUP
+- `POST /api/test-message` — IPC injection into a running container's input queue (atomic temp+rename file write under `data/ipc/{folder}/input/`)
+- `GET /api/turns?group=&since=&limit=` — agent_turns query with filters
+- `GET /api/cost/daily?group=&model=&days=` — per-day per-model SUM rollup
+- `GET /api/tasks` — scheduled task mirror
+- `GET /api/audit?limit=` — recent audit entries
+- `POST /api/audit/:id/undo` — restore payload_before if `reversible_until > now`
+
+New `audit_log` SQLite table (id autoincrement PK, machine_id, ts, actor, action, target, payload_before, payload_after, reversible_until). New `src/audit-log.ts` module with `writeAudit()` / `readAuditEntries()` / `readAuditById()` / `isReversible()`. Per-action reversibility windows: group.config.update 5min, group.disable 24h, profile.update 1h, test_message.send 0 (already sent), audit.undo 0 (an undo isn't undoable).
+
+`src/index.ts` SIGHUP handler — re-reads `registered_groups` from SQLite into the in-process map. In-flight containers continue on the old config (kill-on-apply per blueprint v2 § "Phase 8 — Operator-action safety"; drain semantics deferred to follow-up under T-1777809840000 R4). `process.kill(process.pid, 'SIGHUP')` is the trigger from the API after any state-changing PATCH/POST.
+
+`container_config` JSON pattern preserved throughout — PATCH merges keys additively, never replaces wholesale. All endpoints additive — no replacement of existing IPC, skill, or SQLite primitives.
+
+**Pre-deploy checklist applied** per the post-wave-1 discipline: lsof :7842 verified before deploy, creds backed up to `auth.predeploy-20260505-122420`, recovery tag pushed, no errors during `bootout`/`bootstrap`. WhatsApp connected at 12:34:26 SAST, agent_turns + audit_log schemas migrated cleanly.
+
+**Live state at wave close.** PID 66244 running. All five new endpoints (`/api/groups`, `/api/audit`, `/api/turns`, `/api/cost/daily`, `/api/tasks`) return 200. agent_turns + audit_log schemas present. End-to-end telemetry capture verifies on the next real GGA inbound — first row will land within 5s of the agent reply.
+
+**Files changed.** New: `src/cost.ts`, `src/audit-log.ts`, `src/http/api.ts`. Modified: `src/db.ts` (schemas), `src/types.ts` (no-op pass-through; verified), `src/container-runner.ts` (wire format), `src/index.ts` (telemetry write + SIGHUP handler + IPC injection helper), `src/http/server.ts` (mountApi + ApiDeps), `container/agent-runner/src/index.ts` (telemetry emit). Sync: agent-runner cache copied to all 7 per-group `data/sessions/*/agent-runner-src/` directories.
+
+**Brain tickets.** `T-1778234000000` (T2) and `T-1778236000000` (T4) flipped to `col_done`. Epic `T-1778232000000` checkpoint updated.
+
+**Phase 0 status: COMPLETE.** All 5 prerequisites (T1 + T2 + T3 + T4 + T5) shipped. Phase 1 (claw-cli wizard T6 + dashboard scaffold T7) is now unblocked.
+
+---
+
 ### Phase 0 first wave — Factotem Dashboard v1 prerequisites (T5 + T1 + T3)
 
 First implementation wave of the Factotem Operator Dashboard v1 epic (`epic_factotem_dash_v1`, Brain ticket `T-1778232000000`). Three of the five Phase 0 prerequisites land together so the deployment dance (build + restart) amortises across them.
