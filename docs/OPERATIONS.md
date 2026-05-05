@@ -741,3 +741,61 @@ grep 'open-mode: daily budget exceeded' /Users/support/Documents/NanoClaw/nanocl
 ### Configuration changes that need a restart
 
 The in-memory `registeredGroups` map is loaded once at startup. Any change to `container_config` JSON in SQLite (including `openMode.enabled`) only takes effect after `launchctl kickstart -k gui/$(id -u)/com.nanoclaw`.
+
+---
+
+## Dashboard v1 verification
+
+Quick way to confirm the operator dashboard is healthy after a deploy. Lives at `nanoclaw/scripts/verify-dashboard-v1.sh` and runs against the live HTTP server on `localhost:7842`.
+
+### Synopsis
+
+```bash
+cd ~/Documents/NanoClaw/nanoclaw
+bash scripts/verify-dashboard-v1.sh
+```
+
+Exits 0 if all automated checks pass; non-zero if any fail. `MANUAL` checks emit instructions but don't block exit.
+
+### Automated checks (pass without operator involvement)
+
+| # | What it does | Expected state |
+|---|---|---|
+| 1 | `GET /health` and parse JSON | 200 with `nanoclaw.running=true`, `whatsapp.authenticated=true`, machine.region+tailscale_ip surfaced |
+| 2 | `GET /` and time it | 200 in less than 2 seconds |
+| 4 | Sum `agent_turns.est_cost_cents` for today and compare to `/api/cost/daily` | Within 1¢ tolerance |
+| 5 | `PATCH /api/groups/:jid` with a `name` change on the first non-main group | 200 + audit_id; subsequent GET shows new name |
+| 6 | `POST /api/audit/:id/undo` to revert check 5 | 200; subsequent GET shows original name |
+| 8 | Best-effort grep of `/groups/_/` HTML for the typed-confirm primitive | Found if static export bundles match patterns; otherwise emits MANUAL |
+
+Side effect of checks 5 + 6: two clearly-labelled audit entries (`group.config.update` + `audit.undo`) for the test group. State remains identical to before the run.
+
+### Hybrid checks (need a quick operator action)
+
+| # | Operator step | Then |
+|---|---|---|
+| 3 | Send a real message to GGA from your phone, wait for Ben to reply | Re-run with `--check 3`; the script verifies an `agent_turns` row appeared in the last 60s |
+| 10 | Edit `~/.config/nanoclaw/machine.json` `region` field; `bootout` + `bootstrap` | Re-run with `--check 10 --expected-region "<your-new-value>"`; the script confirms `/health.machine.region` matches |
+
+### Manual / eyeball checks (operator confirms outright)
+
+These don't run from the script — the operator opens a browser and clicks through.
+
+1. **Visual regression**: open `/`, `/activity`, `/groups`, `/cost`, `/alerts`, `/audit` in light mode; toggle to dark via the sun/moon icon; reload each page; nothing renders broken
+2. **Restart Stack confirm dialog** (only if you've enabled the feature via `NANOCLAW_DASHBOARD_ENABLE_RESTART_STACK=1` in `~/Library/LaunchAgents/com.nanoclaw.plist`): visit `/alerts`, ensure no live `docker_wedge` alert is masking the test, click the standalone Restart Stack button if exposed, type `RESTART STACK` literally to confirm. Docker Desktop should respawn within ~10s.
+3. **Operator's morning-routine replacement**: instead of `launchctl list | grep nanoclaw && tail logs/nanoclaw.log`, open the dashboard's `/` (Server Health). All five subsystem badges should populate within ~5s on a fresh load
+4. **WhatsApp QR re-pairing via wizard** (only relevant when pairing actually expires or you're rebuilding from scratch): `cd cli/claw-setup && node dist/index.js --resume --force` — the wizard step that handles WhatsApp pairing should render a QR; scanning replaces the live session
+
+### Single-flag invocation reference
+
+```bash
+bash scripts/verify-dashboard-v1.sh                          # all checks
+bash scripts/verify-dashboard-v1.sh --check 5                # one check
+bash scripts/verify-dashboard-v1.sh --check 3                # operator already sent a message
+bash scripts/verify-dashboard-v1.sh --check 10 --expected-region "Don / Mac mini test"
+bash scripts/verify-dashboard-v1.sh --json                   # machine-readable for CI
+```
+
+### What "shipped" means
+
+When all automated checks PASS and the operator confirms the four manual / eyeball checks, the dashboard is considered shipped for the current version. Document the run via a fresh `docs/CHANGE_LOG.md` entry and a recovery tag (`post-wave-N-YYYY-MM-DD`).

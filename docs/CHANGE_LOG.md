@@ -6,6 +6,55 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-05
 
+### Phase 8 — E2E verification suite (T14 / Wave 9)
+
+Wave 9 ships the verification harness for the Factotem Operator Dashboard v1. Two artifacts: an executable bash script that runs the agent-runnable checks against the live system, and a new operator runbook section covering the full flow (automated + hybrid + manual). Recovery tags `pre-wave-9-2026-05-05` and `post-wave-9-2026-05-05` bookend the wave on origin. v1's "shipped" final entry waits for Don's bonus-check confirmation in a follow-up commit.
+
+**`scripts/verify-dashboard-v1.sh`.** Bash script with three flags (`--check N` to run one, `--json` for machine-readable, `--expected-region` for the federation-footprint check). Runs 10 checks and prints PASS/FAIL/MANUAL per check + a summary line. Exit code 0 if no FAIL; 1 otherwise. MANUAL checks don't block exit.
+
+The 10 checks per the blueprint v2 verification plan:
+
+1. `/health` reachable — verifies `nanoclaw.running=true`, `whatsapp.authenticated=true`, parses machine identity (`region`, `tailscale_ip`)
+2. Dashboard root loads in <2s — `time_total` from curl
+3. **HYBRID** Telemetry round-trip — operator sends a message to GGA, then re-runs with `--check 3` to look for a fresh agent_turns row in the last 60s
+4. Cost reconciliation — sums `agent_turns.est_cost_cents` for today and compares to `/api/cost/daily` (1¢ tolerance)
+5. PATCH + SIGHUP — picks the first non-main group with a name set, PATCHes the `name` field, GETs to verify, captures audit_id for check 6
+6. Audit + undo — POSTs `/api/audit/:audit_id/undo`, GETs to verify the name reverted
+7. **MANUAL** KP cross-link — operator clicks through `/groups/:jid` related-ticket link
+8. Misclick prevention (best-effort) — greps `/groups/_/` HTML for the typed-confirm primitive; falls back to MANUAL if not detectable from static export
+9. **MANUAL** Theme toggle — operator clicks the sun/moon icon and confirms persistence across reload
+10. **MANUAL** Federation footprint — operator edits `~/.config/nanoclaw/machine.json` `region`, restarts via `bootout`+`bootstrap`, re-runs with `--check 10 --expected-region "<value>"` to confirm the new region appears in `/health`
+
+**Side effect of checks 5+6.** The script PATCHes the first available non-main group's `name` field, then undoes the change via the audit endpoint. Two clearly-labelled audit entries (`group.config.update` + `audit.undo`) appear in `/api/audit`. No state remains modified.
+
+**Bug surfaced + fixed during script development.** First implementation used `GROUPS=$(curl...)` to capture the API response. Bash silently ignored the assignment because `GROUPS` is a built-in readonly array containing the user's group IDs; `${#GROUPS[0]}` returns the staff group ID length ("20"), which then errored out the downstream jq pipeline. Fixed by renaming to `NC_GROUPS`. This is exactly the kind of footgun the verification suite will keep operators from rediscovering on every fresh deployment.
+
+**First-run results (PID 97826, 2026-05-05).** 5 PASS / 0 FAIL / 5 MANUAL — every automated check passed cleanly:
+
+```
+✓ PASS  1 — /health 200 · pid=97826 region=Local tailscale=100.118.188.52
+✓ PASS  2 — / rendered HTTP 200 in 0.001709s
+~ MANUAL 3 — operator must send a message
+✓ PASS  4 — Cost reconciliation matches: agent_turns sum=0¢, /api/cost/daily=0¢ (Δ=0¢)
+    target group: 27845553333@s.whatsapp.net  (current name: "Don Kruger (DM)", version: 0)
+✓ PASS  5 — PATCH applied + SIGHUP reload took effect. audit_id=2
+✓ PASS  6 — Undo round-trip works — name reverted to "Don Kruger (DM)"
+~ MANUAL 7 — operator must click through KP cross-link
+~ MANUAL 8 — confirm primitive surface-detected in JS bundles, not in HTML
+~ MANUAL 9 — operator must toggle theme + reload
+~ MANUAL 10 — operator must edit machine.json + bootout/bootstrap
+```
+
+**`docs/OPERATIONS.md` § "Dashboard v1 verification".** New section appended at the end. Documents the synopsis, automated checks, hybrid checks, manual eyeball checks, single-flag invocation reference, and what "shipped" means. Operator runbook for repeating verification on every future deploy.
+
+**Convention check.** Pure additive: one new script, one new docs section. No code changes to `src/`, `dashboard/src/`, or `cli/claw-setup/`. The script's only side effect is two audit-log entries that immediately undo themselves. No Sensitive-functionality-list touch.
+
+**Brain ticket.** `T-1778246000000` (T14) flipped to `col_done`. **Epic `T-1778232000000` flip to `col_done` waits for Don's confirmation that the four manual / eyeball checks pass.**
+
+**Phase 8 status: automated portion COMPLETE.** Awaiting operator confirmation on the bonus checks before the v1 closeout entry lands.
+
+---
+
 ### Phase 6 — Alerts panel + audit_log + Restart Stack (T12 / Wave 7)
 
 Wave 7 ships the second-to-last v1 panel: `/alerts` + `/audit`. Surfaces the Round 7 ben-log-grounded top-5 failure modes as proactive alerts, exposes the audit log with reversible-undo affordances, and adds the env-gated Restart Stack recovery action per the Q6 cascade. Recovery tags `pre-wave-7-2026-05-05` and `post-wave-7-2026-05-05` bookend the wave on origin.
