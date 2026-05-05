@@ -177,9 +177,7 @@ async function probeWhatsApp(): Promise<HealthSnapshot['whatsapp']> {
     // Most recent inbound or outbound message timestamp. Cheap query: indexed
     // by timestamp DESC. messages.timestamp is stored as ISO 8601.
     const row = getProbeDb()
-      .prepare(
-        'SELECT timestamp FROM messages ORDER BY timestamp DESC LIMIT 1',
-      )
+      .prepare('SELECT timestamp FROM messages ORDER BY timestamp DESC LIMIT 1')
       .get() as { timestamp?: string } | undefined;
     if (row?.timestamp) lastMessageAt = row.timestamp;
   } catch (err) {

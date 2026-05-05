@@ -65,16 +65,51 @@ export interface Group {
 }
 
 export interface Turn {
-  id: number;
+  // Mirrors AgentTurnRow in nanoclaw/src/db.ts. Optional fields stay
+  // optional because the underlying schema is additive (new columns
+  // landed in Wave 2 with NULL defaults for backfill safety).
+  turn_id: string;
+  machine_id: string;
   group_folder: string;
-  started_at: string;
-  finished_at?: string | null;
-  duration_ms?: number | null;
-  model?: string | null;
+  group_jid?: string | null;
+  agent_profile?: string | null;
+  model: string;
   input_tokens?: number | null;
   output_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
   est_cost_cents?: number | null;
-  error?: string | null;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  duration_api_ms?: number | null;
+  ttft_ms?: number | null;
+  tool_use_count?: number;
+  tool_error_count?: number;
+  retry_count?: number;
+  compaction_count?: number;
+  num_turns?: number | null;
+  exit_code?: number | null;
+  outcome: 'success' | 'error' | 'budget_capped';
+  error_class?: string | null;
+  prompt_chars?: number | null;
+  response_chars?: number | null;
+  session_id?: string | null;
+  is_main?: number;
+  is_scheduled_task?: number;
+  attachment_count?: number;
+  truncated_output?: number;
+}
+
+export interface MessageHit {
+  id: string;
+  chat_jid: string;
+  sender: string;
+  sender_name: string | null;
+  content: string;
+  timestamp: string;
+  is_from_me: number;
+  is_bot_message: number;
 }
 
 export interface CostDaily {
@@ -141,20 +176,61 @@ export async function getGroup(jid: string): Promise<Group> {
 
 export interface GetTurnsOpts {
   group?: string;
+  model?: string;
+  outcome?: 'success' | 'error' | 'budget_capped';
   since?: string;
   limit?: number;
 }
 
-export async function getTurns(opts: GetTurnsOpts = {}): Promise<Turn[]> {
+function turnsQs(opts: GetTurnsOpts): URLSearchParams {
   const params = new URLSearchParams();
   if (opts.group) params.set('group', opts.group);
+  if (opts.model) params.set('model', opts.model);
+  if (opts.outcome) params.set('outcome', opts.outcome);
   if (opts.since) params.set('since', opts.since);
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
-  const qs = params.toString();
+  return params;
+}
+
+export async function getTurns(opts: GetTurnsOpts = {}): Promise<Turn[]> {
+  const qs = turnsQs(opts).toString();
   const res = await getJson<{ turns: Turn[] }>(
     `/api/turns${qs ? '?' + qs : ''}`,
   );
   return res.turns;
+}
+
+/**
+ * Build the URL for a CSV export of turns matching the supplied filters.
+ * The browser handles the actual download (Content-Disposition header is
+ * set server-side). Caller is expected to set this on an `<a download>`.
+ */
+export function turnsCsvUrl(opts: GetTurnsOpts = {}): string {
+  const params = turnsQs(opts);
+  params.set('format', 'csv');
+  // CSV gets a higher row cap on the server (5000); raise the default
+  // here so the operator gets the full window unless they say otherwise.
+  if (!params.has('limit')) params.set('limit', '5000');
+  return `${BASE}/api/turns?${params.toString()}`;
+}
+
+export interface SearchMessagesOpts {
+  q: string;
+  group?: string;
+  limit?: number;
+}
+
+export async function searchMessages(
+  opts: SearchMessagesOpts,
+): Promise<MessageHit[]> {
+  const params = new URLSearchParams();
+  params.set('q', opts.q);
+  if (opts.group) params.set('group', opts.group);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const res = await getJson<{ messages: MessageHit[] }>(
+    `/api/messages/search?${params.toString()}`,
+  );
+  return res.messages;
 }
 
 export interface GetCostDailyOpts {

@@ -1,20 +1,19 @@
 import { ReactNode } from 'react';
 
+import { NavLinks } from './NavLinks';
 import { ThemeToggle } from './ThemeToggle';
 
-const VERSION_NOTE = 'Wave 3 scaffold · v0.1.0';
+const VERSION_NOTE = 'Wave 5 · v0.1.0';
 
 export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
       <nav className="sticky top-0 z-10 border-b border-[var(--color-hairline)] bg-[var(--color-bg)]/80 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-4">
+        <div className="mx-auto flex max-w-7xl items-center gap-6 px-6 py-4">
           <span className="text-xl font-medium tracking-tight text-[var(--color-ink)]">
             Factotem
           </span>
-          <span className="text-xs text-[var(--color-ink-muted)]">
-            Operator Dashboard
-          </span>
+          <NavLinks />
           <div className="flex-1" />
           <ThemeToggle />
         </div>

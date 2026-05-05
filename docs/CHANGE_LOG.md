@@ -6,6 +6,42 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-05
 
+### Phase 3 — Container Activity + Activity Log panels (T9 / Wave 5)
+
+Wave 5 lands the dashboard's second route: `/activity`. Time-series feed of per-turn telemetry from `agent_turns` (Wave 2), polled every 3s, with filters / per-row expand / daily rollup rail / message search / CSV export. Two small server-side additions support the panel's UX features. Recovery tags `pre-wave-5-2026-05-05` and `post-wave-5-2026-05-05` bookend the wave on origin.
+
+**Server-side additions to `src/http/api.ts`.**
+
+- `GET /api/turns?format=csv` — returns `text/csv; charset=utf-8` with `Content-Disposition: attachment; filename="agent-turns-{date}.csv"`. Stable column order across 19 columns (started_at, group_folder, model, agent_profile, outcome, durations, token breakdown, cost, tool counts, retries, compactions, identity). Higher row cap (5000 vs the JSON path's 500) since it's an operator-driven download.
+- `GET /api/turns` extended with `model=` and `outcome=` filters. The dashboard's filter bar composes group + model + outcome + since simultaneously, all server-side.
+- `GET /api/messages/search?q=&group=&limit=` — full-text-ish search via SQLite `LIKE` over the `messages` table content column. Two-character minimum query length to avoid huge result sets. Returns `{messages: [...]}` with `id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message`. Verified live: searching "Ben" returns recent group messages.
+
+**Dashboard panel components.** Activity composes a filter bar + daily rollup rail + a CSV export button + an expandable per-turn feed. New files under `dashboard/src/components/panels/`:
+
+- `ActivityFeed.tsx` — top-level panel, owns three `usePoll` lifecycles (turns at 3s, cost daily at 30s, groups at 60s) plus a debounced (300ms) message-search effect. URL state is the single source of truth for filters via `useSearchParams` + `router.replace()` so operators can bookmark / share queries (e.g. `/activity?group=GGA&model=claude-haiku-4-5-20251001&outcome=error`)
+- `ActivityRow.tsx` — single feed row. Compact summary: timestamp · group · model · tokens · cost · duration · outcome badge. Click expands to a 4-column stat grid: Tokens (input/output/cache create/cache read/total), Timing (started/finished/duration/api duration/TTFT), Reliability (tool calls/tool errors/retries/compactions/SDK turns), Identity (turn_id/session_id/agent_profile/machine_id, plus error_class when present). Plus a footer row with prompt/response char counts and a placeholder for raw container log linkout (deferred to v1.5)
+- `ActivityFilters.tsx` — filter bar with group select, model select (auto-derived from observed turns + fallback to known v1 models), outcome select, time-range pill switcher (1h / 24h / 7d / All), search input. "Clear filters" link appears only when something differs from defaults
+- `DailyRollupRail.tsx` — left-rail per-day summary (turn count + total cents) aggregated client-side from `/api/cost/daily`. Click a day to filter the feed to that day; click again to clear. Empty state explains that telemetry capture started with the Wave 2 deploy
+
+**Dashboard infrastructure additions.**
+
+- `dashboard/src/lib/nanoclaw.ts` — `Turn` interface extended to mirror the full `AgentTurnRow` schema (30 columns); previous interface had only 10 columns and was missing the per-row-expand fields the ticket calls for. New `MessageHit` interface for the search results. New `searchMessages()` and `turnsCsvUrl()` helpers
+- `dashboard/src/app/activity/page.tsx` — new route, wraps `<ActivityFeed />` in `<Suspense>` (Next 16 requires this when a child uses `useSearchParams()` under static export)
+- `dashboard/src/components/layout/NavLinks.tsx` — new sticky-nav link list using `next/link` + `usePathname()` for active-state styling. Links: Server Health (`/`) + Activity (`/activity`)
+- `AppShell.tsx` updated to include `<NavLinks />`. Footer version note bumped to "Wave 5 · v0.1.0"
+
+**Endpoint verification (post-restart).** All endpoints return 200: `/health`, `/api/groups`, `/api/turns?limit=5`, `/api/cost/daily`, `/api/audit`, `/api/tasks`, new `/api/messages/search?q=Ben` (2 real hits), CSV export with proper headers and 19-column header row. Dashboard `/` renders Server Health, `/activity` renders the new panel. Live state: PID 28811, Ben unchanged.
+
+**Empty-state handling.** `agent_turns` and the cost rollup are both empty until the next real GGA reply lands (wire-up was Wave 2). The feed's empty-state message explains this. The first agent reply will populate the feed within 5 seconds (3s poll + capture latency).
+
+**Convention check.** Pure additive — two new orchestrator endpoints (CSV format on existing `/api/turns`, new `/api/messages/search`), one extended interface (`Turn` mirrors backend), six new dashboard components, one new route. No Sensitive-functionality-list touch. Rollback path: revert `src/http/api.ts`, revert `dashboard/src/lib/nanoclaw.ts`, delete `dashboard/src/app/activity/`, delete the new panel components, restore `AppShell.tsx`.
+
+**Brain ticket.** `T-1778241000000` (T9) flipped to `col_done`. Epic `T-1778232000000` checkpoint updated.
+
+**Phase 3 status: COMPLETE.** Wave 6 splits into two parallel tracks: T10 (Group Management panel, 12h) + T11 (Cost Tracking panel, 8h). Both depend only on already-shipped pieces (`/api/groups`, `/api/cost/daily`, `/api/audit/:id/undo`).
+
+---
+
 ### Phase 2 — Server Health panel (T8 / Wave 4)
 
 Wave 4 fills the dashboard's default landing page with real Server Health content. Single-session sprint per the implementation plan: pure UI work composed against the already-shipped `/health` data plane, plus two small server-side additions (Tailscale IP probe + WhatsApp last-message-at lookup) so the machine-identity strip and WhatsApp card carry the data the ticket calls for. Recovery tags `pre-wave-4-2026-05-05` and `post-wave-4-2026-05-05` bookend the wave on origin.

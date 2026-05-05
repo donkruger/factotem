@@ -228,10 +228,15 @@ export function mountApi(app: Express, deps: ApiDeps): void {
 
   app.get('/api/turns', (req: Request, res: Response) => {
     const groupFolder = (req.query.group as string) || undefined;
+    const model = (req.query.model as string) || undefined;
+    const outcome = (req.query.outcome as string) || undefined;
     const since = (req.query.since as string) || undefined;
+    const format = (req.query.format as string) || 'json';
+    // CSV exports allow a higher row cap (operator-driven download).
+    const cap = format === 'csv' ? 5000 : 500;
     const limit = Math.min(
       parseInt((req.query.limit as string) || '100', 10) || 100,
-      500,
+      cap,
     );
 
     const where: string[] = [];
@@ -239,6 +244,14 @@ export function mountApi(app: Express, deps: ApiDeps): void {
     if (groupFolder) {
       where.push('group_folder = ?');
       params.push(groupFolder);
+    }
+    if (model) {
+      where.push('model = ?');
+      params.push(model);
+    }
+    if (outcome) {
+      where.push('outcome = ?');
+      params.push(outcome);
     }
     if (since) {
       where.push('started_at >= ?');
@@ -251,7 +264,91 @@ export function mountApi(app: Express, deps: ApiDeps): void {
     const rows = db()
       .prepare(sql)
       .all(...params) as AgentTurnRow[];
+
+    if (format === 'csv') {
+      // Stable column order for CSV consumers (spreadsheets, scripts).
+      const cols = [
+        'started_at',
+        'group_folder',
+        'model',
+        'agent_profile',
+        'outcome',
+        'duration_ms',
+        'ttft_ms',
+        'input_tokens',
+        'output_tokens',
+        'cache_creation_input_tokens',
+        'cache_read_input_tokens',
+        'est_cost_cents',
+        'tool_use_count',
+        'tool_error_count',
+        'retry_count',
+        'compaction_count',
+        'turn_id',
+        'machine_id',
+        'session_id',
+      ] as const;
+      const escape = (v: unknown): string => {
+        if (v === null || v === undefined) return '';
+        const s = String(v);
+        if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+        return s;
+      };
+      const csv =
+        cols.join(',') +
+        '\n' +
+        rows
+          .map((r) =>
+            cols
+              .map((c) =>
+                escape((r as unknown as Record<string, unknown>)[c]),
+              )
+              .join(','),
+          )
+          .join('\n');
+      const filename = `agent-turns-${new Date().toISOString().slice(0, 10)}.csv`;
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${filename}"`,
+      );
+      res.send(csv);
+      return;
+    }
+
     res.json({ turns: rows });
+  });
+
+  // ---- message content search (powers the Activity panel's search box) ----
+
+  app.get('/api/messages/search', (req: Request, res: Response) => {
+    const q = (req.query.q as string) || '';
+    const groupJid = (req.query.group as string) || undefined;
+    const limit = Math.min(
+      parseInt((req.query.limit as string) || '50', 10) || 50,
+      200,
+    );
+    if (!q || q.trim().length < 2) {
+      // Refuse very short queries — they'd return huge result sets and
+      // are almost certainly not what the operator meant.
+      res.json({ messages: [], reason: 'query too short' });
+      return;
+    }
+    const where: string[] = ['content LIKE ?'];
+    const params: unknown[] = [`%${q}%`];
+    if (groupJid) {
+      where.push('chat_jid = ?');
+      params.push(groupJid);
+    }
+    const sql = `SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message
+                 FROM messages
+                 WHERE ${where.join(' AND ')}
+                 ORDER BY timestamp DESC LIMIT ?`;
+    params.push(limit);
+    const rows = db()
+      .prepare(sql)
+      .all(...params);
+    res.json({ messages: rows, query: q });
   });
 
   // ---- daily cost rollup ----
