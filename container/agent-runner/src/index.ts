@@ -98,6 +98,27 @@ interface ContainerOutput {
   newSessionId?: string;
   model?: string;
   error?: string;
+  // Telemetry (T-1778234000000) — extracted from SDK result message.
+  // All optional so older host code that ignores these fields still works.
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
+  started_at?: string;
+  finished_at?: string;
+  duration_ms?: number;
+  duration_api_ms?: number;
+  ttft_ms?: number;
+  tool_use_count?: number;
+  tool_error_count?: number;
+  retry_count?: number;
+  compaction_count?: number;
+  num_turns?: number;
+  error_class?: string;
+  prompt_chars?: number;
+  response_chars?: number;
 }
 
 interface SessionEntry {
@@ -500,6 +521,17 @@ async function runQuery(
   let messageCount = 0;
   let resultCount = 0;
 
+  // Telemetry tracking for T-1778234000000 (agent_turns).
+  // queryStartedAt: ISO timestamp; queryStartMs: monotonic for ttft calculation.
+  // ttftMs: time from query start to first non-system message (the SDK's
+  // first content message). toolUseCount: assistant messages containing
+  // any tool_use content block.
+  const queryStartedAt = new Date().toISOString();
+  const queryStartMs = Date.now();
+  let ttftMs: number | undefined;
+  let toolUseCount = 0;
+  let toolErrorCount = 0;
+
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
   let globalClaudeMd: string | undefined;
@@ -591,7 +623,25 @@ async function runQuery(
     const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
     log(`[msg #${messageCount}] type=${msgType}`);
 
+    // Telemetry: capture time-to-first-token on the first non-system message.
+    if (ttftMs === undefined && message.type !== 'system') {
+      ttftMs = Date.now() - queryStartMs;
+    }
+
     if (message.type === 'assistant') {
+      // Telemetry: count assistant messages that include tool_use blocks.
+      // Walking content blocks here is best-effort — the SDK's content
+      // shape varies; we only count if we can definitively spot tool_use.
+      const innerMsg = (message as { message?: { content?: unknown } }).message;
+      if (innerMsg && Array.isArray(innerMsg.content)) {
+        for (const block of innerMsg.content) {
+          if (block && typeof block === 'object' && (block as { type?: string }).type === 'tool_use') {
+            toolUseCount++;
+            break; // count once per assistant message
+          }
+        }
+      }
+
       if ('uuid' in message) {
         lastAssistantUuid = (message as { uuid: string }).uuid;
       }
@@ -644,11 +694,48 @@ async function runQuery(
         stream.end();
         break;
       }
+
+      // Telemetry extraction (T-1778234000000): pull usage, durations, num_turns
+      // from the SDK result message. All fields are optional — older SDK
+      // versions may not expose them; emit what we have.
+      const resultMsg = message as Record<string, unknown>;
+      const sdkUsage = resultMsg.usage as
+        | {
+            input_tokens?: number;
+            output_tokens?: number;
+            cache_creation_input_tokens?: number;
+            cache_read_input_tokens?: number;
+          }
+        | undefined;
+      const sdkDurationMs = typeof resultMsg.duration_ms === 'number' ? resultMsg.duration_ms : undefined;
+      const sdkDurationApiMs = typeof resultMsg.duration_api_ms === 'number' ? resultMsg.duration_api_ms : undefined;
+      const sdkNumTurns = typeof resultMsg.num_turns === 'number' ? resultMsg.num_turns : undefined;
+      const finishedAtIso = new Date().toISOString();
+      const wallClockMs = Date.now() - queryStartMs;
+
       writeOutput({
         status: 'success',
         result: textResult || null,
         newSessionId,
         model: detectedModel,
+        usage: sdkUsage
+          ? {
+              input_tokens: sdkUsage.input_tokens,
+              output_tokens: sdkUsage.output_tokens,
+              cache_creation_input_tokens: sdkUsage.cache_creation_input_tokens,
+              cache_read_input_tokens: sdkUsage.cache_read_input_tokens,
+            }
+          : undefined,
+        started_at: queryStartedAt,
+        finished_at: finishedAtIso,
+        duration_ms: sdkDurationMs ?? wallClockMs,
+        duration_api_ms: sdkDurationApiMs,
+        ttft_ms: ttftMs,
+        tool_use_count: toolUseCount,
+        tool_error_count: toolErrorCount,
+        retry_count: retryCount,
+        num_turns: sdkNumTurns,
+        response_chars: textResult?.length ?? 0,
       });
     }
   }

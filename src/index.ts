@@ -29,6 +29,7 @@ import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
+import { estimateCostCents } from './cost.js';
 import {
   getAllChats,
   getAllRegisteredGroups,
@@ -39,12 +40,14 @@ import {
   getNewMessages,
   getRouterState,
   initDatabase,
+  insertAgentTurn,
   setRegisteredGroup,
   setRouterState,
   setSession,
   storeChatMetadata,
   storeMessage,
 } from './db.js';
+import { getMachineIdentity } from './http/machine-identity.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startHttpServer } from './http/server.js';
@@ -532,12 +535,71 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
-  // Wrap onOutput to track session ID from streamed results
+  // Wrap onOutput to track session ID from streamed results AND write a
+  // row to agent_turns (T-1778234000000) for every result the SDK emits.
+  // Telemetry capture is best-effort: missing fields default to null/0
+  // rather than block the message-send round-trip.
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
         if (output.newSessionId) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
+        }
+        // Telemetry write — only when the agent-runner emitted a result
+        // (status === 'success' with usage data). For now we accept that
+        // older cached agent-runner-src may not emit usage; those rows
+        // simply won't get written.
+        if (output.status === 'success' && output.started_at && output.finished_at) {
+          try {
+            const machine = getMachineIdentity();
+            const inputTokens = output.usage?.input_tokens ?? 0;
+            const outputTokens = output.usage?.output_tokens ?? 0;
+            const cacheCreate = output.usage?.cache_creation_input_tokens ?? 0;
+            const cacheRead = output.usage?.cache_read_input_tokens ?? 0;
+            const model = output.model ?? 'unknown';
+            const estCostCents = estimateCostCents(
+              model,
+              inputTokens,
+              outputTokens,
+              cacheCreate,
+              cacheRead,
+            );
+            insertAgentTurn({
+              turn_id: `${turnId}-${Date.now()}`,
+              machine_id: machine.id,
+              group_folder: group.folder,
+              group_jid: chatJid,
+              agent_profile: agentProfile ?? null,
+              model,
+              input_tokens: inputTokens,
+              output_tokens: outputTokens,
+              cache_creation_input_tokens: cacheCreate,
+              cache_read_input_tokens: cacheRead,
+              est_cost_cents: estCostCents,
+              started_at: output.started_at,
+              finished_at: output.finished_at,
+              duration_ms: output.duration_ms ?? 0,
+              duration_api_ms: output.duration_api_ms ?? null,
+              ttft_ms: output.ttft_ms ?? null,
+              tool_use_count: output.tool_use_count ?? 0,
+              tool_error_count: output.tool_error_count ?? 0,
+              retry_count: output.retry_count ?? 0,
+              compaction_count: output.compaction_count ?? 0,
+              num_turns: output.num_turns ?? null,
+              outcome: 'success',
+              prompt_chars: prompt.length,
+              response_chars: output.response_chars ?? output.result?.length ?? 0,
+              session_id: output.newSessionId ?? null,
+              is_main: isMain ? 1 : 0,
+              is_scheduled_task: 0,
+              attachment_count: imageAttachments.length,
+            });
+          } catch (err) {
+            logger.warn(
+              { err, group: group.folder, turnId },
+              'agent_turns: failed to insert telemetry row (non-fatal)',
+            );
+          }
         }
         await onOutput(output);
       }

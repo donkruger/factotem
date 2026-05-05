@@ -92,6 +92,46 @@ function createSchema(database: Database.Database): void {
       container_count INTEGER NOT NULL DEFAULT 0,
       est_cost_cents INTEGER NOT NULL DEFAULT 0
     );
+    -- Per-turn telemetry record. Phase 0.2 of the Factotem Dashboard v1
+    -- epic (T-1778234000000). 30-column schema per Round 8 of the
+    -- overnight research. Backed by SDK usage events emitted in the
+    -- container-runner OUTPUT envelope.
+    CREATE TABLE IF NOT EXISTS agent_turns (
+      turn_id TEXT PRIMARY KEY,
+      machine_id TEXT NOT NULL,
+      group_folder TEXT NOT NULL,
+      group_jid TEXT,
+      agent_profile TEXT,
+      model TEXT NOT NULL,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cache_creation_input_tokens INTEGER,
+      cache_read_input_tokens INTEGER,
+      est_cost_cents INTEGER,
+      started_at TEXT NOT NULL,
+      finished_at TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL,
+      duration_api_ms INTEGER,
+      ttft_ms INTEGER,
+      tool_use_count INTEGER DEFAULT 0,
+      tool_error_count INTEGER DEFAULT 0,
+      retry_count INTEGER DEFAULT 0,
+      compaction_count INTEGER DEFAULT 0,
+      num_turns INTEGER,
+      exit_code INTEGER,
+      outcome TEXT NOT NULL,
+      error_class TEXT,
+      prompt_chars INTEGER,
+      response_chars INTEGER,
+      session_id TEXT,
+      is_main INTEGER DEFAULT 0,
+      is_scheduled_task INTEGER DEFAULT 0,
+      attachment_count INTEGER DEFAULT 0,
+      truncated_output INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_turns_started ON agent_turns(started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_turns_group ON agent_turns(group_folder, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_turns_machine ON agent_turns(machine_id, started_at DESC);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -725,6 +765,87 @@ export function recordOpenSpend(date: string, addCents: number): void {
        container_count = container_count + 1,
        est_cost_cents = est_cost_cents + excluded.est_cost_cents`,
   ).run(date, addCents);
+}
+
+// --- Agent turns telemetry (T-1778234000000) ---
+
+export interface AgentTurnRow {
+  turn_id: string;
+  machine_id: string;
+  group_folder: string;
+  group_jid?: string | null;
+  agent_profile?: string | null;
+  model: string;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+  est_cost_cents?: number | null;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  duration_api_ms?: number | null;
+  ttft_ms?: number | null;
+  tool_use_count?: number;
+  tool_error_count?: number;
+  retry_count?: number;
+  compaction_count?: number;
+  num_turns?: number | null;
+  exit_code?: number | null;
+  outcome: 'success' | 'error' | 'budget_capped';
+  error_class?: string | null;
+  prompt_chars?: number | null;
+  response_chars?: number | null;
+  session_id?: string | null;
+  is_main?: number;
+  is_scheduled_task?: number;
+  attachment_count?: number;
+  truncated_output?: number;
+}
+
+export function insertAgentTurn(row: AgentTurnRow): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO agent_turns (
+      turn_id, machine_id, group_folder, group_jid, agent_profile, model,
+      input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+      est_cost_cents, started_at, finished_at, duration_ms, duration_api_ms, ttft_ms,
+      tool_use_count, tool_error_count, retry_count, compaction_count, num_turns,
+      exit_code, outcome, error_class, prompt_chars, response_chars, session_id,
+      is_main, is_scheduled_task, attachment_count, truncated_output
+    ) VALUES (
+      @turn_id, @machine_id, @group_folder, @group_jid, @agent_profile, @model,
+      @input_tokens, @output_tokens, @cache_creation_input_tokens, @cache_read_input_tokens,
+      @est_cost_cents, @started_at, @finished_at, @duration_ms, @duration_api_ms, @ttft_ms,
+      @tool_use_count, @tool_error_count, @retry_count, @compaction_count, @num_turns,
+      @exit_code, @outcome, @error_class, @prompt_chars, @response_chars, @session_id,
+      @is_main, @is_scheduled_task, @attachment_count, @truncated_output
+    )`,
+  ).run({
+    ...row,
+    group_jid: row.group_jid ?? null,
+    agent_profile: row.agent_profile ?? null,
+    input_tokens: row.input_tokens ?? null,
+    output_tokens: row.output_tokens ?? null,
+    cache_creation_input_tokens: row.cache_creation_input_tokens ?? null,
+    cache_read_input_tokens: row.cache_read_input_tokens ?? null,
+    est_cost_cents: row.est_cost_cents ?? null,
+    duration_api_ms: row.duration_api_ms ?? null,
+    ttft_ms: row.ttft_ms ?? null,
+    tool_use_count: row.tool_use_count ?? 0,
+    tool_error_count: row.tool_error_count ?? 0,
+    retry_count: row.retry_count ?? 0,
+    compaction_count: row.compaction_count ?? 0,
+    num_turns: row.num_turns ?? null,
+    exit_code: row.exit_code ?? null,
+    error_class: row.error_class ?? null,
+    prompt_chars: row.prompt_chars ?? null,
+    response_chars: row.response_chars ?? null,
+    session_id: row.session_id ?? null,
+    is_main: row.is_main ?? 0,
+    is_scheduled_task: row.is_scheduled_task ?? 0,
+    attachment_count: row.attachment_count ?? 0,
+    truncated_output: row.truncated_output ?? 0,
+  });
 }
 
 // --- JSON migration ---

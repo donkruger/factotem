@@ -65,6 +65,28 @@ export interface ContainerOutput {
   newSessionId?: string;
   model?: string;
   error?: string;
+  // Telemetry fields populated by the agent-runner from the SDK's
+  // result message (T-1778234000000). All optional for backward
+  // compatibility with cached agent-runner-src that hasn't been synced.
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
+  started_at?: string;
+  finished_at?: string;
+  duration_ms?: number;
+  duration_api_ms?: number;
+  ttft_ms?: number;
+  tool_use_count?: number;
+  tool_error_count?: number;
+  retry_count?: number;
+  compaction_count?: number;
+  num_turns?: number;
+  error_class?: string;
+  prompt_chars?: number;
+  response_chars?: number;
 }
 
 interface VolumeMount {
