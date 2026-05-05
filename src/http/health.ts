@@ -13,12 +13,14 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+import Database from 'better-sqlite3';
+
 import { ONECLI_URL, PROJECT_ROOT, STORE_DIR } from '../config.js';
 import { logger } from '../logger.js';
 import { getMachineIdentity, MachineIdentity } from './machine-identity.js';
 
 export interface HealthSnapshot {
-  machine: MachineIdentity;
+  machine: MachineIdentity & { tailscale_ip: string | null };
   nanoclaw: {
     running: true;
     pid: number;
@@ -60,15 +62,16 @@ export async function getHealthSnapshot(): Promise<HealthSnapshot> {
     return cachedSnapshot;
   }
 
-  const [docker, onecli, whatsapp, openDm] = await Promise.all([
+  const [docker, onecli, whatsapp, openDm, tailscaleIp] = await Promise.all([
     probeDocker(),
     probeOneCLI(),
     probeWhatsApp(),
     probeOpenDm(),
+    probeTailscale(),
   ]);
 
   const snapshot: HealthSnapshot = {
-    machine: getMachineIdentity(),
+    machine: { ...getMachineIdentity(), tailscale_ip: tailscaleIp },
     nanoclaw: {
       running: true,
       pid: process.pid,
@@ -145,23 +148,72 @@ async function probeOneCLI(): Promise<HealthSnapshot['onecli']> {
   }
 }
 
+// Lazy singleton database connection for read-only queries inside probes.
+// Same pattern as src/http/api.ts. Read-only avoids contention with the
+// orchestrator's writer connection.
+let probeDb: Database.Database | undefined;
+function getProbeDb(): Database.Database {
+  if (!probeDb) {
+    probeDb = new Database(path.join(STORE_DIR, 'messages.db'), {
+      readonly: true,
+    });
+  }
+  return probeDb;
+}
+
 async function probeWhatsApp(): Promise<HealthSnapshot['whatsapp']> {
+  let authenticated = false;
+  let lastMessageAt: string | null = null;
   try {
     const authStatusPath = path.join(STORE_DIR, 'auth-status.txt');
-    let authenticated = false;
     if (fs.existsSync(authStatusPath)) {
       const status = fs.readFileSync(authStatusPath, 'utf-8').trim();
       authenticated = status === 'authenticated';
     }
-    // Last-inbound-at can be derived later from messages.db. v1: just expose
-    // null and let the dashboard query /api/turns separately.
-    return {
-      authenticated,
-      last_message_at: null,
-    };
   } catch {
-    return { authenticated: false, last_message_at: null };
+    /* fall through */
   }
+  try {
+    // Most recent inbound or outbound message timestamp. Cheap query: indexed
+    // by timestamp DESC. messages.timestamp is stored as ISO 8601.
+    const row = getProbeDb()
+      .prepare(
+        'SELECT timestamp FROM messages ORDER BY timestamp DESC LIMIT 1',
+      )
+      .get() as { timestamp?: string } | undefined;
+    if (row?.timestamp) lastMessageAt = row.timestamp;
+  } catch (err) {
+    logger.debug({ err }, 'health: messages last-timestamp probe failed');
+  }
+  return { authenticated, last_message_at: lastMessageAt };
+}
+
+async function probeTailscale(): Promise<string | null> {
+  // Tailscale IP for the dashboard's machine-identity strip. macOS GUI
+  // installs ship the binary at /Applications/Tailscale.app/Contents/MacOS/Tailscale
+  // (no PATH symlink unless the operator added one). Probe both common
+  // paths with a short timeout — null is the graceful fallback (e.g. when
+  // Tailscale isn't running, isn't logged in, or isn't installed).
+  const candidates = [
+    '/usr/local/bin/tailscale',
+    '/opt/homebrew/bin/tailscale',
+    '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
+  ];
+  for (const bin of candidates) {
+    if (!fs.existsSync(bin)) continue;
+    try {
+      const out = execSync(`"${bin}" ip -4 2>/dev/null`, {
+        encoding: 'utf-8',
+        timeout: 2000,
+      }).trim();
+      // First line should be the IPv4 address.
+      const ip = out.split('\n')[0]?.trim();
+      if (ip && /^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return ip;
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
 }
 
 async function probeOpenDm(): Promise<HealthSnapshot['open_dm']> {

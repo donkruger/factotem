@@ -6,6 +6,43 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-05
 
+### Phase 2 — Server Health panel (T8 / Wave 4)
+
+Wave 4 fills the dashboard's default landing page with real Server Health content. Single-session sprint per the implementation plan: pure UI work composed against the already-shipped `/health` data plane, plus two small server-side additions (Tailscale IP probe + WhatsApp last-message-at lookup) so the machine-identity strip and WhatsApp card carry the data the ticket calls for. Recovery tags `pre-wave-4-2026-05-05` and `post-wave-4-2026-05-05` bookend the wave on origin.
+
+**Server-side additions to `src/http/health.ts`.** Two new probes, both run inside the existing `Promise.all` so they share the 5-second snapshot cache:
+
+- `probeTailscale()` — tries the three common macOS Tailscale binary paths (`/usr/local/bin/tailscale`, `/opt/homebrew/bin/tailscale`, `/Applications/Tailscale.app/Contents/MacOS/Tailscale`), runs `tailscale ip -4` with a 2-second timeout, parses the first line as an IPv4 address. Graceful null fallback if the binary is missing, exits non-zero, or returns malformed output. Don's deployment now surfaces `tailscale_ip: "100.118.188.52"` (CGNAT range) for the dashboard's machine-identity strip.
+- WhatsApp `last_message_at` — extends `probeWhatsApp()` with a direct `messages` table lookup via a lazy singleton `better-sqlite3` connection (read-only, same pattern as `src/http/api.ts`). Single-row query indexed by `timestamp DESC`. Replaces the v1 placeholder that always returned null.
+
+`HealthSnapshot.machine` type extended via composition: `MachineIdentity & { tailscale_ip: string | null }` — keeps `tailscale_ip` out of `~/.config/nanoclaw/machine.json` (it's dynamic state, not persistent identity) but ensures every `/health` snapshot carries the live value.
+
+**Dashboard panel components.** Server Health composes a top machine-identity strip + a 4-card grid over the `/health` snapshot, polled every 5s via the existing `usePoll(getHealth, 5000)` hook. New files under `dashboard/src/components/panels/`:
+
+- `ServerHealth.tsx` — top-level panel, owns the `usePoll` lifecycle, renders the strip + grid, hands transient errors to the connection-loss banner without dropping the last-known data
+- `MachineIdentityStrip.tsx` — horizontal strip with Region · Hostname · Tailscale IP labels (Lucide Globe / HardDrive / Network icons), `bg-bg-elevated` to distinguish from the cards below
+- `cards/NanoClawCard.tsx` — running/stopped Badge, PID, formatted uptime (via `formatDurationMs`), version (commit SHA when available, "—" when unknown)
+- `cards/DockerCard.tsx` — engine reachable Badge, active container count, image tag (running, the "vs latest available" comparison deferred to v1.5)
+- `cards/OneCLICard.tsx` — reachable Badge, latency, auth-mode pill (success for `api-key`, warning for `oauth-workaround`, neutral for unknown)
+- `cards/WhatsAppCard.tsx` — authenticated Badge, time-since-last-message via `formatRelativeTime`, connection state
+- `ConnectionLossBanner.tsx` — red-tinted banner shown on `/health` errors (5xx, network failure), with a deep-link to `nanoclaw/docs/OPERATIONS.md § Recovery` and a collapsible error-detail `<details>` for the message body
+
+`dashboard/src/lib/nanoclaw.ts` `MachineIdentity` interface fixed: `platform` (always wrong) → `region` (matches the orchestrator's source of truth in `src/http/machine-identity.ts`), `created_at` added, and `Health.machine` composes with `tailscale_ip: string | null`.
+
+`dashboard/src/app/page.tsx` collapsed to a one-line `<ServerHealth />` import — the panel owns its own polling and rendering.
+
+**Pre-deploy + restart.** Standard discipline: lsof :7842 verified Ben's PID (83893), creds backed up to `creds.json.pre-wave-4-2026-05-05.bak`, recovery tag pushed, `bootout`/`bootstrap` cycle. New PID 574 came up clean, all probes returning data within 5s, "dashboard static export mounted" log line confirms the Wave 3 mount line still wires the new build.
+
+**Live verification.** `/health` returns the extended schema with `machine.tailscale_ip = "100.118.188.52"` and `whatsapp.last_message_at = "2026-05-05T09:00:42.000Z"`. Dashboard root returns 9775 bytes of HTML (smaller than Wave 3's placeholder; the cards render after the first client-side poll completes). All five subsystem badges render — NanoClaw running, Docker reachable, OneCLI reachable (211ms, api-key), WhatsApp authenticated.
+
+**Convention check.** Pure additive: new panel components, two new probes inside the existing health snapshot, one type extension via composition. No Sensitive-functionality-list touch. Rollback path: revert `src/http/health.ts`, revert `dashboard/src/lib/nanoclaw.ts`, delete `dashboard/src/components/panels/`, restore the previous `dashboard/src/app/page.tsx`.
+
+**Brain ticket.** `T-1778240000000` (T8) flipped to `col_done`. Epic `T-1778232000000` checkpoint updated.
+
+**Phase 2 status: COMPLETE.** Wave 5 (T9 — Activity feed + Activity Log, 10h) becomes the next sprint — fills `/activity` route with `agent_turns` data plus the step-timeline-with-nested-retries pattern from R9.
+
+---
+
 ### Phase 1 first wave — claw-cli wizard + dashboard scaffold (T6 + T7)
 
 Phase 1 of the Factotem Dashboard v1 epic (`epic_factotem_dash_v1`) ships its two scaffolds in parallel: the cold-start onboarding wizard (`cli/claw-setup/`) and the dashboard scaffold (`dashboard/`) that subsequent waves fill with panels. Both are purely additive new directories sharing zero files; T7 also lands a single `app.use(express.static(...))` line in `src/http/server.ts` to mount the dashboard's static export under NanoClaw's HTTP server. Recovery tags `pre-wave-3-2026-05-05` and `post-wave-3-2026-05-05` bookend the wave on origin.

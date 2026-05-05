@@ -19,12 +19,13 @@ const BASE = process.env.NEXT_PUBLIC_NANOCLAW_URL ?? '';
 export interface MachineIdentity {
   id: string;
   hostname: string;
-  platform: string;
+  region: string;
   brain_path?: string | null;
+  created_at?: string;
 }
 
 export interface Health {
-  machine: MachineIdentity & { brain_path?: string | null };
+  machine: MachineIdentity & { tailscale_ip: string | null };
   nanoclaw: {
     running: true;
     pid: number;
