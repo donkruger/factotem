@@ -36,6 +36,7 @@ import {
   OnChatMetadata,
   RegisteredGroup,
 } from '../types.js';
+import { secureAuthDir } from './auth-permissions.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -90,6 +91,12 @@ export class WhatsAppChannel implements Channel {
   private async connectInternal(onFirstOpen?: () => void): Promise<void> {
     const authDir = path.join(STORE_DIR, 'auth');
     fs.mkdirSync(authDir, { recursive: true });
+
+    // Tighten auth file permissions to 0o600 (initial walk + fs.watch).
+    // Baileys writes session keys + pre-keys + sender-keys throughout
+    // runtime; default umask leaves them world-readable, which is a real
+    // exposure on multi-user hosts. T-1778237000000 (Phase 0.6).
+    secureAuthDir(authDir);
 
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 

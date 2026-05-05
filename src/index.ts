@@ -47,6 +47,7 @@ import {
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
+import { startHttpServer } from './http/server.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
@@ -982,6 +983,12 @@ async function main(): Promise<void> {
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
+
+  // Start the HTTP server for the Factotem dashboard's /health and
+  // (later) /api/* routes. Tailscale-local; no app-level auth in v1.
+  // T-1778233000000 (Phase 0.1).
+  startHttpServer();
+
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
     process.exit(1);

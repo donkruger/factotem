@@ -4,6 +4,39 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ---
 
+## 2026-05-05
+
+### Phase 0 first wave — Factotem Dashboard v1 prerequisites (T5 + T1 + T3)
+
+First implementation wave of the Factotem Operator Dashboard v1 epic (`epic_factotem_dash_v1`, Brain ticket `T-1778232000000`). Three of the five Phase 0 prerequisites land together so the deployment dance (build + restart) amortises across them.
+
+**T5 — Baileys credentials permissions hardening (`T-1778237000000`).** Resolves the verified vulnerability from `ben-log/2026-05-03-baileys-creds-world-readable.md` where `store/auth/creds.json` and ~160 sibling pre-key/sender-key files were created with mode 0644 (world-readable). New module `src/channels/auth-permissions.ts` exports `secureAuthDir(authDir)` which (a) walks the directory at startup tightening every file to 0o600, and (b) registers an `fs.watch` on the directory chmodding 0o600 on every subsequent write. Wired into `whatsapp.ts:connectInternal()` immediately after `mkdirSync` and before `useMultiFileAuthState`. Verified post-re-pair: all 33 files in the new `store/auth/` are 0o600 including `creds.json`.
+
+**T1 — `/health` HTTP endpoint + machine-identity (`T-1778233000000`).** Stands up the Tailscale-local HTTP server NanoClaw will use to serve the dashboard. Three new modules under `src/http/`:
+- `server.ts` — Express server bound to `0.0.0.0` on `NANOCLAW_HTTP_PORT` (default 7842; chosen to avoid collision with common dev-tool ports — see incident below).
+- `health.ts` — JSON snapshot endpoint covering machine identity, NanoClaw process state, Docker engine + image tag, OneCLI reachability + auth-mode, WhatsApp authentication, and open-DM placeholder. Cached 5s.
+- `machine-identity.ts` — reads or auto-creates `~/.config/nanoclaw/machine.json` on first startup. UUID v4 + hostname + region (default `Local`) + Brain path (per Q9 — promoted from hardcoded constant). File mode 0o600.
+
+Server-start integrated into `src/index.ts` after channel registration and IPC watcher startup, before message-loop kickoff. The configuration convention (`PROJECT_ROOT` now exported from `config.ts`; new `NANOCLAW_HTTP_PORT` constant) keeps everything in one place.
+
+**T3 — Container image versioning (`T-1778235000000`).** `container/build.sh` now captures `git rev-parse --short HEAD` and tags the built image with both `nanoclaw-agent:latest` and `nanoclaw-agent:{git-sha}`. The SHA is also written to `nanoclaw/.container-image-tag` (gitignored), read by `health.ts` so the dashboard can compare running tag vs latest available. First build produced `nanoclaw-agent:d7e061b` confirming the workflow.
+
+**Incident during initial deploy — EADDRINUSE corrupted creds.json.** First deploy attempt at 11:53 SAST crashed because the original default port 3000 collided with Don's local Factotem marketing-site dev server. The synchronous EADDRINUSE became an uncaught exception, killing Node mid-Baileys-write and truncating `creds.json` to 0 bytes. Two code fixes in this same wave:
+- Default port changed `3000 → 7842` in `src/config.ts` — coexistence-aware default that doesn't collide with common dev tooling (Vite, Next, Webpack, etc.).
+- `src/http/server.ts` uses `server.on('error', ...)` for graceful EADDRINUSE handling — the dashboard endpoint becomes unavailable but NanoClaw never crashes from a port conflict.
+
+Operator action required for recovery: WhatsApp re-pair via the standard `setup/index.ts --step whatsapp-auth` procedure (third attempt succeeded in 17s with code R5C9-4YM9). Live system verified post-recovery: PID 31080 running, `/health` returns 200, `whatsapp.authenticated: true`, OneCLI reachable at 70ms, image tag matches HEAD.
+
+Full incident analysis + 6 productisation signals (default-port-coexistence; `app.listen` graceful errors; Baileys' non-atomic creds write; pre-deploy port probe missing; non-disruption invariant violation; pairing-code-lifetime brittleness) in `~/Documents/NanoClaw/ben-log/2026-05-05-eaddrinuse-corrupted-creds-json.md`.
+
+**Files changed.** New: `src/channels/auth-permissions.ts`, `src/http/server.ts`, `src/http/health.ts`, `src/http/machine-identity.ts`. Modified: `src/channels/whatsapp.ts`, `src/config.ts`, `src/index.ts`, `package.json` (added `express` + `@types/express`), `package-lock.json`, `container/build.sh`, `.gitignore`. Recovery point: git tag `pre-phase-0-2026-05-03` covers the pre-Phase-0 baseline.
+
+**Operator runbook updates.** `OPERATIONS.md` and `ARCHITECTURE.md` updates deferred to T-1778246000000 (Phase 8 verification) per the epic's plan.
+
+**Brain tickets.** `T-1778233000000`, `T-1778235000000`, `T-1778237000000` flipped to `col_done`. Epic `T-1778232000000` checkpoint updated.
+
+---
+
 ## 2026-05-03
 
 ### Global flip to Haiku (config-only) — "no Sonnet, no Opus"

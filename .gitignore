@@ -27,6 +27,10 @@ groups/global/*
 # docs/OPERATIONS.md § Auth Mode). Kept gitignored in case a stale file appears.
 .auth-mode
 
+# Container image SHA tag — written by container/build.sh, read at runtime.
+# T-1778235000000 (Phase 0.4 of Factotem Dashboard v1 epic).
+.container-image-tag
+
 # Temp files
 .tmp-*
 
