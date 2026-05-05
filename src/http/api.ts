@@ -100,6 +100,48 @@ export function mountApi(app: Express, deps: ApiDeps): void {
     });
   });
 
+  // Helper: read the optimistic-concurrency version off a group's
+  // containerConfig. Defaults to 0 for groups that haven't been edited
+  // since this feature landed.
+  function groupVersion(group: RegisteredGroup): number {
+    const v = (group.containerConfig as Record<string, unknown> | null)?.[
+      'version'
+    ];
+    return typeof v === 'number' ? v : 0;
+  }
+
+  // Helper: enforce optimistic concurrency via the If-Match header. Returns
+  // null when the request is allowed to proceed; returns the response that
+  // was already sent on rejection (caller should bail out).
+  function checkIfMatch(
+    req: Request,
+    res: Response,
+    group: RegisteredGroup,
+  ): boolean {
+    const header = req.get('If-Match');
+    if (!header) return true; // header is advisory — clients without it bypass
+    const want = parseInt(header.trim(), 10);
+    const have = groupVersion(group);
+    if (want !== have) {
+      res.status(409).json({
+        error: 'version mismatch — group was edited by someone else',
+        current_version: have,
+      });
+      return false;
+    }
+    return true;
+  }
+
+  // Helper: bump the group's containerConfig.version on every mutation so
+  // subsequent edits see the new value.
+  function bumpVersion(group: RegisteredGroup): void {
+    const next = groupVersion(group) + 1;
+    group.containerConfig = {
+      ...(group.containerConfig ?? {}),
+      version: next,
+    } as RegisteredGroup['containerConfig'];
+  }
+
   app.patch('/api/groups/:jid', (req: Request, res: Response) => {
     const jid = req.params.jid;
     const groups = deps.getRegisteredGroups();
@@ -108,6 +150,7 @@ export function mountApi(app: Express, deps: ApiDeps): void {
       res.status(404).json({ error: 'group not found' });
       return;
     }
+    if (!checkIfMatch(req, res, group)) return;
     const before = JSON.parse(JSON.stringify(group)) as RegisteredGroup;
     const body = req.body as Partial<{
       requires_trigger: boolean;
@@ -126,12 +169,17 @@ export function mountApi(app: Express, deps: ApiDeps): void {
       group.trigger = body.trigger;
     }
     if (body.container_config && typeof body.container_config === 'object') {
-      // Additive merge — preserves existing keys not in the patch.
+      // Additive merge — preserves existing keys not in the patch. The
+      // operator-supplied `version` key is dropped because version
+      // monotonicity is the server's concern, not the client's.
+      const supplied = { ...(body.container_config as Record<string, unknown>) };
+      delete supplied.version;
       group.containerConfig = {
         ...(group.containerConfig ?? {}),
-        ...(body.container_config as Record<string, unknown>),
+        ...supplied,
       } as RegisteredGroup['containerConfig'];
     }
+    bumpVersion(group);
 
     try {
       setRegisteredGroup(jid, group);
@@ -151,7 +199,7 @@ export function mountApi(app: Express, deps: ApiDeps): void {
     });
 
     deps.reloadConfig();
-    res.json({ ok: true, audit_id: auditId });
+    res.json({ ok: true, audit_id: auditId, version: groupVersion(group) });
   });
 
   app.post('/api/groups/:jid/disable', (req: Request, res: Response) => {
@@ -162,6 +210,7 @@ export function mountApi(app: Express, deps: ApiDeps): void {
       res.status(404).json({ error: 'group not found' });
       return;
     }
+    if (!checkIfMatch(req, res, group)) return;
     const before = JSON.parse(JSON.stringify(group)) as RegisteredGroup;
     // Disable = require trigger + tag with disabled flag in container_config.
     // Avoids destroying state; reversible by re-enabling.
@@ -170,6 +219,7 @@ export function mountApi(app: Express, deps: ApiDeps): void {
       ...(group.containerConfig ?? {}),
       disabled: true,
     } as RegisteredGroup['containerConfig'];
+    bumpVersion(group);
 
     try {
       setRegisteredGroup(jid, group);
@@ -189,7 +239,90 @@ export function mountApi(app: Express, deps: ApiDeps): void {
     });
 
     deps.reloadConfig();
-    res.json({ ok: true, audit_id: auditId });
+    res.json({ ok: true, audit_id: auditId, version: groupVersion(group) });
+  });
+
+  app.post('/api/groups/:jid/enable', (req: Request, res: Response) => {
+    const jid = req.params.jid;
+    const groups = deps.getRegisteredGroups();
+    const group = groups[jid];
+    if (!group) {
+      res.status(404).json({ error: 'group not found' });
+      return;
+    }
+    if (!checkIfMatch(req, res, group)) return;
+    const before = JSON.parse(JSON.stringify(group)) as RegisteredGroup;
+    // Enable = clear disabled flag + clear soft-delete marker if present.
+    // Reversible mirror of disable.
+    group.containerConfig = {
+      ...(group.containerConfig ?? {}),
+      disabled: false,
+      deleted_at: null,
+    } as RegisteredGroup['containerConfig'];
+    bumpVersion(group);
+
+    try {
+      setRegisteredGroup(jid, group);
+    } catch (err) {
+      logger.error({ jid, err }, 'api: enable failed');
+      res.status(500).json({ error: 'persistence failed' });
+      return;
+    }
+
+    const machine = getMachineIdentity();
+    const auditId = writeAudit({
+      machineId: machine.id,
+      action: 'group.enable',
+      target: jid,
+      payloadBefore: before,
+      payloadAfter: group,
+    });
+
+    deps.reloadConfig();
+    res.json({ ok: true, audit_id: auditId, version: groupVersion(group) });
+  });
+
+  app.delete('/api/groups/:jid', (req: Request, res: Response) => {
+    const jid = req.params.jid;
+    const groups = deps.getRegisteredGroups();
+    const group = groups[jid];
+    if (!group) {
+      res.status(404).json({ error: 'group not found' });
+      return;
+    }
+    if (!checkIfMatch(req, res, group)) return;
+    const before = JSON.parse(JSON.stringify(group)) as RegisteredGroup;
+    // Soft delete: tag with deleted_at + disabled. Preserves the SQLite row
+    // and the per-group filesystem so a v1.5 "restore deleted" surface can
+    // bring it back. The dashboard hides soft-deleted groups by default
+    // and the orchestrator drops them from the active routing map.
+    group.requiresTrigger = true;
+    group.containerConfig = {
+      ...(group.containerConfig ?? {}),
+      disabled: true,
+      deleted_at: new Date().toISOString(),
+    } as RegisteredGroup['containerConfig'];
+    bumpVersion(group);
+
+    try {
+      setRegisteredGroup(jid, group);
+    } catch (err) {
+      logger.error({ jid, err }, 'api: delete failed');
+      res.status(500).json({ error: 'persistence failed' });
+      return;
+    }
+
+    const machine = getMachineIdentity();
+    const auditId = writeAudit({
+      machineId: machine.id,
+      action: 'group.delete',
+      target: jid,
+      payloadBefore: before,
+      payloadAfter: group,
+    });
+
+    deps.reloadConfig();
+    res.json({ ok: true, audit_id: auditId, version: groupVersion(group) });
   });
 
   // ---- test message (forwards to a running container's IPC input) ----
@@ -300,9 +433,7 @@ export function mountApi(app: Express, deps: ApiDeps): void {
         rows
           .map((r) =>
             cols
-              .map((c) =>
-                escape((r as unknown as Record<string, unknown>)[c]),
-              )
+              .map((c) => escape((r as unknown as Record<string, unknown>)[c]))
               .join(','),
           )
           .join('\n');
@@ -387,6 +518,45 @@ export function mountApi(app: Express, deps: ApiDeps): void {
     res.json({ rows });
   });
 
+  // ---- cost test alert (forwards a synthetic budget alert to the operator) ----
+
+  app.post('/api/cost/test-alert', (req: Request, res: Response) => {
+    // Cost alerts deliver to the operator's main group via the existing
+    // IPC pattern (same channel the open_dm cost-cap alerts use). The
+    // dashboard's "Send test alert" button hits this endpoint to verify
+    // the wiring without waiting for a real threshold breach.
+    const body = req.body as {
+      threshold_pct?: number;
+      spent_cents?: number;
+      budget_cents?: number;
+    };
+    const groups = deps.getRegisteredGroups();
+    const main = Object.values(groups).find((g) => g.isMain);
+    if (!main) {
+      res.status(404).json({ error: 'no main group registered' });
+      return;
+    }
+    const threshold = body.threshold_pct ?? 50;
+    const spent = body.spent_cents ?? 0;
+    const budget = body.budget_cents ?? 0;
+    const text = `[cost-alert · TEST] daily spend ${(spent / 100).toFixed(2)} USD has reached ${threshold}% of the configured budget (${(budget / 100).toFixed(2)} USD). This is a test alert from the Cost Tracking panel.`;
+    try {
+      deps.injectIpcMessage(main.folder, text);
+    } catch (err) {
+      logger.error({ err }, 'api: cost test-alert IPC injection failed');
+      res.status(500).json({ error: 'IPC injection failed' });
+      return;
+    }
+    const machine = getMachineIdentity();
+    const auditId = writeAudit({
+      machineId: machine.id,
+      action: 'test_message.send',
+      target: main.folder,
+      payloadAfter: { kind: 'cost_alert_test', threshold, spent, budget },
+    });
+    res.json({ ok: true, audit_id: auditId, target_folder: main.folder });
+  });
+
   // ---- tasks (read-only mirror of scheduler state) ----
 
   app.get('/api/tasks', (_req: Request, res: Response) => {
@@ -424,7 +594,8 @@ export function mountApi(app: Express, deps: ApiDeps): void {
     if (
       entry.action === 'group.config.update' ||
       entry.action === 'group.disable' ||
-      entry.action === 'group.enable'
+      entry.action === 'group.enable' ||
+      entry.action === 'group.delete'
     ) {
       if (!entry.target || !entry.payload_before) {
         res.status(409).json({ error: 'audit entry missing payload_before' });

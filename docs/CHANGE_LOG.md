@@ -6,6 +6,54 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-05
 
+### Phase 4 + Phase 5 — Group Management + Cost Tracking panels (T10 + T11 / Wave 6)
+
+Wave 6 ships two parallel routes: `/groups` (Phase 4 — Group Management) and `/cost` (Phase 5 — Cost Tracking). Both panels share zero files, so they were built simultaneously by parallel agents after a single backend pass added the new endpoints + helpers. Recovery tags `pre-wave-6-2026-05-05` and `post-wave-6-2026-05-05` bookend the wave on origin.
+
+**Server-side additions to `src/http/api.ts`.** Five additions, all additive:
+
+- `POST /api/groups/:jid/enable` — mirror of the existing disable endpoint. Sets `container_config.disabled = false` and clears `deleted_at`. Audited as `group.enable`.
+- `DELETE /api/groups/:jid` — soft delete (sets `disabled: true` + `deleted_at: ISO timestamp` on container_config). Preserves the SQLite row + per-group filesystem so a future "restore" surface can bring it back. Audited as `group.delete` (24h reversibility window).
+- `PATCH/POST/DELETE /api/groups/:jid` — all gain optimistic-concurrency via the standard `If-Match` header (RFC-7232-style integer version). Each mutating endpoint reads `groupVersion(group)` from `container_config.version` (defaults to 0), compares to the supplied `If-Match`, returns 409 with `{ error, current_version }` on mismatch, and bumps the version on success. Helpers (`groupVersion`, `checkIfMatch`, `bumpVersion`) live alongside the route handlers. The audit/undo handler also gains `group.delete` to its restore whitelist.
+- `POST /api/cost/test-alert` — drops a synthetic `[cost-alert · TEST]` message into the main group's IPC input via the existing `injectIpcMessage()` helper. Body: `{ threshold_pct, spent_cents, budget_cents }`. Audited as `test_message.send`. The dashboard's "Send test alert" button uses this; the auto-fire-on-real-threshold-breach loop is a v1.5 host-side scheduler addition.
+
+**Dashboard mutating helpers (`dashboard/src/lib/nanoclaw.ts`).** Six new fetchers + three pure helpers, all using a shared `send()` internal that auto-attaches `If-Match`:
+
+- `patchGroup(jid, body, version)`, `disableGroup(jid, version)`, `enableGroup(jid, version)`, `deleteGroup(jid, version)` — write paths
+- `postCostTestAlert(body)` — cost test trigger
+- `groupVersionOf(group)`, `isGroupDeleted(group)`, `isGroupDisabled(group)` — pure container_config inspectors
+
+**T10 — Group Management (`T-1778242000000`).** Six new dashboard files plus two route shells (split into server `page.tsx` + sibling client view per the existing pattern):
+
+- `app/groups/page.tsx` + `GroupListView.tsx` — `/groups` list. Polls every 5s. Renders `GroupListTable`.
+- `app/groups/[jid]/page.tsx` + `GroupDetailView.tsx` — `/groups/:jid` detail. Polls every 10s. Tab strip: Overview / Activity / Configuration. The Activity tab embeds the existing `ActivityRow` filtered to the group; the Configuration tab renders the editor. `generateStaticParams() => [{ jid: '_' }]` is the static-export workaround (Next 16 + `output: 'export'` rejects unconstrained dynamic params); the placeholder JID `_` is detected client-side and shows "open a group from the list" instead of fetching.
+- `panels/GroupListTable.tsx` — sortable/filterable table with Channel + Profile dropdowns and a name/folder/jid search input. Soft-deleted groups hidden by default with a "Show N deleted" toggle.
+- `panels/GroupDetailHeader.tsx` — identity card with badges (Profile / Channel / Main / Disabled / Soft-deleted / Trigger-required) and `formatRelativeTime(added_at)`.
+- `panels/GroupConfigEditor.tsx` — model dropdown + `requires_trigger` toggle + openMode sub-form (main only). Save → `patchGroup` with `If-Match`. On 409: inline banner + parent re-fetch. Delete + Disable buttons trigger typed-confirm dialogs; Disable starts a 60-second cooldown countdown before Re-enable becomes clickable. Spend-cap-reduction preview note when openMode budget is reduced.
+- `panels/ConfirmDialog.tsx` — typed-confirm primitive shared with the Restart Stack action coming in Wave 7. Built on the existing `Dialog` primitive. Confirm button gates on `input === confirmText`; optional `destructive` flag swaps to red accent.
+
+**T11 — Cost Tracking (`T-1778243000000`).** Five new dashboard files plus the `/cost` route shell:
+
+- `app/cost/page.tsx` + `CostView.tsx` — `/cost` route. Polls 7-day cost (30s), 30-day cost (60s), groups (60s). Computes today's totals client-side, derives the budget from the main group's `container_config.costAlerts.dailyBudgetCents`. CSV + JSON export buttons (data: URLs, dated filenames).
+- `panels/CostHeroStat.tsx` — today's spend big-number + 7-day SVG sparkline. Budget-aware percent label colored green ≤50% / amber 50–80% / red >80%. Today's column marked with a small dot at the right end of the sparkline.
+- `panels/CostByModelChart.tsx` — recharts stacked-bar (`BarChart` + per-model `<Bar stackId="cost">`). Days × cents × model. Stable model colors: haiku teal, sonnet purple (--color-accent-secondary), opus orange (--color-accent), fallback grey. Custom tooltip with currency formatting + total. Empty-state explains the Wave 2 telemetry start moment.
+- `panels/CostByGroupTable.tsx` — fetches up to 5000 turns from the last 30 days, rolls up per-`group_folder` totals for today / 7d / 30d / top model. Sorted by 30-day spend DESC.
+- `panels/CostAlertsConfig.tsx` — daily-budget input (USD, stored as cents), 50/80/100% threshold checkboxes, Save (PATCH main group's `container_config.costAlerts` with `If-Match`), Send-test-alert button (POSTs to the new endpoint with current form values). Inline ok/error feedback. Footnote: "v1 fires on test only; auto-trigger on real threshold breach lands in v1.5."
+
+**Nav update.** `dashboard/src/components/layout/NavLinks.tsx` extended with Groups + Cost links so all four routes are first-class. Footer version note implicit ("Wave 5 · v0.1.0" carried over from Wave 5 — kept as-is to avoid bikeshedding wave-counter UX every wave).
+
+**Pre-deploy + restart.** Standard discipline: lsof :7842 confirmed Ben's PID 28811, creds backed up to `creds.json.pre-wave-6-2026-05-05.bak`, recovery tag pushed, `bootout`/`bootstrap` cycle. New PID 56663 came up clean. The cost-test-alert endpoint dropped a clearly-labelled test artifact into Don's GGA IPC input during verification; the artifact was deleted before the container's next run could replay it (operator-side behaviour: when the operator clicks "Send test alert" themselves, they expect the WhatsApp message to arrive — that's the wiring being verified).
+
+**Live verification (post-restart, PID 56663).** All endpoints return 200: existing five + new `/api/cost/test-alert`. `PATCH /api/groups/:jid` with `If-Match: 999` (stale) returns 409 (optimistic concurrency confirmed). All four dashboard routes return 200: `/`, `/activity`, `/groups`, `/cost`. Static export generated 7 routes total (`/`, `/_not-found`, `/activity`, `/cost`, `/groups`, `/groups/[jid]`, `/groups/_`).
+
+**Convention check.** Pure additive: 5 new endpoint paths (3 group action + 1 cost test + DELETE on existing path), 9 new dashboard helpers, 11 new dashboard components, 2 new route shells with split client views, no orchestrator process changes. `container_config` JSON pattern preserved throughout — every group mutation merges keys additively and never replaces wholesale; the `version` key is server-monotonic (operator-supplied versions are dropped from the merge to prevent rollback attacks). No Sensitive-functionality-list touch.
+
+**Brain tickets.** `T-1778242000000` (T10) and `T-1778243000000` (T11) flipped to `col_done`. Epic `T-1778232000000` checkpoint updated.
+
+**Phase 4 + Phase 5 status: COMPLETE.** Wave 7 (T12 — Phase 6 Alerts panel + audit_log + Restart Stack, 14h) is now unblocked. Wave 8 (T13 — Profile editor) remains gated on T-1777809840000 (Agent Configuration Convention spike).
+
+---
+
 ### Phase 3 — Container Activity + Activity Log panels (T9 / Wave 5)
 
 Wave 5 lands the dashboard's second route: `/activity`. Time-series feed of per-turn telemetry from `agent_turns` (Wave 2), polled every 3s, with filters / per-row expand / daily rollup rail / message search / CSV export. Two small server-side additions support the panel's UX features. Recovery tags `pre-wave-5-2026-05-05` and `post-wave-5-2026-05-05` bookend the wave on origin.

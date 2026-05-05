@@ -266,3 +266,136 @@ export async function getAudit(opts: GetAuditOpts = {}): Promise<AuditEntry[]> {
   );
   return res.entries;
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Mutating helpers for the Group Management + Cost Tracking panels
+// ──────────────────────────────────────────────────────────────────────────
+
+export interface MutationResult {
+  ok: true;
+  audit_id: number;
+  version: number;
+}
+
+async function send<T>(
+  method: 'PATCH' | 'POST' | 'DELETE',
+  path: string,
+  body: unknown | undefined,
+  ifMatch: number | undefined,
+): Promise<T> {
+  const url = `${BASE}${path}`;
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (ifMatch !== undefined) headers['If-Match'] = String(ifMatch);
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    throw new HttpError(res.status, errBody, url);
+  }
+  return res.json() as Promise<T>;
+}
+
+export interface PatchGroupBody {
+  requires_trigger?: boolean;
+  container_config?: Record<string, unknown>;
+  name?: string;
+  trigger?: string;
+}
+
+export async function patchGroup(
+  jid: string,
+  body: PatchGroupBody,
+  version: number,
+): Promise<MutationResult> {
+  return send<MutationResult>(
+    'PATCH',
+    `/api/groups/${encodeURIComponent(jid)}`,
+    body,
+    version,
+  );
+}
+
+export async function disableGroup(
+  jid: string,
+  version: number,
+): Promise<MutationResult> {
+  return send<MutationResult>(
+    'POST',
+    `/api/groups/${encodeURIComponent(jid)}/disable`,
+    undefined,
+    version,
+  );
+}
+
+export async function enableGroup(
+  jid: string,
+  version: number,
+): Promise<MutationResult> {
+  return send<MutationResult>(
+    'POST',
+    `/api/groups/${encodeURIComponent(jid)}/enable`,
+    undefined,
+    version,
+  );
+}
+
+export async function deleteGroup(
+  jid: string,
+  version: number,
+): Promise<MutationResult> {
+  return send<MutationResult>(
+    'DELETE',
+    `/api/groups/${encodeURIComponent(jid)}`,
+    undefined,
+    version,
+  );
+}
+
+export interface TestCostAlertBody {
+  threshold_pct?: number;
+  spent_cents?: number;
+  budget_cents?: number;
+}
+
+export async function postCostTestAlert(
+  body: TestCostAlertBody = {},
+): Promise<{ ok: true; audit_id: number; target_folder: string }> {
+  return send('POST', '/api/cost/test-alert', body, undefined);
+}
+
+/**
+ * Helper: read the optimistic-concurrency version off a Group's
+ * container_config. Mirrors the server-side `groupVersion()` helper
+ * in `src/http/api.ts`. Defaults to 0 when absent.
+ */
+export function groupVersionOf(group: Group): number {
+  const v = (group.container_config as Record<string, unknown> | null)?.[
+    'version'
+  ];
+  return typeof v === 'number' ? v : 0;
+}
+
+/**
+ * Helper: a group is "deleted" if its container_config carries a
+ * `deleted_at` timestamp. The orchestrator's routing map drops these,
+ * but they remain in SQLite for v1.5 restore.
+ */
+export function isGroupDeleted(group: Group): boolean {
+  const t = (group.container_config as Record<string, unknown> | null)?.[
+    'deleted_at'
+  ];
+  return typeof t === 'string' && t.length > 0;
+}
+
+export function isGroupDisabled(group: Group): boolean {
+  const d = (group.container_config as Record<string, unknown> | null)?.[
+    'disabled'
+  ];
+  return d === true;
+}
