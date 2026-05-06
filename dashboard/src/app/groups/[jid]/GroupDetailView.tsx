@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 
@@ -18,10 +18,6 @@ import {
 } from '@/lib/nanoclaw';
 import { formatRelativeTime } from '@/lib/format';
 
-interface GroupDetailViewProps {
-  jid: string;
-}
-
 type TabKey = 'overview' | 'activity' | 'configuration';
 
 const TABS: { key: TabKey; label: string }[] = [
@@ -34,32 +30,51 @@ const GROUP_POLL_MS = 10_000;
 const TURNS_POLL_MS = 10_000;
 
 /**
- * Detail view for a single registered group. Client component because it
- * polls and owns tab UI state. Reuses the shared ActivityRow for the
- * embedded activity slice but skips the filter bar / rollup rail to
- * keep this surface focused.
+ * Detail view for a single registered group. Client component that
+ * derives the JID from `window.location.pathname` so the same static
+ * placeholder HTML can serve every group. Polls and owns tab UI state.
+ * Reuses the shared ActivityRow for the embedded activity slice but
+ * skips the filter bar / rollup rail to keep this surface focused.
  */
-export function GroupDetailView({ jid }: GroupDetailViewProps) {
+export function GroupDetailView() {
   const [tab, setTab] = useState<TabKey>('overview');
   const [refreshNonce, setRefreshNonce] = useState(0);
+  const [jid, setJid] = useState<string | null>(null);
 
-  // The placeholder slug from generateStaticParams. When the user lands
-  // on this page directly without a real JID we surface a friendly hint
-  // instead of dispatching a doomed fetch.
+  // Read the real JID from the URL after hydration. The static export
+  // bakes a placeholder `_` into params; client-side we recover the
+  // actual JID the operator clicked through to.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const m = window.location.pathname.match(/^\/groups\/([^/]+)\/?$/);
+    if (m && m[1]) setJid(decodeURIComponent(m[1]));
+    else setJid('_');
+  }, []);
+
+  // Hooks below must always run regardless of jid state — React's rules.
+  // The fetcher returns a never-resolving promise when there's no real
+  // JID yet (pre-hydration or placeholder), so usePoll silently waits
+  // without flipping into an error state.
   const isPlaceholder = jid === '_' || jid === '';
-
-  const fetchGroup = useCallback(
-    () => getGroup(jid),
+  const fetchGroup = useCallback(() => {
+    if (jid === null || isPlaceholder) {
+      return new Promise<Group>(() => {
+        /* never resolves — usePoll keeps the previous state */
+      });
+    }
+    return getGroup(jid);
     // refreshNonce forces a re-poll after a successful mutation so the
     // editor rebases on the canonical state immediately.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [jid, refreshNonce],
-  );
+  }, [jid, isPlaceholder, refreshNonce]);
   const {
     data: group,
     error,
     loading,
   } = usePoll<Group>(fetchGroup, GROUP_POLL_MS);
+
+  // Pre-hydration / SSR: render nothing.
+  if (jid === null) return null;
 
   if (isPlaceholder) {
     return (

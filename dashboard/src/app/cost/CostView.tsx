@@ -57,8 +57,33 @@ export function CostView() {
     return null;
   }, [mainGroup]);
 
-  const csvHref = useMemo(() => buildCsvHref(rows30d ?? []), [rows30d]);
-  const jsonHref = useMemo(() => buildJsonHref(rows30d ?? []), [rows30d]);
+  const alertThresholds = useMemo<number[]>(() => {
+    if (!mainGroup) return [];
+    const cfg = mainGroup.container_config as Record<string, unknown> | null;
+    const ca = cfg?.['costAlerts'];
+    if (ca && typeof ca === 'object') {
+      const arr = (ca as Record<string, unknown>).alertThresholds;
+      if (Array.isArray(arr))
+        return arr.filter((n): n is number => typeof n === 'number');
+    }
+    return [];
+  }, [mainGroup]);
+
+  const exportCtx = useMemo<ExportContext>(
+    () => ({
+      generatedAt: new Date().toISOString(),
+      todayIso: new Date().toISOString().slice(0, 10),
+      rows7d: rows7d ?? [],
+      rows30d: rows30d ?? [],
+      budgetCents,
+      alertThresholds,
+      mainGroupName: mainGroup?.name ?? null,
+    }),
+    [rows7d, rows30d, budgetCents, alertThresholds, mainGroup],
+  );
+
+  const csvHref = useMemo(() => buildCsvHref(exportCtx), [exportCtx]);
+  const jsonHref = useMemo(() => buildJsonHref(exportCtx), [exportCtx]);
   const downloadStem = `cost-summary-${new Date().toISOString().slice(0, 10)}`;
 
   const firstError = err7d ?? err30d ?? errGroups ?? null;
@@ -116,25 +141,138 @@ export function CostView() {
   );
 }
 
-function buildCsvHref(rows: CostDaily[]): string {
-  const header = 'day,model,cents,turns,in_tok,out_tok';
-  const lines = rows.map((r) => {
+interface ExportContext {
+  generatedAt: string;
+  todayIso: string;
+  rows7d: CostDaily[];
+  rows30d: CostDaily[];
+  budgetCents: number | null;
+  alertThresholds: number[];
+  mainGroupName: string | null;
+}
+
+function sumCents(rows: CostDaily[], dayFilter?: string): number {
+  let total = 0;
+  for (const r of rows) {
+    if (dayFilter && r.day !== dayFilter) continue;
+    total += r.cents ?? 0;
+  }
+  return total;
+}
+
+function modelBreakdown(rows: CostDaily[]): Record<
+  string,
+  { cents: number; turns: number; in_tok: number; out_tok: number }
+> {
+  const out: Record<
+    string,
+    { cents: number; turns: number; in_tok: number; out_tok: number }
+  > = {};
+  for (const r of rows) {
+    const k = r.model || 'unknown';
+    if (!out[k]) out[k] = { cents: 0, turns: 0, in_tok: 0, out_tok: 0 };
+    out[k].cents += r.cents ?? 0;
+    out[k].turns += r.turns ?? 0;
+    out[k].in_tok += r.in_tok ?? 0;
+    out[k].out_tok += r.out_tok ?? 0;
+  }
+  return out;
+}
+
+function buildCsvHref(ctx: ExportContext): string {
+  const todayCents = sumCents(ctx.rows30d, ctx.todayIso);
+  const sevenDayCents = sumCents(ctx.rows7d);
+  const thirtyDayCents = sumCents(ctx.rows30d);
+  const pctUsed =
+    ctx.budgetCents && ctx.budgetCents > 0
+      ? Math.round((todayCents / ctx.budgetCents) * 100)
+      : null;
+
+  // Comment header (most CSV consumers skip `#` prefixes; spreadsheets
+  // may show them as a single column — operators can ignore).
+  const meta = [
+    `# Cost summary export`,
+    `# generated_at=${ctx.generatedAt}`,
+    `# today=${ctx.todayIso}`,
+    `# main_group=${ctx.mainGroupName ?? '(none)'}`,
+    `# today_cents=${todayCents}  today_dollars=${(todayCents / 100).toFixed(2)}`,
+    `# 7d_cents=${sevenDayCents}  7d_dollars=${(sevenDayCents / 100).toFixed(2)}`,
+    `# 30d_cents=${thirtyDayCents}  30d_dollars=${(thirtyDayCents / 100).toFixed(2)}`,
+    `# budget_cents=${ctx.budgetCents ?? 'not_configured'}`,
+    `# budget_dollars=${ctx.budgetCents !== null ? (ctx.budgetCents / 100).toFixed(2) : 'not_configured'}`,
+    `# pct_used_today=${pctUsed ?? 'n/a'}`,
+    `# alert_thresholds_pct=${ctx.alertThresholds.length ? ctx.alertThresholds.join(';') : 'none'}`,
+  ];
+
+  // Per-model 30d totals as a compact section.
+  const byModel = modelBreakdown(ctx.rows30d);
+  const modelLines = ['#', '# 30d totals by model:'];
+  for (const [model, m] of Object.entries(byModel).sort((a, b) =>
+    a[0] < b[0] ? -1 : 1,
+  )) {
+    modelLines.push(
+      `# model_${escapeCsvComment(model)} cents=${m.cents} dollars=${(m.cents / 100).toFixed(2)} turns=${m.turns}`,
+    );
+  }
+
+  // Daily breakdown section.
+  const header = 'day,model,cents,dollars,turns,in_tok,out_tok';
+  const lines = ctx.rows30d.map((r) => {
     const dollars = ((r.cents ?? 0) / 100).toFixed(2);
     return [
       escapeCsv(r.day),
       escapeCsv(r.model),
+      String(r.cents ?? 0),
       dollars,
       String(r.turns ?? 0),
       String(r.in_tok ?? 0),
       String(r.out_tok ?? 0),
     ].join(',');
   });
-  const body = [header, ...lines].join('\n');
+
+  const body = [...meta, ...modelLines, '#', '# daily breakdown:', header, ...lines].join('\n');
   return `data:text/csv;charset=utf-8,${encodeURIComponent(body)}`;
 }
 
-function buildJsonHref(rows: CostDaily[]): string {
-  const body = JSON.stringify(rows, null, 2);
+function buildJsonHref(ctx: ExportContext): string {
+  const todayCents = sumCents(ctx.rows30d, ctx.todayIso);
+  const sevenDayCents = sumCents(ctx.rows7d);
+  const thirtyDayCents = sumCents(ctx.rows30d);
+  const pctUsed =
+    ctx.budgetCents && ctx.budgetCents > 0
+      ? Math.round((todayCents / ctx.budgetCents) * 100)
+      : null;
+
+  const payload = {
+    generated_at: ctx.generatedAt,
+    deployment: {
+      today: ctx.todayIso,
+      main_group: ctx.mainGroupName,
+      budget_cents: ctx.budgetCents,
+      budget_dollars:
+        ctx.budgetCents !== null
+          ? Number((ctx.budgetCents / 100).toFixed(2))
+          : null,
+      alert_thresholds_pct: ctx.alertThresholds,
+    },
+    today_summary: {
+      spent_cents: todayCents,
+      spent_dollars: Number((todayCents / 100).toFixed(2)),
+      budget_pct_used: pctUsed,
+    },
+    totals: {
+      window_7d_cents: sevenDayCents,
+      window_7d_dollars: Number((sevenDayCents / 100).toFixed(2)),
+      window_30d_cents: thirtyDayCents,
+      window_30d_dollars: Number((thirtyDayCents / 100).toFixed(2)),
+      model_breakdown_30d: modelBreakdown(ctx.rows30d),
+    },
+    daily_breakdown_30d: ctx.rows30d.map((r) => ({
+      ...r,
+      dollars: Number(((r.cents ?? 0) / 100).toFixed(4)),
+    })),
+  };
+  const body = JSON.stringify(payload, null, 2);
   return `data:application/json;charset=utf-8,${encodeURIComponent(body)}`;
 }
 
@@ -143,4 +281,9 @@ function escapeCsv(field: string): string {
     return `"${field.replace(/"/g, '""')}"`;
   }
   return field;
+}
+
+// CSV comment line; strip newlines + leading-# we'd otherwise emit.
+function escapeCsvComment(field: string): string {
+  return field.replace(/[\r\n]/g, ' ').replace(/^#+/, '');
 }

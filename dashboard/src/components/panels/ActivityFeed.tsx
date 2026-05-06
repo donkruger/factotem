@@ -132,6 +132,15 @@ export function ActivityFeed() {
   const fetchGroups = useCallback(() => getGroups(), []);
   const { data: groups } = usePoll<Group[]>(fetchGroups, 60_000);
 
+  // Folder → friendly group-name lookup so each ActivityRow can render
+  // "GGA" instead of "whatsapp_main". The raw folder is still surfaced
+  // in the expanded Identity section for audit clarity.
+  const folderToName = useMemo(() => {
+    const map = new Map<string, string>();
+    if (groups) for (const g of groups) if (g.folder && g.name) map.set(g.folder, g.name);
+    return map;
+  }, [groups]);
+
   // Models list — derived from the visible turns; falls back to a known
   // set so the dropdown isn't empty before the first turn lands.
   const models = useMemo(() => {
@@ -275,7 +284,11 @@ export function ActivityFeed() {
                 </div>
                 <div>
                   {turns.map((t) => (
-                    <ActivityRow key={t.turn_id} turn={t} />
+                    <ActivityRow
+                      key={t.turn_id}
+                      turn={t}
+                      groupName={folderToName.get(t.group_folder)}
+                    />
                   ))}
                 </div>
               </div>

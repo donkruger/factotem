@@ -530,7 +530,11 @@ export function mountApi(app: Express, deps: ApiDeps): void {
         const code = (err as NodeJS.ErrnoException & { status?: number })
           .status;
         if (code === 1) {
-          results.push({ command: cmd, ok: true, detail: 'no matching process' });
+          results.push({
+            command: cmd,
+            ok: true,
+            detail: 'no matching process',
+          });
         } else {
           logger.error({ err, cmd }, 'api: restart-stack pkill failed');
           results.push({

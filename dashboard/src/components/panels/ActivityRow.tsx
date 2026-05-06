@@ -13,12 +13,66 @@ import {
 
 interface Props {
   turn: Turn;
+  /**
+   * Optional human-friendly group name (e.g. "GGA"). Falls back to
+   * `turn.group_folder` when not supplied. The folder is always shown
+   * in the expanded Identity section.
+   */
+  groupName?: string;
 }
 
 function shortenModel(m: string | null | undefined): string {
   if (!m) return '—';
   return m.replace(/^claude-/, '').replace(/-\d{8}$/, '');
 }
+
+/**
+ * Tooltips for the per-turn metric labels. Keep these short — they appear
+ * as native browser tooltips on hover via the `title` attribute.
+ */
+const TIPS = {
+  // Tokens
+  Input: 'Tokens in your prompt — text the agent received before generating a reply.',
+  Output: "Tokens produced in the agent's reply.",
+  'Cache create':
+    "Tokens stored in Anthropic's prompt cache. Charged at 1.25× input rate; saves cost on subsequent requests that reuse them.",
+  'Cache read':
+    'Tokens read from prompt cache. Charged at 0.1× input rate (90% discount).',
+  Total: 'Sum of input + output tokens. Cache tokens are billed separately.',
+  // Timing
+  Started: 'Container spawn moment (ISO 8601 UTC).',
+  Finished: 'Container completion moment.',
+  Duration: 'Wall-clock time from container spawn to completion.',
+  'API duration': 'Time spent in Anthropic API calls within the turn.',
+  TTFT: 'Time to first token — latency before the first response chunk arrived.',
+  // Reliability
+  'Tool calls':
+    'Number of MCP tool invocations the agent made (file ops, web fetch, KP writes, etc.).',
+  'Tool errors':
+    'Tool calls that returned an error. Non-zero values warrant a closer look at the expanded prompt/response.',
+  Retries:
+    'API-level retry attempts after transient errors (429s, 5xx). 0 in the happy path.',
+  Compactions:
+    'SDK conversation-compaction events — usually triggered when the context limit approaches.',
+  'SDK turns':
+    'Internal SDK conversation turn count (used by the compaction tracker).',
+  // Identity
+  turn_id: 'Globally unique identifier for this agent invocation.',
+  session_id:
+    'Conversation session — multiple turns can share a session for context continuity.',
+  agent_profile:
+    'Permission/mount profile that ran this turn (main, open_dm, etc.).',
+  machine_id:
+    'Identity of the NanoClaw deployment that executed this turn (federation-friendly).',
+  group_folder:
+    'Per-group folder name in the orchestrator. Always lowercase; used for filesystem paths and IPC routing.',
+  group_jid: 'WhatsApp JID this turn was associated with.',
+  error_class:
+    'Error category if the turn failed. Open the matching log line in nanoclaw.log for the underlying message.',
+  Prompt: 'Total characters in the prompt the agent received (input length proxy).',
+  Response: 'Total characters in the agent reply (output length proxy).',
+} as const;
+type TipKey = keyof typeof TIPS;
 
 function outcomeVariant(o: Turn['outcome']) {
   if (o === 'success') return 'success' as const;
@@ -33,7 +87,7 @@ function outcomeVariant(o: Turn['outcome']) {
  * retries" pattern from R9 is approximated here as a stat block; a true
  * per-tool-call timeline requires per-message capture (R8 follow-up).
  */
-export function ActivityRow({ turn }: Props) {
+export function ActivityRow({ turn, groupName }: Props) {
   const [open, setOpen] = useState(false);
 
   const totalTokens =
@@ -44,6 +98,7 @@ export function ActivityRow({ turn }: Props) {
       : `${(turn.input_tokens ?? 0).toLocaleString()}/${(
           turn.output_tokens ?? 0
         ).toLocaleString()}`;
+  const displayGroup = groupName ?? turn.group_folder;
 
   return (
     <div className="border-b border-[var(--color-hairline)] last:border-b-0">
@@ -63,8 +118,11 @@ export function ActivityRow({ turn }: Props) {
         <span className="w-28 flex-shrink-0 text-xs text-[var(--color-ink-muted)]">
           {formatRelativeTime(turn.started_at)}
         </span>
-        <span className="w-40 flex-shrink-0 truncate text-sm text-[var(--color-ink)]">
-          {turn.group_folder}
+        <span
+          className="w-40 flex-shrink-0 truncate text-sm text-[var(--color-ink)]"
+          title={`group_folder: ${turn.group_folder}`}
+        >
+          {displayGroup}
         </span>
         <span className="w-24 flex-shrink-0 text-xs font-mono text-[var(--color-ink-muted)]">
           {shortenModel(turn.model)}
@@ -145,6 +203,12 @@ export function ActivityRow({ turn }: Props) {
             </DetailGroup>
 
             <DetailGroup title="Identity">
+              <Detail
+                label="group_folder"
+                value={turn.group_folder}
+                mono
+                small
+              />
               <Detail label="turn_id" value={turn.turn_id} mono small />
               <Detail
                 label="session_id"
@@ -175,15 +239,15 @@ export function ActivityRow({ turn }: Props) {
           </div>
 
           <div className="mt-4 flex flex-wrap items-center gap-4 border-t border-[var(--color-hairline)] pt-3 text-xs text-[var(--color-ink-muted)]">
-            <span>
+            <span title={TIPS.Prompt} className="cursor-help underline decoration-dotted underline-offset-2">
               Prompt:{' '}
-              <span className="text-[var(--color-ink)]">
+              <span className="text-[var(--color-ink)] no-underline">
                 {(turn.prompt_chars ?? 0).toLocaleString()} chars
               </span>
             </span>
-            <span>
+            <span title={TIPS.Response} className="cursor-help underline decoration-dotted underline-offset-2">
               Response:{' '}
-              <span className="text-[var(--color-ink)]">
+              <span className="text-[var(--color-ink)] no-underline">
                 {(turn.response_chars ?? 0).toLocaleString()} chars
               </span>
             </span>
@@ -233,16 +297,29 @@ function Detail({
   mono = false,
   small = false,
   accent = false,
+  tooltip,
 }: {
   label: string;
   value: string;
   mono?: boolean;
   small?: boolean;
   accent?: boolean;
+  tooltip?: string;
 }) {
+  // Auto-derive tooltip from the TIPS map when none is supplied — saves
+  // every call site from spelling it out.
+  const resolvedTooltip =
+    tooltip ?? (label in TIPS ? TIPS[label as TipKey] : undefined);
   return (
     <div className="flex items-baseline justify-between gap-2 text-xs">
-      <dt className="flex-shrink-0 text-[var(--color-ink-muted)]">{label}</dt>
+      <dt
+        className={`flex-shrink-0 text-[var(--color-ink-muted)] ${
+          resolvedTooltip ? 'cursor-help underline decoration-dotted underline-offset-2' : ''
+        }`}
+        title={resolvedTooltip}
+      >
+        {label}
+      </dt>
       <dd
         className={`text-right ${mono ? 'font-mono' : ''} ${
           small ? 'text-[10px]' : ''

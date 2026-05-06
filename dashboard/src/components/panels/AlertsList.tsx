@@ -86,6 +86,50 @@ export function AlertsList() {
 
       {error && <ConnectionLossBanner error={error} />}
 
+      <Card>
+        <div className="space-y-2 text-xs text-[var(--color-ink-muted)]">
+          <p>
+            <span className="font-medium text-[var(--color-ink)]">
+              How alerts work.
+            </span>{' '}
+            The orchestrator runs five proactive checks on every poll:
+          </p>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>
+              <span className="font-medium">Docker / OneCLI</span> — flagged when
+              the engine or the credential gateway is unreachable. Both down at
+              once unlocks the Restart Stack action.
+            </li>
+            <li>
+              <span className="font-medium">Auth-mode freshness</span> — only
+              relevant in <code>oauth-workaround</code> mode. Watcher tick must
+              land within 90s (warning) / 300s (critical).
+            </li>
+            <li>
+              <span className="font-medium">Error strings in replies</span> —
+              tails recent logs for transient API errors paired with successful
+              sends. Surfaces when the user might have received an error string
+              instead of an answer.
+            </li>
+            <li>
+              <span className="font-medium">Ghost actions</span> — heuristic
+              count of successful turns that produced a long reply but invoked
+              zero tools. Cross-check against Activity → outcome=success.
+            </li>
+            <li>
+              <span className="font-medium">WhatsApp respawn loop</span> — more
+              than 3 reconnect events within 60s, indicating Baileys is in a
+              flap.
+            </li>
+          </ul>
+          <p className="pt-1">
+            Each alert links to its recovery procedure. Critical alerts mean
+            the system can&apos;t process new messages. Warnings mean
+            something needs attention but the agent is still serving.
+          </p>
+        </div>
+      </Card>
+
       {!error && total === 0 && (
         <Card>
           <div className="flex items-start gap-3">

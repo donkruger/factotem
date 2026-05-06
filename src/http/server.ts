@@ -56,6 +56,30 @@ export function startHttpServer(
   if (fs.existsSync(dashboardOut)) {
     app.use(express.static(dashboardOut));
     logger.info({ dashboardOut }, 'dashboard static export mounted');
+
+    // Static-export friendly fallback for dynamic routes. Next.js with
+    // `output: 'export'` only generates one HTML file per dynamic-route
+    // entry in `generateStaticParams()`. The dashboard ships a single
+    // placeholder at `/groups/_/index.html`; any direct navigation to
+    // `/groups/<real-jid>/` (shared link, refresh, link click) needs to
+    // serve the same file so the client-side React app can read the JID
+    // from `window.location.pathname` and fetch the right group.
+    //
+    // express.static runs first (above) and falls through via next() when
+    // it can't find a file. This handler picks up the residue.
+    const groupPlaceholder = path.join(
+      dashboardOut,
+      'groups',
+      '_',
+      'index.html',
+    );
+    app.get(/^\/groups\/[^/]+\/?$/, (_req, res, next) => {
+      if (fs.existsSync(groupPlaceholder)) {
+        res.sendFile(groupPlaceholder);
+      } else {
+        next();
+      }
+    });
   } else {
     logger.warn(
       { dashboardOut },

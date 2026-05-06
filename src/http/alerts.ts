@@ -209,17 +209,24 @@ export async function getAlertsSnapshot(): Promise<AlertsResponse> {
   // v1 heuristic: count recent agent_turns that succeeded but invoked zero
   // tools, where the prompt was substantial enough that we'd expect tool
   // use (>200 chars). True per-turn semantic verification is R8 follow-up.
+  //
+  // Plain-English framing for operators: when a long prompt asks the
+  // agent to DO something (create a ticket, send a message, file an
+  // entry) and the agent replies with a successful "done" but never
+  // invoked any of its tools, the action almost certainly didn't
+  // actually happen. The 2026-04-17 incident (logged in ben-log) is the
+  // canonical example.
   const ghostHit = probeGhostActions();
   if (ghostHit && ghostHit.count > 0) {
+    const n = ghostHit.count;
     alerts.push({
       id: 'ghost_action_divergence',
       severity: 'warning',
-      title: `${ghostHit.count} possible ghost-action turn${ghostHit.count === 1 ? '' : 's'} in last 24h`,
-      detail: `${ghostHit.count} agent_turn${ghostHit.count === 1 ? '' : 's'} succeeded with 0 tool calls despite a substantial prompt. This is the heuristic R7 signal that the agent claimed an action but verification would have failed.`,
+      title: `${n} agent repl${n === 1 ? 'y' : 'ies'} may have skipped expected actions`,
+      detail: `In the last 24h, ${n} successful agent turn${n === 1 ? '' : 's'} responded to a substantial prompt (>200 chars) without invoking any tools. The agent likely answered "done" without actually doing anything — known as a "ghost action". This is a heuristic; not every match is a real ghost action.`,
       recommendation:
-        'Inspect the matching turns on the Activity panel — filter outcome=success and look for prompts that asked for an action.',
-      recovery_url:
-        'https://github.com/donkruger/benclaw/blob/main/ben-log/2026-04-17-ghost-tickets.md',
+        'Open Activity, filter by outcome=success, and look for prompts that explicitly asked for an action (create, send, file, etc.). Cross-check against the ben-log entry for 2026-04-17 (the canonical ghost-tickets incident).',
+      recovery_url: OPERATIONS_RECOVERY_URL,
       detected_at,
     });
   }
@@ -293,7 +300,10 @@ function probeRecentLogPattern(
     // pino structured logs prefix with `[HH:MM:SS.mmm]`; bail if too old.
     const ts = parseLogTimestamp(line);
     if (ts !== null && ts < cutoff) break;
-    return { sample: line, timestamp: ts !== null ? new Date(ts).toISOString() : null };
+    return {
+      sample: line,
+      timestamp: ts !== null ? new Date(ts).toISOString() : null,
+    };
   }
   return null;
 }

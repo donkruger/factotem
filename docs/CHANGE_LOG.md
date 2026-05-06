@@ -4,6 +4,54 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ---
 
+## 2026-05-06
+
+### Wave 9 follow-up — operator-feedback fixes
+
+After Don's manual eyeball review of v1, five issues surfaced. All five fixed in a single follow-up commit before the v1 closeout. Recovery tags `pre-fix-2026-05-06` and `post-fix-2026-05-06` on origin.
+
+**1.1 Group detail page returned `Cannot GET /groups/<jid>%40g.us` (broken).** Root cause: Next.js `output: 'export'` only emits one HTML file per `generateStaticParams()` entry, so only `/groups/_/index.html` existed on disk; navigating to a real JID URL hit Express's default 404. Two-part fix:
+
+- `src/http/server.ts` — add an Express handler matching `/^\/groups\/[^/]+\/?$/` that runs after `express.static` (which falls through via `next()` on miss) and serves the `groups/_/index.html` placeholder for any group JID. The static export still wins for the literal `/groups/_/` path.
+- `dashboard/src/app/groups/[jid]/page.tsx` + `GroupDetailView.tsx` — drop the `params.jid` plumbing and read the real JID from `window.location.pathname` on mount via a `useEffect`. Pre-hydration renders nothing; post-hydration the matched JID drives the existing `getGroup(jid)` poll. Hooks rules respected: the fetcher returns a never-resolving promise while the JID is null/placeholder, so `usePoll` keeps the previous state without flipping into an error.
+
+Verified: `curl http://localhost:7842/groups/120363407726747863%40g.us/` returns 200 with 11394 bytes; same for any JID.
+
+**1.2 Activity feed showed raw folder names + opaque expanded metrics.** Three fixes in `ActivityRow.tsx` and `ActivityFeed.tsx`:
+
+- Friendly group name: `ActivityFeed` builds a `Map<folder, name>` from the existing `getGroups()` poll; passes `groupName` to each `ActivityRow`. The row renders the friendly name (e.g. "GGA") with the raw folder kept as a `title=` attribute on hover and surfaced explicitly in the expanded Identity section.
+- Tooltips on every metric label: a TIPS map covers all 18 detail labels with plain-English explanations (e.g. "Cache create" → "Tokens stored in Anthropic's prompt cache. Charged at 1.25× input rate; saves cost on subsequent requests"). The `Detail` helper auto-resolves the tooltip from TIPS by label, so no call-site changes are needed. Labels render with a dotted underline + cursor-help hint to signal the tooltip.
+- `group_folder` added to the expanded Identity section as a first-class field (mono small) so the operator can still see the routing key when they expand a row.
+
+**1.3 Cost CSV / JSON exports were too minimal.** Don's request: include enough context that an LLM agent receiving the export can interpret it. Rewrote both export builders in `dashboard/src/app/cost/CostView.tsx`:
+
+- New `ExportContext` type carries `generatedAt`, `todayIso`, `rows7d`, `rows30d`, `budgetCents`, `alertThresholds`, `mainGroupName`.
+- CSV export now begins with `#`-prefixed metadata lines (today's spend, budget, % used, alert thresholds), followed by a per-model 30-day totals section, followed by the daily breakdown table. Spreadsheet readers handle `#` lines as a single non-data column (visible but inert).
+- JSON export is now a structured object: `{ generated_at, deployment, today_summary, totals, daily_breakdown_30d }`. The `model_breakdown_30d` map gives an agent ready-to-use per-model totals. Cents and dollars both included on every relevant value.
+
+**1.4 Alerts were confusing + recovery URL went to a github 404.** Two changes in `src/http/alerts.ts` + `dashboard/src/components/panels/AlertsList.tsx`:
+
+- Ghost-action alert wording softened: title is now "N agent replies may have skipped expected actions" (was "N possible ghost-action turns in last 24h"). Detail explains in plain English what a ghost action is and notes that the heuristic isn't perfect. Recommendation links operators to Activity → outcome=success and references the canonical 2026-04-17 ben-log incident.
+- Recovery URL changed from `ben-log/2026-04-17-ghost-tickets.md` (which is local-only per the ben-log convention — not in any git repo) to `docs/OPERATIONS.md#recovery` (which exists in donkruger/benclaw on the main branch).
+- AlertsList now opens with a Card explaining all five detection signals in plain English so the operator can read what each alert means without diving into source code.
+
+**1.5 Audit log was hard to read at first glance.** Three additions to `AuditLogTable.tsx`:
+
+- New `summarise(entry)` helper produces a one-line human summary per entry (e.g. "Updated group: name → 'Richard Nel (DM)'", "Disabled group", "Restart Stack invoked", "Cost alert test fired"). Best-effort — falls back to the raw action when payloads can't be parsed. Renders in a new Summary column between Action and Target.
+- Top-of-panel explanatory Card covers (a) what gets logged, (b) why it's useful (undo, forensics, future multi-operator audit), (c) how to use the row-expand and exports.
+- CSV / JSON export buttons mirroring the Cost panel: CSV includes id / ts / action / target / reversible_until / summary / payload_before / payload_after; JSON includes parsed payloads + the summary string per entry.
+
+**Convention check.** Pure additive UI/server work — no schema changes, no Sensitive-functionality-list touch, no changes to NanoClaw's message processing path. The Express middleware addition is conditional on `dashboardOut` existing; it falls through cleanly when the static export is missing.
+
+**Live verification (post-restart, PID 43968).**
+- `/groups/120363407726747863%40g.us/` and `/groups/27845553333%40s.whatsapp.net/` both return 200.
+- `/api/alerts` returns the ghost-action alert with the corrected URL pointing at `docs/OPERATIONS.md#recovery`.
+- All 6 dashboard routes still render.
+
+**Recovery tags.** `pre-fix-2026-05-06` (HEAD before this commit) + `post-fix-2026-05-06` (after) on origin.
+
+---
+
 ## 2026-05-05
 
 ### Phase 8 — E2E verification suite (T14 / Wave 9)
