@@ -6,6 +6,67 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-07
 
+### Phase 1 / Tauri Doctor — M1.6 (claw-setup wizard installs the Doctor to /Applications)
+
+Sixth and final execution session of Phase 1. M1.5 produced the signed + notarized .app earlier today, but operators still had to find it manually under `cli/claw-doctor/src-tauri/target/release/bundle/macos/` and `open` it themselves. M1.6 closes that gap: the cold-start wizard now installs the Doctor at the end of every fresh `npx claw-setup` run, so a brand-new Bob Mac Mini (or Mark's laptop) goes from "nothing" to "menu-bar Doctor running, autostart registered, ready to repair the stack" in one continuous flow.
+
+**New: `nanoclaw/scripts/install-doctor.sh`.** Standalone installer mirroring `scripts/install-recovery.sh`. Three modes: `install` (default), `--uninstall`, `--verify`. Re-runnable independently of the wizard for upgrades on existing deployments.
+
+Install logic:
+
+1. macOS-only guard.
+2. Resolve source: `<repo-root>/cli/claw-doctor/src-tauri/target/release/bundle/macos/Factotem Doctor.app`. If absent, exits 1 with `cd cli/claw-doctor && cargo tauri build` instructions.
+3. If a `Factotem Doctor.app` already exists at `/Applications` with a `CFBundleIdentifier` other than `co.factotem.doctor`, refuses to overwrite (guards against an unrelated app with the same display name).
+4. `pkill -9 -f factotem-doctor` to stop any running instance — copying over a live .app produces partial writes on macOS.
+5. `ditto` the source to `/Applications/Factotem Doctor.app` (preserves resource forks + xattrs better than `cp -R`).
+6. `xattr -dr com.apple.quarantine` to strip the quarantine bit (the .app is notarized so Gatekeeper would accept it anyway, but a stray quarantine attribute would trigger a one-time confirm dialog).
+7. `open` to launch — fire-and-forget, tray icon appears within ~2s.
+
+Uninstall: kills running process, removes `/Applications/Factotem Doctor.app`, unloads + removes `~/Library/LaunchAgents/Factotem Doctor.plist` (the autostart agent registered by tauri-plugin-autostart in M1.4), removes `~/Library/Application Support/Factotem/doctor-settings.json`. Idempotent.
+
+Verify: read-only check. Prints state of source bundle, installed copy, running process, autostart agent, settings file.
+
+**Modified: `cli/claw-setup/src/steps/11-handoff.ts`.** Added a second best-effort install block parallel to the existing recovery-panel install (which has lived in this step since session 1 of Phase 1). Same try/catch shape, same `ui.warn` on failure, same "never fail the wizard" promise. The cheat-sheet printed at the end now includes a Doctor section when `doctorInstalled === true`:
+
+```
+Factotem Doctor:
+  /Applications/Factotem Doctor.app — running in your menu bar
+  Click the icon for: Open Dashboard, Repair Stack, Settings, Logs
+  Tooltip refreshes every 5s with Docker / OneCLI / NanoClaw health
+```
+
+Repo-root resolution was hoisted up so both installer invocations share the same path computation. No new step file, no re-numbering — keeps the diff small and the existing 12-step layout uniform.
+
+**Modified: `docs/SETUP_WIZARD.md`.** New "Factotem Doctor (Phase 1)" section documenting the wizard install + the standalone installer + the three modes. Step-list table entry for `11-handoff` updated to reflect the Doctor install.
+
+**Live verification (Don's machine, post-M1.6):**
+
+- `bash scripts/install-doctor.sh --verify` (pre-install): source bundle ✓ (v0.1.0), installed copy ✗ not installed, running process ✓ PID 93796 (M1.5 build from `target/release/`), autostart agent ✓ registered.
+- `bash scripts/install-doctor.sh` (install): killed PID 93796 → `ditto` to `/Applications` → strip quarantine → relaunched as PID 31969.
+- `bash scripts/install-doctor.sh --verify` (post-install): installed copy ✓ `/Applications/Factotem Doctor.app (v0.1.0)`, running process ✓ PID 31969, autostart agent ✓ preserved.
+- `spctl --assess --type execute --verbose=2 "/Applications/Factotem Doctor.app"`: `accepted; source=Notarized Developer ID` — `ditto` preserved the M1.5 notarization stamp.
+- `npm run build` in `cli/claw-setup/` — TypeScript compile passed.
+- Path resolution check: from `cli/claw-setup/dist/steps/11-handoff.js`, `path.resolve(..., '..', '..', '..', '..', 'scripts', 'install-doctor.sh')` resolves to the correct repo-root location and `fs.existsSync` returns true.
+
+**Files changed:**
+
+```
+NEW   nanoclaw/scripts/install-doctor.sh                ~210 lines, executable
+M     nanoclaw/cli/claw-setup/src/steps/11-handoff.ts   (+~30 lines: best-effort install block + cheat-sheet section)
+M     nanoclaw/docs/SETUP_WIZARD.md                     (+~30 lines: Factotem Doctor subsection)
+M     nanoclaw/docs/CHANGE_LOG.md                       (this entry)
+```
+
+Note: the wizard's compiled JS under `cli/claw-setup/dist/` is not committed (gitignored); operators run `npm run build` after install or use the prebuilt npm package.
+
+**Convention check.** Pure additive — one new shell script + one extended TypeScript step + two doc files. No orchestrator code touched. No Sensitive-functionality-list touch. Reversal: `git revert <m1.6 commit>` removes the new script + the wizard extension + the docs. The `/Applications/Factotem Doctor.app` installed today persists until the operator runs `bash scripts/install-doctor.sh --uninstall`.
+
+**Phase 1 complete.** M1.1 + M1.2 (scaffold + multi-instance probe) → M1.3 (Repair Stack) → M1.4 (Settings + Logs) → M1.5 (signing + notarization) → M1.6 (wizard integration). The Factotem Doctor is now an end-to-end shipped product: any fresh deployment reaches a fully signed, notarized, autostart-registered, /Applications-installed status icon with no manual steps.
+
+Recovery tag: `pre-phase1-m1.6-2026-05-07` (HEAD before this commit).
+
+---
+
 ### Phase 1 / Tauri Doctor — M1.5 (code signing + Apple notarization)
 
 Fifth execution session. The .app and .dmg now ship fully signed by Don's Developer ID Application certificate (`D8G67T74V6` team) and notarized by Apple's stapling service. Gatekeeper accepts both artifacts on a fresh Mac without "unverified developer" warnings.

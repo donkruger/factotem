@@ -106,4 +106,34 @@ Wizard step **03 (`configure-onecli`)** invokes `onecli config add` with `--type
 | `08-configure-openmode`  | Optional OpenMode budget                    | Off by default.                                                      |
 | `09-install-launchd`     | Install com.nanoclaw plist                  | Generates plist; bootstrap is operator-driven.                       |
 | `10-smoke-test`          | Curl `/health` + send test message          | Profile-dependent.                                                   |
-| `11-handoff`             | Print operator cheat-sheet                  | Reads `~/.config/nanoclaw/machine.json`.                             |
+| `11-handoff`             | Print operator cheat-sheet + install Doctor + recovery panel | Reads `~/.config/nanoclaw/machine.json`. Best-effort installs `recovery.html` and the Tauri Doctor (M1.6). |
+
+## Factotem Doctor (Phase 1)
+
+The wizard's handoff step (M1.6) installs the signed + notarized **Factotem Doctor** menu-bar app to `/Applications/Factotem Doctor.app` and launches it so the tray icon appears immediately. The Doctor surfaces Docker / OneCLI / NanoClaw health every 5 seconds and exposes a typed-confirm `Repair Stack…` action for cold-start recovery.
+
+The install is **best-effort** and never fails the wizard. It depends on the Doctor having been built first:
+
+```bash
+cd cli/claw-doctor && cargo tauri build
+```
+
+If the bundle is missing at wizard time, step 11 warns and skips. The operator can install later by re-running:
+
+```bash
+bash scripts/install-doctor.sh
+```
+
+### Standalone installer
+
+`scripts/install-doctor.sh` works outside the wizard for re-installs, upgrades, and uninstalls. It mirrors `scripts/install-recovery.sh`:
+
+| Mode | Effect |
+|---|---|
+| `bash scripts/install-doctor.sh` | Stop running Doctor → `ditto` source .app to `/Applications` → strip quarantine xattr → relaunch. Idempotent. |
+| `bash scripts/install-doctor.sh --uninstall` | Stop running Doctor → remove `/Applications/Factotem Doctor.app` → unload + remove `~/Library/LaunchAgents/Factotem Doctor.plist` → remove `~/Library/Application Support/Factotem/doctor-settings.json`. |
+| `bash scripts/install-doctor.sh --verify` | Read-only — prints whether source builds, the .app is installed, the process is running, the autostart agent is registered, and whether settings exist. |
+
+The script refuses to overwrite `/Applications/Factotem Doctor.app` if its `CFBundleIdentifier` is something other than `co.factotem.doctor` — protects against an unrelated app with the same display name.
+
+`/Applications` is user-writable on modern macOS for single-user installs (no `sudo` required). On a corporate-managed Mac with `/Applications` locked, `ditto` fails cleanly and the wizard logs a warning; copy manually with administrator privileges.
