@@ -6,6 +6,72 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-07
 
+### Phase 1 / Tauri Doctor — M1.4 (Settings + Logs windows)
+
+Fourth execution session. M1.3's Repair Stack landed earlier today and was operator-tested end-to-end (real `pkill` + Docker restart + step-4 verify polling). M1.4 adds the two remaining surfaces from the milestone plan: operator-configurable preferences and a live tail of `nanoclaw.log`.
+
+**New plugins.**
+
+- `tauri-plugin-autostart = "2"` — wraps macOS Login Items via a `LaunchAgent` plist at `~/Library/LaunchAgents/Factotem Doctor.plist`. The Settings toggle calls `manager.enable()` / `manager.disable()` on save.
+- `tauri-plugin-notification = "2"` — fires a system notification on every state transition (green↔amber↔red) when `notify_on_state_change` is true. Title summarises the destination state ("Factotem stack offline"); body shows the state-label transition + the probe headline.
+
+**New: `src-tauri/src/settings.rs` (operator preferences, atomic-write).** Five fields with sensible defaults (5s poll interval, launch-at-login on, notify-on-state-change on). Storage at `~/Library/Application Support/Factotem/doctor-settings.json` — same TCC-friendly tree the EPERM migration moved everything else into. Save uses write-temp-then-rename with mode 0o600 on the file and 0o700 on the parent. `load()` is graceful on missing/corrupt files (returns `Default`); `save()` returns a brief error string suitable for surfacing in the UI.
+
+**New commands in `src-tauri/src/commands.rs`.**
+
+- `get_settings()` / `save_settings(settings)` — read + write the in-memory settings cell wrapped in `Arc<Mutex<…>>`. Save also calls `sync_autostart()` so the Login Items state matches the toggle without a restart.
+- `get_log_path()` / `tail_log(lines)` — resolve `nanoclaw.log` via `plutil -extract StandardOutPath raw -o -` against the launchd plist, with a fallback to `$HOME/Documents/NanoClaw/nanoclaw/logs/nanoclaw.log`. Tail uses `/usr/bin/tail -n N`; `lines` is clamped to [1, 5000] so the front-end can't request megabytes.
+
+**Probe loop refactor (`lib.rs::run_probe_loop`).** Reads `poll_interval_ms` + notification toggles from the settings cell on every tick, so a Settings save takes effect on the very next probe (no restart). Tracks `prev_overall` and fires a notification only on transition (not every tick) — silent for green-to-green, audible for green-to-amber, etc. The `notify_audible` field is reserved but currently no-ops because Tauri 2's notification plugin doesn't expose a clean "silent" flag; operators wanting quiet notifications can use macOS Focus / Do Not Disturb in the meantime. Documented as a comment + a follow-up for M1.5.
+
+**New menu items (`tray.rs`).**
+
+- `Settings…` (Cmd+,) — opens the 480×560 Settings window with the form.
+- `View NanoClaw logs…` (Cmd+Shift+L) — opens the 720×560 Logs window with the live tail.
+
+Both items appear in the initial menu (visible at app launch before the first probe completes) and in the dynamic status menu (preserved across all states).
+
+**New React views.**
+
+- `src/views/SettingsView.tsx` — sectioned form (Probe / Startup / Notifications) with a number input for poll-interval-seconds (1–60) and three toggles. Save button is disabled while `busy`; surfaces save success/failure inline. Hint text under each control explains what changes when.
+- `src/views/LogsView.tsx` — terminal-styled tail viewer. Toolbar exposes line-count selector (100/250/500/1000), Refresh, Live toggle (auto-refresh every 3s), and Copy-to-clipboard. Auto-follows the tail unless the operator scrolls up; resumes follow when scrolled back to the bottom (16 px threshold). Uses `#0d1117` background + `#c9d1d9` foreground for a readable monospace pane.
+
+**Capability changes (`capabilities/default.json`).** Added `notification:default` and `autostart:default` permissions. Window list (`main`, `repair`, `diagnostics`, `logs`, `settings`) was already future-proofed during M1.3.
+
+**Build artefacts.** `cargo tauri build` produces 5.8 MB `Factotem Doctor.app` + 5.6 MB DMG. New binary launched live (PID 4773) and the autostart plugin auto-registered the LaunchAgent at `~/Library/LaunchAgents/Factotem Doctor.plist`.
+
+**Convention check.** Pure additive — new files in `cli/claw-doctor/`, modifications to `cli/claw-doctor/`, plus this CHANGE_LOG entry. No orchestrator code touched. Reversal: `git revert <commit>` plus `launchctl unload ~/Library/LaunchAgents/Factotem\ Doctor.plist && rm ~/Library/LaunchAgents/Factotem\ Doctor.plist` to undo the autostart side effect. Zero risk to NanoClaw production.
+
+Files changed:
+
+```
+NEW   cli/claw-doctor/src/views/SettingsView.tsx        ~310 lines
+NEW   cli/claw-doctor/src/views/LogsView.tsx            ~290 lines
+M     cli/claw-doctor/src/main.tsx                      (+ settings/logs routes)
+M     cli/claw-doctor/src/lib/tauri.ts                  (+ Settings type + 4 commands)
+M     cli/claw-doctor/src-tauri/Cargo.toml              (+ autostart + notification plugins)
+M     cli/claw-doctor/src-tauri/src/settings.rs         (placeholder → full load/save)
+M     cli/claw-doctor/src-tauri/src/commands.rs         (+ 4 commands + autostart sync helper)
+M     cli/claw-doctor/src-tauri/src/lib.rs              (+ plugins, settings cell, dynamic poll, notification firing)
+M     cli/claw-doctor/src-tauri/src/tray.rs             (+ OPEN_SETTINGS + OPEN_LOGS menu items)
+M     cli/claw-doctor/src-tauri/capabilities/default.json (+ notification + autostart perms)
+M     docs/CHANGE_LOG.md                                (this entry)
+```
+
+**Visual verification waiting on Don.**
+
+- Click Doctor in menu bar → menu now has Settings… and View NanoClaw logs… items
+- Click Settings… → window opens with current values populated; toggle launch-at-login off, click Save, verify `~/Library/LaunchAgents/Factotem Doctor.plist` removed; toggle back on, verify it returns
+- Click View NanoClaw logs… → window opens with the most recent 250 lines of `logs/nanoclaw.log`; new lines appear in ≤3s while Live is on
+- Trigger a state change (`launchctl bootout gui/$(id -u)/com.nanoclaw`) → notification fires within one probe interval
+- Bring NanoClaw back up → notification fires again with the recovered title
+
+Recovery tag: `pre-phase1-m1.4-2026-05-07` (HEAD before this commit).
+
+M1.5 (code signing via Don's Apple Dev ID) and M1.6 (claw-setup wizard step 11 deploys the .app to /Applications) follow.
+
+---
+
 ### EPERM durable migration — `dashboard/out` + `data/ipc` symlinked out of `~/Documents/`
 
 Resolves the recurring TCC-EPERM failure class first observed earlier today (2026-05-07 morning) when `brew reinstall node` invalidated the launchd-spawned NanoClaw's TCC grant for `~/Documents/`. The migration is symlink-only (zero code changes); commits as documentation + recovery tag for future reference.

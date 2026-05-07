@@ -71,6 +71,18 @@ export type RepairEvent =
   | { type: 'failed'; failed_step_id: string };
 
 // ──────────────────────────────────────────────────────────────────────
+// Settings types — mirror settings.rs.
+// ──────────────────────────────────────────────────────────────────────
+
+export interface Settings {
+  poll_interval_ms: number;
+  launch_at_login: boolean;
+  notify_on_state_change: boolean;
+  notify_audible: boolean;
+  hide_until_amber: boolean;
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Command wrappers.
 // ──────────────────────────────────────────────────────────────────────
 
@@ -80,6 +92,22 @@ export async function getRecoveryManifest(): Promise<RecoveryManifest> {
 
 export async function startRepair(confirm: string): Promise<RepairResult> {
   return await invoke<RepairResult>('start_repair', { confirm });
+}
+
+export async function getSettings(): Promise<Settings> {
+  return await invoke<Settings>('get_settings');
+}
+
+export async function saveSettings(settings: Settings): Promise<Settings> {
+  return await invoke<Settings>('save_settings', { settings });
+}
+
+export async function getLogPath(): Promise<string | null> {
+  return await invoke<string | null>('get_log_path');
+}
+
+export async function tailLog(lines: number): Promise<string> {
+  return await invoke<string>('tail_log', { lines });
 }
 
 // ──────────────────────────────────────────────────────────────────────

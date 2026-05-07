@@ -9,8 +9,13 @@
 //!   - `get_recovery_manifest()` — load bundled recovery-steps.json so
 //!     the React UI can render the steps before invoking start_repair.
 //!
-//! M1.4 will add settings persistence.
+//! M1.4 adds:
+//!   - `get_settings()` / `save_settings(settings)` — operator preferences.
+//!   - `tail_log(lines)` — read the last N lines of nanoclaw.log.
+//!   - `get_log_path()` — resolve the on-disk path of nanoclaw.log so
+//!     the Logs window can show "no log yet" rather than misreporting.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -19,6 +24,7 @@ use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use crate::manifest::{load_manifest, RecoveryManifest};
 use crate::probe::{probe_stack, StackStatus};
 use crate::repair::{run_repair, RepairResult};
+use crate::settings::{self, Settings};
 
 /// Shared snapshot — the latest probe result. Wrapped in a Mutex so the
 /// probe scheduler can write while commands read. Clone is cheap (Arc).
@@ -69,6 +75,142 @@ pub async fn start_repair(app: AppHandle, confirm: String) -> Result<RepairResul
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// M1.4 — Settings + Logs commands.
+// ──────────────────────────────────────────────────────────────────────
+
+/// Shared settings cell — kept in app state so the probe loop and the
+/// command handlers see a single source of truth. Updates from the
+/// Settings window broadcast through this same cell.
+#[derive(Clone)]
+pub struct SettingsState(pub Arc<Mutex<Settings>>);
+
+impl SettingsState {
+    pub fn new(settings: Settings) -> Self {
+        Self(Arc::new(Mutex::new(settings)))
+    }
+}
+
+#[tauri::command]
+pub fn get_settings(state: State<'_, SettingsState>) -> Result<Settings, String> {
+    Ok(state.0.lock().clone())
+}
+
+/// Persist settings to disk and update the in-memory cell. Side effects
+/// the operator can observe immediately:
+///   - poll_interval_ms: the next probe tick honours the new value.
+///   - launch_at_login: the autostart plugin registers/unregisters
+///     `~/Library/LaunchAgents/com.factotem.doctor.plist`.
+/// Notifications take effect on the next state transition.
+#[tauri::command]
+pub fn save_settings(
+    app: AppHandle,
+    state: State<'_, SettingsState>,
+    settings: Settings,
+) -> Result<Settings, String> {
+    settings::save(&settings)?;
+
+    // Sync launch-at-login with the plugin's truth. Errors here are
+    // surfaced but don't block save — the operator can retry or toggle
+    // manually via System Settings → General → Login Items.
+    if let Err(e) = sync_autostart(&app, settings.launch_at_login) {
+        tracing::warn!(error = %e, "autostart sync failed");
+    }
+
+    *state.0.lock() = settings.clone();
+    Ok(settings)
+}
+
+fn sync_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    let is_enabled = manager.is_enabled().map_err(|e| format!("{}", e))?;
+    if enabled && !is_enabled {
+        manager.enable().map_err(|e| format!("{}", e))?;
+        tracing::info!("autostart enabled");
+    } else if !enabled && is_enabled {
+        manager.disable().map_err(|e| format!("{}", e))?;
+        tracing::info!("autostart disabled");
+    }
+    Ok(())
+}
+
+/// Resolve the on-disk path of nanoclaw.log. Tries:
+///   1. `plutil -extract StandardOutPath raw -o - ~/Library/LaunchAgents/com.nanoclaw.plist`
+///   2. `$HOME/Documents/NanoClaw/nanoclaw/logs/nanoclaw.log` (Don's default)
+/// Returns None if neither exists yet (e.g., NanoClaw never installed).
+fn resolve_nanoclaw_log_path() -> Option<PathBuf> {
+    // Path 1 — read the launchd plist via plutil. plist may be binary or
+    // XML; plutil handles both. `-extract <key> raw` prints the value
+    // without quoting.
+    if let Some(home) = std::env::var_os("HOME") {
+        let plist = PathBuf::from(&home).join("Library/LaunchAgents/com.nanoclaw.plist");
+        if plist.exists() {
+            if let Ok(out) = std::process::Command::new("/usr/bin/plutil")
+                .args([
+                    "-extract",
+                    "StandardOutPath",
+                    "raw",
+                    "-o",
+                    "-",
+                    plist.to_str().unwrap_or(""),
+                ])
+                .output()
+            {
+                if out.status.success() {
+                    let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !raw.is_empty() {
+                        let p = PathBuf::from(raw);
+                        if p.exists() {
+                            return Some(p);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Path 2 — known fallback.
+        let fallback = PathBuf::from(&home)
+            .join("Documents/NanoClaw/nanoclaw/logs/nanoclaw.log");
+        if fallback.exists() {
+            return Some(fallback);
+        }
+    }
+    None
+}
+
+#[tauri::command]
+pub fn get_log_path() -> Result<Option<String>, String> {
+    Ok(resolve_nanoclaw_log_path().map(|p| p.display().to_string()))
+}
+
+/// Tail the last N lines of nanoclaw.log. `lines` is clamped to [1, 5000]
+/// so the front-end doesn't accidentally request megabytes of text.
+/// Returns Err with a brief reason when the log can't be located or read.
+#[tauri::command]
+pub fn tail_log(lines: usize) -> Result<String, String> {
+    let path = resolve_nanoclaw_log_path()
+        .ok_or_else(|| "nanoclaw.log not found (NanoClaw not installed?)".to_string())?;
+    let n = lines.clamp(1, 5_000);
+
+    // Use `tail -n N` rather than reading the whole file; logs can grow
+    // to tens of MB during a long incident and the operator only ever
+    // wants the recent slice.
+    let out = std::process::Command::new("/usr/bin/tail")
+        .args(["-n", &n.to_string(), path.to_str().unwrap_or("")])
+        .output()
+        .map_err(|e| format!("spawn tail: {}", e))?;
+
+    if !out.status.success() {
+        return Err(format!(
+            "tail exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Tray menu event router.
 // Connected in main.rs via TrayIconBuilder::on_menu_event.
 // ──────────────────────────────────────────────────────────────────────
@@ -94,6 +236,19 @@ pub fn handle_menu_event(app: &AppHandle, event_id: &str) {
                 560.0,
                 720.0,
             );
+        }
+        ids::OPEN_SETTINGS => {
+            open_or_focus_window(
+                app,
+                "settings",
+                "?view=settings",
+                "Doctor Settings",
+                480.0,
+                560.0,
+            );
+        }
+        ids::OPEN_LOGS => {
+            open_or_focus_window(app, "logs", "?view=logs", "NanoClaw Logs", 720.0, 560.0);
         }
         ids::QUIT => {
             app.exit(0);

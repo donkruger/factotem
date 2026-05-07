@@ -14,6 +14,8 @@ pub mod ids {
     pub const OPEN_RECOVERY: &str = "open_recovery";
     pub const REPAIR_STACK: &str = "repair_stack";
     pub const SHOW_DETAILS: &str = "show_details";
+    pub const OPEN_SETTINGS: &str = "open_settings";
+    pub const OPEN_LOGS: &str = "open_logs";
     pub const QUIT: &str = "quit";
 }
 
@@ -59,6 +61,20 @@ fn build_initial_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         true,
         Some("CmdOrCtrl+Shift+R"),
     )?;
+    let open_settings = MenuItem::with_id(
+        app,
+        ids::OPEN_SETTINGS,
+        "Settings…",
+        true,
+        Some("CmdOrCtrl+,"),
+    )?;
+    let open_logs = MenuItem::with_id(
+        app,
+        ids::OPEN_LOGS,
+        "View NanoClaw logs…",
+        true,
+        Some("CmdOrCtrl+Shift+L"),
+    )?;
     let quit = MenuItem::with_id(
         app,
         ids::QUIT,
@@ -75,6 +91,9 @@ fn build_initial_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &PredefinedMenuItem::separator(app)?,
             &open_dashboard,
             &open_recovery,
+            &open_logs,
+            &PredefinedMenuItem::separator(app)?,
+            &open_settings,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
@@ -187,6 +206,22 @@ fn build_status_menu(app: &AppHandle, status: &StackStatus) -> tauri::Result<Men
         None::<&str>,
     )?;
 
+    // M1.4 entries — operator preferences + log tail.
+    let open_settings = MenuItem::with_id(
+        app,
+        ids::OPEN_SETTINGS,
+        "Settings…",
+        true,
+        Some("CmdOrCtrl+,"),
+    )?;
+    let open_logs = MenuItem::with_id(
+        app,
+        ids::OPEN_LOGS,
+        "View NanoClaw logs…",
+        true,
+        Some("CmdOrCtrl+Shift+L"),
+    )?;
+
     let quit = MenuItem::with_id(
         app,
         ids::QUIT,
@@ -208,6 +243,10 @@ fn build_status_menu(app: &AppHandle, status: &StackStatus) -> tauri::Result<Men
     items.push(&sep_actions);
     items.push(&repair_stack);
     items.push(&show_details);
+    items.push(&open_logs);
+    let sep_settings = PredefinedMenuItem::separator(app)?;
+    items.push(&sep_settings);
+    items.push(&open_settings);
     let sep2 = PredefinedMenuItem::separator(app)?;
     items.push(&sep2);
     items.push(&quit);

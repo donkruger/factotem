@@ -3,7 +3,9 @@ import ReactDOM from 'react-dom/client';
 
 import './styles/tokens.css';
 import './styles/global.css';
+import { LogsView } from './views/LogsView';
 import { RepairView } from './views/RepairView';
+import { SettingsView } from './views/SettingsView';
 
 // Window dispatch — ?view=<name> in the URL drives which view renders.
 // Each tray menu action that opens a window passes its own `view` value
@@ -14,6 +16,8 @@ function App() {
   const view = params.get('view');
 
   if (view === 'repair') return <RepairView />;
+  if (view === 'settings') return <SettingsView />;
+  if (view === 'logs') return <LogsView />;
   if (view === 'diagnostics') return <DiagnosticsPlaceholder />;
   return <DefaultPlaceholder />;
 }

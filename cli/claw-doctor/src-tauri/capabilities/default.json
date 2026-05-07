@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the Doctor's WebView windows. Grants core operations + the plugin permissions used by shell/opener actions invoked from the menu router. Custom #[tauri::command] handlers (probe_stack_now, get_last_status, get_recovery_manifest, start_repair) are allowed by default for any window.",
+  "description": "Default capability for the Doctor's WebView windows. Grants core operations + the plugin permissions used by shell/opener/notification/autostart actions invoked from the menu router. Custom #[tauri::command] handlers (probe_stack_now, get_last_status, get_recovery_manifest, start_repair, get_settings, save_settings, get_log_path, tail_log) are allowed by default for any window.",
   "windows": ["main", "repair", "diagnostics", "logs", "settings"],
   "permissions": [
     "core:default",
@@ -9,6 +9,8 @@
     "core:window:default",
     "core:webview:default",
     "shell:default",
-    "opener:default"
+    "opener:default",
+    "notification:default",
+    "autostart:default"
   ]
 }
