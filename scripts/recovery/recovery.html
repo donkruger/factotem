@@ -231,10 +231,15 @@
       <span>Factotem</span>
     </div>
     <h1>Recovery Center</h1>
-    <p class="lede">
+    <p class="lede" id="ledeOffline">
       NanoClaw isn't responding. Run the four steps below in order — each
       starts the layer beneath the next. The status indicator will turn
       green when the dashboard is reachable again.
+    </p>
+    <p class="lede" id="ledeOnline" style="display: none;">
+      The dashboard is reachable. If you came here because of an error, the
+      recovery worked — you can close this tab. The four-step sequence
+      below is kept for reference; you don't need to run it.
     </p>
   </header>
 
@@ -345,6 +350,19 @@
   const detail = document.getElementById('statusDetail');
   const HEALTH_URL = 'http://localhost:7842/health';
 
+  const ledeOffline = document.getElementById('ledeOffline');
+  const ledeOnline = document.getElementById('ledeOnline');
+
+  function showLede(online) {
+    if (online) {
+      ledeOffline.style.display = 'none';
+      ledeOnline.style.display = '';
+    } else {
+      ledeOffline.style.display = '';
+      ledeOnline.style.display = 'none';
+    }
+  }
+
   async function probe() {
     try {
       const ctrl = new AbortController();
@@ -355,6 +373,7 @@
       dot.classList.add('ok');
       state.textContent = 'Dashboard reachable';
       detail.textContent = 'Click "Open the dashboard" below to confirm.';
+      showLede(true);
       // Once it's up, slow the polling so we don't burn cycles.
       return 30000;
     } catch (e) {
@@ -362,6 +381,7 @@
       dot.classList.add('error');
       state.textContent = 'Dashboard unreachable';
       detail.textContent = 'Run the steps below; this will turn green automatically.';
+      showLede(false);
       return 3000;
     }
   }

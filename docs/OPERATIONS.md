@@ -744,6 +744,67 @@ The in-memory `registeredGroups` map is loaded once at startup. Any change to `c
 
 ---
 
+## EPERM under launchd context — TCC token refresh remedy
+
+### Symptom
+
+`/health` returns 200 but `/`, `/activity/`, `/groups/`, etc. return HTTP 500 with the operator's browser showing:
+
+```
+Error: EPERM: operation not permitted, open '/Users/support/Documents/NanoClaw/nanoclaw/dashboard/out/index.html'
+```
+
+The error log (`logs/nanoclaw.error.log`) may also show:
+
+```
+Error: EPERM: operation not permitted, scandir '/Users/support/Documents/NanoClaw/nanoclaw/data/ipc'
+```
+
+NanoClaw's process is alive and Baileys is connected (so health probes succeed), but the launchd-spawned process can't read static files or scan IPC directories. The user CAN read those same files directly from a terminal — the EPERM is specific to the launchd context.
+
+### Root cause
+
+macOS TCC (Transparency, Consent, and Control) tokens for launchd-spawned processes can get invalidated by:
+
+- **Reinstalling the Node binary** (e.g. `brew reinstall node`). The TCC grant is keyed to the binary's path AND signature; replacing the binary kills the grant.
+- **System updates** that touch the privacy database
+- **Reboot in some configurations**, particularly after Time Machine snapshot operations
+
+The `~/Documents/` and `~/Desktop/` folders are TCC-protected by default. The launchd-spawned NanoClaw process needs a TCC grant to read them; once revoked, every file read in those folders returns EPERM.
+
+### Quick remedy (refreshes the TCC token)
+
+```bash
+cp store/auth/creds.json store/auth/creds.json.pre-eperm-fix-$(date +%Y%m%d).bak
+launchctl bootout gui/$(id -u)/com.nanoclaw
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nanoclaw.plist
+sleep 5
+curl -s -o /dev/null -w "/: %{http_code}\n/health: %{http_code}\n" http://localhost:7842/{,health}
+```
+
+A `kickstart -k` is NOT enough — the TCC token only refreshes on a full bootout / bootstrap cycle.
+
+### Durable fix (deferred)
+
+The proper fix is to move TCC-affected paths out of `~/Documents/` to TCC-friendly locations. The `auth-mode` marker has already been moved to `~/.config/nanoclaw/` (per the 2026-04-24 ben-log entry). The remaining `~/Documents/`-rooted paths the launchd process touches are:
+
+- `dashboard/out/` — Next.js static export served by Express
+- `data/ipc/{group}/{messages,tasks,input}/` — IPC file-drop pattern
+- `groups/{name}/CLAUDE.md` — per-group memory
+- `store/messages.db` + `store/auth/` — SQLite + Baileys credentials
+- `logs/` — main + error logs
+- `data/sessions/{group}/` — per-group session state
+
+Migrating these to `~/Library/Application Support/Factotem/` (Phase 0's recovery.html already lives here) would eliminate the recurring EPERM. Substantial change with non-disruption implications; not yet scheduled.
+
+### Why a `bootout`/`bootstrap` works
+
+The `launchctl bootout` fully unloads the service domain from launchd's process table. `launchctl bootstrap` loads it fresh, which causes macOS to re-evaluate the binary's TCC grants from scratch. The result is a new token covering the current binary signature.
+
+`kickstart -k` only sends `SIGTERM` to the running process and lets launchd respawn it — same launch-domain entry, same (potentially stale) TCC token. Hence the difference.
+
+---
+
 ## Dashboard v1 verification
 
 Quick way to confirm the operator dashboard is healthy after a deploy. Lives at `nanoclaw/scripts/verify-dashboard-v1.sh` and runs against the live HTTP server on `localhost:7842`.
