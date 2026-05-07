@@ -6,6 +6,64 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-07
 
+### Phase 2 / Release pipeline — R.2 (GitHub Actions release workflow + v0.1.1)
+
+Second of four. R.1 added the in-app updater plumbing; R.2 publishes the first release. Tagging `v0.1.1` triggers a macOS-14 GitHub Actions workflow that builds, signs, notarises, and publishes the .dmg + .app.tar.gz + .app.tar.gz.sig + latest.json as release assets — operators can download from `https://github.com/donkruger/factotem/releases/latest` from this point forward.
+
+**New: `.github/workflows/release.yml`.** Triggered on tags matching `v*`. macOS-14 runner (Apple Silicon — produces aarch64 binaries; x86_64 + universal binaries are a future build matrix expansion). Steps:
+
+1. Checkout + Node 20 + Rust stable + cargo-tauri install.
+2. Import the Apple Developer ID `.p12` from `APPLE_CERT_BASE64` into a temporary keychain scoped to the run (auto-cleaned on `if: always()` cleanup step at the end).
+3. `npm ci` in the Doctor frontend.
+4. `cargo tauri build` with the Apple + Tauri signing env vars set. Produces signed + notarised `.app`, signed `.dmg`, plus `.app.tar.gz` + `.app.tar.gz.sig` updater artefacts.
+5. Notarise + staple the DMG separately (Tauri 2 quirk — its bundler signs but doesn't auto-notarise the DMG; documented in M1.5).
+6. Stage artefacts with URL-safe names (`Factotem-Doctor_X.Y.Z_aarch64.dmg` rather than `Factotem Doctor_X.Y.Z_aarch64.dmg` with a space).
+7. Generate `latest.json` — Tauri's update manifest format. Embeds the version, the latest CHANGE_LOG entry as release notes, the .tar.gz signature contents (NOT a URL — the literal base64 minisign signature), and the public download URL.
+8. Verify Gatekeeper acceptance via `spctl --assess` (logs warning rather than failing the build).
+9. `gh release create` — uploads .dmg + .app.tar.gz + .app.tar.gz.sig + latest.json to the release; uses the latest CHANGE_LOG entry as the release notes; flagged `--latest` so the updater plugin's `releases/latest/download/latest.json` URL resolves correctly.
+10. Cleanup keychain.
+
+**GitHub Actions secrets** (8, set once via `gh secret set`):
+
+| Secret | Source |
+|---|---|
+| `APPLE_CERT_BASE64` | `base64 < KanbanPro-DeveloperID.p12` (team-wide cert; same one signs the Doctor) |
+| `APPLE_CERT_PASSWORD` | .p12 passphrase |
+| `APPLE_SIGNING_IDENTITY` | "Developer ID Application: Don Kruger (D8G67T74V6)" |
+| `APPLE_ID` | Apple ID for notarytool |
+| `APPLE_PASSWORD` | App-specific password |
+| `APPLE_TEAM_ID` | D8G67T74V6 |
+| `TAURI_SIGNING_PRIVATE_KEY` | Ed25519 private key generated in R.1 |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Empty (key was generated without a passphrase) |
+
+**Version bumps.** `cli/claw-doctor/package.json`, `cli/claw-doctor/package-lock.json`, `cli/claw-doctor/src-tauri/Cargo.toml`, and `cli/claw-doctor/src-tauri/tauri.conf.json` all bumped from 0.1.0 → 0.1.1. `cargo check` refreshed `Cargo.lock`; `npm install --package-lock-only` refreshed `package-lock.json`.
+
+**Files changed.**
+
+- **NEW** `.github/workflows/release.yml` — ~150 lines, single-job workflow on `macos-14`.
+- `cli/claw-doctor/package.json` — version 0.1.1.
+- `cli/claw-doctor/package-lock.json` — version 0.1.1.
+- `cli/claw-doctor/src-tauri/Cargo.toml` — version 0.1.1.
+- `cli/claw-doctor/src-tauri/Cargo.lock` — version 0.1.1.
+- `cli/claw-doctor/src-tauri/tauri.conf.json` — version 0.1.1.
+- `docs/CHANGE_LOG.md` — this entry (extracted as v0.1.1 release notes by the workflow).
+
+**Verification (post-tag).**
+
+1. `git tag v0.1.1 && git push origin v0.1.1` triggers the workflow.
+2. Workflow takes ~10–15 minutes (Tauri build + Apple notarisation queue + DMG re-notarisation).
+3. `gh release view v0.1.1 --repo donkruger/factotem` shows three asset files: `.dmg`, `.app.tar.gz`, `.app.tar.gz.sig`, plus `latest.json`.
+4. `curl -sI https://github.com/donkruger/factotem/releases/latest/download/latest.json` returns 200 with the manifest.
+5. Downloading the `.dmg`, mounting, copying to /Applications, running `spctl --assess` confirms Notarized Developer ID acceptance.
+
+**Convention check.** Pure additive — one new workflow file, four version bumps, one CHANGE_LOG entry. No code changes to the orchestrator, Doctor, or wizard. The cert + tokens live as GitHub Actions secrets, never committed. Reversal: `gh release delete v0.1.1 --yes && git tag -d v0.1.1 && git push origin :v0.1.1`. The workflow file can be reverted independently.
+
+**Recovery tag:** `pre-r2-2026-05-07`.
+
+R.3 follows: operator-approved update UI in the Doctor (auto-check toggle, banner, install/restart flow).
+
+---
+
 ### Phase 2 / Release pipeline — R.1 (Tauri updater plumbing in the Doctor)
 
 First of four sequential milestones that turn the Doctor into an auto-updateable artifact distributed via GitHub Releases. R.1 adds the in-app plumbing without changing operator-visible behaviour — the Doctor now contains the updater plugin and three Tauri commands, but doesn't poll for updates yet (R.3 wires the operator-approved scheduler).

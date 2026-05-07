@@ -1,0 +1,232 @@
+name: Release Doctor
+
+# Triggers on `v*` tags pushed to the repo. Each tag produces a signed
+# + notarised .dmg + the Tauri updater payload + a `latest.json`
+# manifest, all attached to a GitHub Release.
+#
+# Tag convention: vX.Y.Z (matching cli/claw-doctor/src-tauri/tauri.conf.json
+# `version` field).
+#
+# Required GitHub Actions secrets (set via `gh secret set <NAME>`):
+#   APPLE_CERT_BASE64                     base64-encoded Developer ID .p12
+#   APPLE_CERT_PASSWORD                   passphrase for the .p12
+#   APPLE_SIGNING_IDENTITY                "Developer ID Application: ..."
+#   APPLE_ID                              Apple ID for notarytool
+#   APPLE_PASSWORD                        app-specific password
+#   APPLE_TEAM_ID                         e.g. D8G67T74V6
+#   TAURI_SIGNING_PRIVATE_KEY             ed25519 private key for the updater
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD    passphrase (empty if no passphrase)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # gh release create needs to write release assets
+
+jobs:
+  build:
+    name: Build + sign + notarise + release
+    runs-on: macos-14   # Apple Silicon runner — produces aarch64 binaries
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: cli/claw-doctor/package-lock.json
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli/claw-doctor/src-tauri -> target
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0" --locked
+
+      - name: Install Doctor frontend deps
+        working-directory: cli/claw-doctor
+        run: npm ci
+
+      - name: Import Apple Developer ID certificate into Keychain
+        env:
+          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}
+        run: |
+          # Create a temporary keychain so the import is scoped to this CI run.
+          KEYCHAIN_PATH="$RUNNER_TEMP/factotem-build.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Decode the .p12 and import into the temp keychain.
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo "$APPLE_CERT_BASE64" | base64 --decode -o "$CERT_PATH"
+          security import "$CERT_PATH" \
+            -P "$APPLE_CERT_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          # Add the temp keychain to the search list so codesign finds it.
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | xargs)
+
+          # Confirm the identity is visible.
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Build, sign, and notarise the Doctor
+        working-directory: cli/claw-doctor
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          cargo tauri build
+          # Tauri's bundler signs + notarises + staples the .app and
+          # signs the .dmg. The DMG is notarised separately below
+          # (Tauri 2 quirk — documented in M1.5).
+
+      - name: Notarise + staple the DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG=$(find cli/claw-doctor/src-tauri/target/release/bundle/dmg -name "*.dmg" | head -1)
+          echo "Submitting $DMG to notarytool…"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+
+      - name: Stage release artefacts (rename to URL-safe paths)
+        id: stage
+        run: |
+          # Tauri's output filenames contain spaces ("Factotem Doctor.app.tar.gz").
+          # GitHub Releases preserves filenames in URLs; spaces become %20 which
+          # works but adds friction. Rename with hyphens for clean URLs.
+          BUNDLE_DIR=cli/claw-doctor/src-tauri/target/release/bundle
+          RELEASE_DIR=$RUNNER_TEMP/release
+          mkdir -p "$RELEASE_DIR"
+
+          DMG_SRC=$(find "$BUNDLE_DIR/dmg" -name "*.dmg" | head -1)
+          TARGZ_SRC=$(find "$BUNDLE_DIR/macos" -name "*.app.tar.gz" | head -1)
+          SIG_SRC=$(find "$BUNDLE_DIR/macos" -name "*.app.tar.gz.sig" | head -1)
+
+          VERSION="${GITHUB_REF_NAME#v}"
+          DMG_DST="$RELEASE_DIR/Factotem-Doctor_${VERSION}_aarch64.dmg"
+          TARGZ_DST="$RELEASE_DIR/Factotem-Doctor_${VERSION}_aarch64.app.tar.gz"
+          SIG_DST="$RELEASE_DIR/Factotem-Doctor_${VERSION}_aarch64.app.tar.gz.sig"
+
+          cp "$DMG_SRC" "$DMG_DST"
+          cp "$TARGZ_SRC" "$TARGZ_DST"
+          cp "$SIG_SRC" "$SIG_DST"
+
+          # Record outputs for later steps.
+          echo "version=$VERSION"            >> "$GITHUB_OUTPUT"
+          echo "release_dir=$RELEASE_DIR"    >> "$GITHUB_OUTPUT"
+          echo "dmg=$DMG_DST"                >> "$GITHUB_OUTPUT"
+          echo "targz=$TARGZ_DST"            >> "$GITHUB_OUTPUT"
+          echo "sig=$SIG_DST"                >> "$GITHUB_OUTPUT"
+          echo "targz_basename=$(basename "$TARGZ_DST")" >> "$GITHUB_OUTPUT"
+
+          ls -la "$RELEASE_DIR"
+
+      - name: Generate latest.json
+        id: manifest
+        run: |
+          # Tauri updater manifest format. The `signature` field is the
+          # CONTENTS of the .sig file (a base64 minisign signature),
+          # NOT a URL.
+          VERSION="${{ steps.stage.outputs.version }}"
+          TARGZ_BASENAME="${{ steps.stage.outputs.targz_basename }}"
+          SIG_CONTENT=$(cat "${{ steps.stage.outputs.sig }}")
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Extract the latest entry from CHANGE_LOG.md as release notes.
+          # The format is "## YYYY-MM-DD" headings; we grab everything
+          # from the first such heading until the next one.
+          NOTES_RAW=$(awk '/^## [0-9]{4}-[0-9]{2}-[0-9]{2}$/{c++; if(c==2)exit} c==1' docs/CHANGE_LOG.md | head -200)
+          if [ -z "$NOTES_RAW" ]; then
+            NOTES_RAW="Factotem Doctor v$VERSION. See docs/CHANGE_LOG.md for full history."
+          fi
+
+          # Compose the manifest. Use python (preinstalled on macOS-14)
+          # to safely JSON-encode the multi-line notes string.
+          python3 <<PY > "${{ steps.stage.outputs.release_dir }}/latest.json"
+          import json
+          manifest = {
+              "version": "$VERSION",
+              "notes": """${NOTES_RAW}""",
+              "pub_date": "$PUB_DATE",
+              "platforms": {
+                  "darwin-aarch64": {
+                      "signature": """${SIG_CONTENT}""",
+                      "url": f"https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${TARGZ_BASENAME}"
+                  }
+              }
+          }
+          print(json.dumps(manifest, indent=2))
+          PY
+          echo "--- latest.json ---"
+          cat "${{ steps.stage.outputs.release_dir }}/latest.json"
+
+      - name: Verify Gatekeeper acceptance
+        run: |
+          # Mount the DMG, find the .app inside, and run spctl.
+          # Doesn't fail the build on rejection, but logs the result.
+          DMG="${{ steps.stage.outputs.dmg }}"
+          MOUNT_POINT=$(hdiutil attach "$DMG" -nobrowse -noverify | tail -1 | awk '{print $3}')
+          APP=$(find "$MOUNT_POINT" -name "*.app" -maxdepth 2 | head -1)
+          spctl --assess --type execute --verbose=2 "$APP" || echo "::warning::spctl rejected $APP"
+          xcrun stapler validate "$APP" || echo "::warning::stapler rejected $APP"
+          hdiutil detach "$MOUNT_POINT" -force || true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.stage.outputs.version }}"
+          RELEASE_DIR="${{ steps.stage.outputs.release_dir }}"
+
+          # Use the latest CHANGE_LOG entry as release notes.
+          NOTES_FILE="$RUNNER_TEMP/notes.md"
+          awk '/^## [0-9]{4}-[0-9]{2}-[0-9]{2}$/{c++; if(c==2)exit} c==1' docs/CHANGE_LOG.md > "$NOTES_FILE"
+          if [ ! -s "$NOTES_FILE" ]; then
+            echo "Factotem Doctor v$VERSION." > "$NOTES_FILE"
+            echo "" >> "$NOTES_FILE"
+            echo "See docs/CHANGE_LOG.md for full history." >> "$NOTES_FILE"
+          fi
+
+          # `latest` flag makes this the target of the
+          # /releases/latest/download/latest.json URL the updater plugin
+          # polls. Pre-releases skip this flag.
+          gh release create "${{ github.ref_name }}" \
+            "$RELEASE_DIR"/* \
+            --title "Factotem Doctor v$VERSION" \
+            --notes-file "$NOTES_FILE" \
+            --latest
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/factotem-build.keychain-db" || true
