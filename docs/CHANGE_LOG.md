@@ -6,6 +6,43 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-07
 
+### EPERM durable migration — `dashboard/out` + `data/ipc` symlinked out of `~/Documents/`
+
+Resolves the recurring TCC-EPERM failure class first observed earlier today (2026-05-07 morning) when `brew reinstall node` invalidated the launchd-spawned NanoClaw's TCC grant for `~/Documents/`. The migration is symlink-only (zero code changes); commits as documentation + recovery tag for future reference.
+
+**Migration steps (executed live):**
+
+1. `bootout` NanoClaw + stop running containers
+2. `mkdir -p ~/Library/Application\ Support/Factotem/{dashboard-out,ipc}` (the recovery.html from Phase 0 already lives in this dir)
+3. `cp -R` content from `nanoclaw/dashboard/out/.` and `nanoclaw/data/ipc/.` to the new locations
+4. `mv` originals to `dashboard/out.pre-eperm.bak` and `data/ipc.pre-eperm.bak`
+5. `ln -s` symlinks at the original paths pointing at the new locations
+6. `bootstrap` NanoClaw
+
+**Why symlinks are sufficient.** macOS TCC checks happen at kernel `open()` / `scandir()` time on the resolved path, not the path-string passed to the syscall. So `fs.readFileSync('nanoclaw/dashboard/out/index.html')` resolves through the symlink to `~/Library/Application Support/Factotem/dashboard-out/index.html` before the TCC check fires. `~/Library/Application Support/` is TCC-unrestricted, so the open succeeds even when the grant for `~/Documents/` has been revoked.
+
+**Verified live (PID 36718, post-migration).**
+- Zero new EPERM hits in `logs/nanoclaw.error.log` since the restart
+- All 7 dashboard routes return 200 (`/`, `/health`, `/activity/`, `/groups/`, `/cost/`, `/alerts/`, `/audit/`)
+- IPC watcher logged "IPC watcher started (per-group namespaces)" cleanly
+- Symlinked path resolves correctly: `ls -la nanoclaw/data/ipc/whatsapp_main/` shows `available_groups.json` (160 KB) at the resolved location
+- `/api/groups` returns 9 groups (orchestrator reading SQLite cleanly)
+- WhatsApp connection re-established after the restart
+
+**Other `~/Documents/`-rooted paths NOT migrated.** `groups/{name}/CLAUDE.md`, `store/messages.db`, `store/auth/`, `logs/`, `data/sessions/` continue to work because they're held open via persistent file descriptors (SQLite mmap, Baileys append-only auth files, log fds). If TCC starts blocking those too, the same symlink pattern extends.
+
+**Files changed.** This commit only updates docs:
+- `docs/OPERATIONS.md` § "EPERM under launchd context — TCC token refresh remedy" — "Durable fix (deferred)" section replaced with "Durable fix (shipped 2026-05-07)" describing the symlink layout, why it works, and what remains optional
+- `docs/CHANGE_LOG.md` — this entry
+
+The actual filesystem mutations (mkdir, cp, mv, ln -s) are operator-side state, not committed code.
+
+**Convention check.** No code touched. The symlinks at `nanoclaw/dashboard/out` and `nanoclaw/data/ipc` are gitignored (the `out/` and `ipc/` paths were already gitignored as build artefacts / runtime state). The `.pre-eperm.bak` backup directories are also gitignored implicitly (the patterns cover them). Reversal: `rm` the symlinks, `mv` the `.bak` directories back. Zero risk to NanoClaw's source-code surface.
+
+Recovery tag: `pre-eperm-migration-2026-05-07` (HEAD before this commit). Apply via `git checkout pre-eperm-migration-2026-05-07` and reverse the filesystem move; no code revert needed.
+
+---
+
 ### Phase 1 / Tauri Doctor — M1.3 (Repair Stack window + sequential executor)
 
 Second execution session. M1.2 was visually verified by Don this morning (multi-instance amber state correctly displayed `2 NanoClaw services loaded` with both labels and the "only one is bound to :7842" framing). M1.3 wires the highest-leverage menu item — `Repair Stack…` — to a real Tauri window backed by a sequential shell-command executor.

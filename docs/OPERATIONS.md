@@ -784,18 +784,24 @@ curl -s -o /dev/null -w "/: %{http_code}\n/health: %{http_code}\n" http://localh
 
 A `kickstart -k` is NOT enough — the TCC token only refreshes on a full bootout / bootstrap cycle.
 
-### Durable fix (deferred)
+### Durable fix (shipped 2026-05-07)
 
-The proper fix is to move TCC-affected paths out of `~/Documents/` to TCC-friendly locations. The `auth-mode` marker has already been moved to `~/.config/nanoclaw/` (per the 2026-04-24 ben-log entry). The remaining `~/Documents/`-rooted paths the launchd process touches are:
+The two paths that actively hit EPERM under launchd context — `dashboard/out/` (Express static-mount target) and `data/ipc/{group}/...` (IPC watcher target) — have been migrated to `~/Library/Application Support/Factotem/` (TCC-friendly). The original `nanoclaw/dashboard/out` and `nanoclaw/data/ipc` paths are now symlinks pointing at the new locations:
 
-- `dashboard/out/` — Next.js static export served by Express
-- `data/ipc/{group}/{messages,tasks,input}/` — IPC file-drop pattern
-- `groups/{name}/CLAUDE.md` — per-group memory
-- `store/messages.db` + `store/auth/` — SQLite + Baileys credentials
-- `logs/` — main + error logs
-- `data/sessions/{group}/` — per-group session state
+```
+nanoclaw/dashboard/out  →  ~/Library/Application Support/Factotem/dashboard-out/
+nanoclaw/data/ipc       →  ~/Library/Application Support/Factotem/ipc/
+```
 
-Migrating these to `~/Library/Application Support/Factotem/` (Phase 0's recovery.html already lives here) would eliminate the recurring EPERM. Substantial change with non-disruption implications; not yet scheduled.
+Symlinks resolve at the kernel `open()`/`scandir()` syscall layer, so TCC checks the destination path's protection scope. `~/Library/Application Support/` is TCC-unrestricted, so the launchd-spawned NanoClaw process can read/write the resolved targets even when its grant for `~/Documents/` has been invalidated.
+
+Verified live 2026-05-07: PID 36718 (post-migration) emits zero EPERM, all dashboard routes return 200, IPC watcher started cleanly, IPC writes from container agents land in the symlinked path.
+
+The other `~/Documents/`-rooted paths the launchd process touches — `groups/{name}/CLAUDE.md`, `store/messages.db`, `store/auth/`, `logs/`, `data/sessions/` — currently work because they're held open via persistent file descriptors (SQLite mmap, Baileys append-only auth files, log fds). If TCC starts blocking those too, extend the same symlink pattern.
+
+The `dashboard/build` step in `package.json` continues to write to `dashboard/out/` (resolves through the symlink to the new location). The `claw-setup` wizard's M1.6 step will install the symlinks on fresh deployments. The recovery commands in this runbook still work unmodified — the only behavioural difference is that EPERM no longer recurs after a `brew reinstall node` or system update.
+
+**Backups of the original paths** (pre-migration content) at `dashboard/out.pre-eperm.bak` and `data/ipc.pre-eperm.bak`. Safe to delete after a few days of confirmed stability.
 
 ### Why a `bootout`/`bootstrap` works
 
