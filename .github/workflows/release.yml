@@ -2,10 +2,13 @@ name: Release Doctor
 
 # Triggers on `v*` tags pushed to the repo. Each tag produces a signed
 # + notarised .dmg + the Tauri updater payload + a `latest.json`
-# manifest, all attached to a GitHub Release.
+# manifest, all published to the PUBLIC mirror repo at
+# RichardBNel/Factotem (donkruger/factotem is private; auto-update
+# requires public asset URLs the Doctor can fetch unauthenticated).
 #
 # Tag convention: vX.Y.Z (matching cli/claw-doctor/src-tauri/tauri.conf.json
-# `version` field).
+# `version` field). Tags pushed to donkruger/factotem; releases land
+# at RichardBNel/Factotem under the same tag name.
 #
 # Required GitHub Actions secrets (set via `gh secret set <NAME>`):
 #   APPLE_CERT_BASE64                     base64-encoded Developer ID .p12
@@ -16,6 +19,11 @@ name: Release Doctor
 #   APPLE_TEAM_ID                         e.g. D8G67T74V6
 #   TAURI_SIGNING_PRIVATE_KEY             ed25519 private key for the updater
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD    passphrase (empty if no passphrase)
+#   MIRROR_REPO_TOKEN                     PAT with `repo` scope on RichardBNel/Factotem
+#                                         (used by `gh release create` to push to the public mirror)
+
+env:
+  MIRROR_REPO: RichardBNel/Factotem
 
 on:
   push:
@@ -171,9 +179,12 @@ jobs:
           fi
 
           # Compose the manifest. Use python (preinstalled on macOS-14)
-          # to safely JSON-encode the multi-line notes string.
+          # to safely JSON-encode the multi-line notes string. The
+          # download URL points at the PUBLIC mirror repo
+          # (RichardBNel/Factotem), not the private source repo.
           python3 <<PY > "${{ steps.stage.outputs.release_dir }}/latest.json"
           import json
+          import os
           manifest = {
               "version": "$VERSION",
               "notes": """${NOTES_RAW}""",
@@ -181,7 +192,7 @@ jobs:
               "platforms": {
                   "darwin-aarch64": {
                       "signature": """${SIG_CONTENT}""",
-                      "url": f"https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${TARGZ_BASENAME}"
+                      "url": f"https://github.com/{os.environ['MIRROR_REPO']}/releases/download/${{ github.ref_name }}/${TARGZ_BASENAME}"
                   }
               }
           }
@@ -201,9 +212,13 @@ jobs:
           xcrun stapler validate "$APP" || echo "::warning::stapler rejected $APP"
           hdiutil detach "$MOUNT_POINT" -force || true
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release on public mirror
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Cross-repo write: requires a token with `repo` scope on
+          # RichardBNel/Factotem. Set as MIRROR_REPO_TOKEN secret in
+          # the source repo (donkruger/factotem) — the default
+          # GITHUB_TOKEN can't write to other repos.
+          GH_TOKEN: ${{ secrets.MIRROR_REPO_TOKEN }}
         run: |
           VERSION="${{ steps.stage.outputs.version }}"
           RELEASE_DIR="${{ steps.stage.outputs.release_dir }}"
@@ -214,14 +229,16 @@ jobs:
           if [ ! -s "$NOTES_FILE" ]; then
             echo "Factotem Doctor v$VERSION." > "$NOTES_FILE"
             echo "" >> "$NOTES_FILE"
-            echo "See docs/CHANGE_LOG.md for full history." >> "$NOTES_FILE"
+            echo "Source: github.com/donkruger/factotem (private)." >> "$NOTES_FILE"
+            echo "See the source repo's docs/CHANGE_LOG.md for full history." >> "$NOTES_FILE"
           fi
 
-          # `latest` flag makes this the target of the
-          # /releases/latest/download/latest.json URL the updater plugin
-          # polls. Pre-releases skip this flag.
+          # `--latest` flag makes this the target of
+          # /releases/latest/download/latest.json — the URL the
+          # Tauri updater plugin polls.
           gh release create "${{ github.ref_name }}" \
             "$RELEASE_DIR"/* \
+            --repo "$MIRROR_REPO" \
             --title "Factotem Doctor v$VERSION" \
             --notes-file "$NOTES_FILE" \
             --latest

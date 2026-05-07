@@ -167,7 +167,11 @@ if [[ ! -d "$SOURCE_APP" ]]; then
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     echo "ℹ Source bundle missing; trying GitHub Release fallback…"
     TMP_DIR=$(mktemp -d)
-    if gh release download --repo donkruger/factotem \
+    # Releases live on the PUBLIC mirror repo so unauthenticated
+    # operators can fetch them (the source repo donkruger/factotem
+    # is private). `gh release download` works with or without a
+    # token here because the mirror is public.
+    if gh release download --repo RichardBNel/Factotem \
         --pattern "*aarch64.dmg" \
         --dir "$TMP_DIR" 2>/dev/null; then
       DMG=$(find "$TMP_DIR" -name "*.dmg" | head -1)

@@ -1,6 +1,6 @@
 [package]
 name = "factotem-doctor"
-version = "0.1.2"
+version = "0.1.3"
 description = "Cold-start helper + multi-instance-aware status icon for Factotem / NanoClaw."
 authors = ["Don Kruger"]
 license = "MIT"

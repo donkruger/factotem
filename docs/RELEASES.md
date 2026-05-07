@@ -4,7 +4,9 @@ This document explains how Factotem Doctor releases work — for operators downl
 
 ## Where to download
 
-Latest release: **[github.com/donkruger/factotem/releases/latest](https://github.com/donkruger/factotem/releases/latest)**
+Releases are published to the **public mirror repo**: **[github.com/RichardBNel/Factotem/releases/latest](https://github.com/RichardBNel/Factotem/releases/latest)**
+
+The source repo (`donkruger/factotem`) is private. CI builds + signs + notarises in the source repo, then pushes the release artefacts to `RichardBNel/Factotem` (public) so the Tauri updater plugin can poll `https://github.com/RichardBNel/Factotem/releases/latest/download/latest.json` without authentication. Operators only ever see + interact with the public mirror.
 
 Each release ships four files:
 
@@ -68,14 +70,16 @@ Two ways to downgrade:
    ```bash
    pkill -9 -f factotem-doctor
    cd /tmp && \
-   curl -LO "https://github.com/donkruger/factotem/releases/download/vX.Y.Z/Factotem-Doctor_X.Y.Z_aarch64.dmg"
+   curl -LO "https://github.com/RichardBNel/Factotem/releases/download/vX.Y.Z/Factotem-Doctor_X.Y.Z_aarch64.dmg"
    open Factotem-Doctor_X.Y.Z_aarch64.dmg
    # Drag the .app from the mounted DMG to /Applications, replacing the existing.
    ```
 
 ## How a release is tagged + built (maintainers)
 
-The release pipeline is in `.github/workflows/release.yml`. To ship a release:
+The release pipeline is in `.github/workflows/release.yml` on the **source repo** (`donkruger/factotem`). It builds in the source repo, then pushes the release assets to the **public mirror** (`RichardBNel/Factotem`) using a `MIRROR_REPO_TOKEN` secret with `repo` scope on the mirror.
+
+To ship a release:
 
 1. **Bump version** in four places:
    - `cli/claw-doctor/package.json` `version`
@@ -100,20 +104,20 @@ The release pipeline is in `.github/workflows/release.yml`. To ship a release:
    ```
    Takes ~10–15 minutes (Tauri build + Apple notarisation queue).
 
-6. **Verify the release**:
+6. **Verify the release** (assets land on the public mirror repo, not the source):
    ```bash
-   gh release view vX.Y.Z --repo donkruger/factotem
-   curl -sI https://github.com/donkruger/factotem/releases/latest/download/latest.json
+   gh release view vX.Y.Z --repo RichardBNel/Factotem
+   curl -sI https://github.com/RichardBNel/Factotem/releases/latest/download/latest.json
    ```
 
 ### If a release is broken
 
 ```bash
 # Cancel the workflow if still running
-gh run cancel <run-id>
+gh run cancel <run-id> --repo donkruger/factotem
 
-# Delete the release + tag
-gh release delete vX.Y.Z --yes
+# Delete the release on the public mirror + tag on the source
+gh release delete vX.Y.Z --repo RichardBNel/Factotem --yes
 git tag -d vX.Y.Z
 git push origin :vX.Y.Z
 
@@ -136,6 +140,17 @@ Both must pass before an update lands. Lose either key and:
 - **Tauri updater key lost** → can't sign new updater payloads; auto-update breaks for everyone until a new pubkey is shipped (which itself requires a manually-distributed bridge release).
 
 The Tauri private key lives at `~/Library/Mobile Documents/com~apple~CloudDocs/Keychain Certificates/Factotem/factotem-doctor-updater.key` on Don's machine + as a GitHub Actions secret.
+
+## Why two repos?
+
+The source repo (`donkruger/factotem`) is private to keep the orchestrator + dashboard + integration code out of public view (Brain integration patterns, KP cross-link details, customer-data-adjacent logic). But the Tauri updater plugin polls a public URL — it can't authenticate. Two-repo split solves it:
+
+| Repo | Visibility | Purpose |
+|---|---|---|
+| `donkruger/factotem` | Private | Source of truth. CI runs here. Holds CHANGE_LOG, plans, all integration code. |
+| `RichardBNel/Factotem` | Public | Mirror that holds release artefacts only — `.dmg`, `.app.tar.gz`, `.app.tar.gz.sig`, `latest.json`. The updater plugin polls this repo's `latest.json`. |
+
+The mirror repo's commit history isn't synced; only the **release page** is. From a fresh clone of `RichardBNel/Factotem` an outsider can download the Doctor but can't see the orchestrator code.
 
 ## What's NOT auto-updated
 

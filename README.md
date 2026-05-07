@@ -310,7 +310,7 @@ Critical files for anyone (human or agent) modifying behaviour:
 
 ## Releases
 
-The Doctor menu-bar app ships as a notarised `.dmg` from [github.com/donkruger/factotem/releases](https://github.com/donkruger/factotem/releases). New versions auto-detect on running v0.1.2+ installs — operator approves each install via the Settings window.
+The Doctor menu-bar app ships as a notarised `.dmg` from the public mirror at [github.com/RichardBNel/Factotem/releases](https://github.com/RichardBNel/Factotem/releases). New versions auto-detect on running v0.1.3+ installs — operator approves each install via the Settings window. The source repo (`donkruger/factotem`) is private; CI builds + signs there and pushes release artefacts to the public mirror.
 
 See [`docs/RELEASES.md`](docs/RELEASES.md) for the full release model: download paths, auto-update flow, manual downgrade, trust model, and the maintainer tag-and-publish runbook.
 

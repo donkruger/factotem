@@ -6,6 +6,55 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-07
 
+### Phase 2 / Release pipeline — R.5 (public mirror to RichardBNel/Factotem) → v0.1.3
+
+Closes the visibility gate flagged in R.3+R.4. Source repo (`donkruger/factotem`) stays private; release artefacts mirror to **`RichardBNel/Factotem`** (public, Don has write access, zero existing releases — clean slate). The Tauri updater now polls the public mirror's `latest.json`, so unauthenticated clients (the running Doctor) can resolve the URL. Operator-approved auto-update flow now functional end-to-end.
+
+**Two-repo model:**
+
+| Repo | Visibility | Purpose |
+|---|---|---|
+| `donkruger/factotem` | Private | Source of truth. CI builds here. Tags pushed here. CHANGE_LOG + plans + integration code stay out of public view. |
+| `RichardBNel/Factotem` | Public | Release-only mirror. Holds `.dmg` + `.app.tar.gz` + `.app.tar.gz.sig` + `latest.json`. Source code never lands here — only release assets via `gh release create --repo RichardBNel/Factotem`. |
+
+**Files changed.**
+
+- `.github/workflows/release.yml`:
+  - Added `env.MIRROR_REPO: RichardBNel/Factotem` at workflow level.
+  - The `Generate latest.json` step uses `os.environ['MIRROR_REPO']` for the embedded download URL (so the manifest the Doctor downloads points at the public mirror, not the private source).
+  - The `Create GitHub Release` step renamed to "Create GitHub Release on public mirror"; uses `--repo "$MIRROR_REPO"` and `GH_TOKEN: ${{ secrets.MIRROR_REPO_TOKEN }}` (the default `GITHUB_TOKEN` is scoped to the source repo and can't write across repos).
+- `cli/claw-doctor/src-tauri/tauri.conf.json`:
+  - `plugins.updater.endpoints` flipped to `https://github.com/RichardBNel/Factotem/releases/latest/download/latest.json`.
+- `scripts/install-doctor.sh`:
+  - GitHub Release fallback now downloads from `RichardBNel/Factotem` (worked before only with auth on the private source; now public + unauthenticated).
+- `docs/RELEASES.md`:
+  - Download path updated.
+  - New "Why two repos?" section explaining the visibility split.
+  - Maintainer runbook updated for cross-repo verification (`gh release view --repo RichardBNel/Factotem`).
+- `README.md` — Releases section points at the public mirror.
+- Version bumped 0.1.2 → 0.1.3 in `package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, `tauri.conf.json`.
+- `docs/CHANGE_LOG.md` — this entry.
+
+**Operator-side setup (one-off).**
+
+- Created `MIRROR_REPO_TOKEN` GitHub Actions secret on `donkruger/factotem`. Source: Don's existing `gh auth token` (classic PAT with `repo` scope). The token has `push: true` on `RichardBNel/Factotem` (verified via `gh api repos/RichardBNel/Factotem --jq '.permissions'`).
+- The two pre-existing releases (`v0.1.1`, `v0.1.2`) on `donkruger/factotem` remain — operator can `gh release delete` them later if archival isn't useful. They were never reachable publicly, so no harm leaving them.
+
+**Verification (post-tag).**
+
+1. `git tag v0.1.3 && git push origin v0.1.3` triggers CI.
+2. Workflow builds, signs, notarises, generates `latest.json`, then `gh release create --repo RichardBNel/Factotem v0.1.3 ...` lands the assets on the public mirror.
+3. `curl -sI https://github.com/RichardBNel/Factotem/releases/latest/download/latest.json` returns `HTTP 200` (no auth required — public repo).
+4. Running v0.1.2 Doctor's "Check now" button detects v0.1.3, renders the Settings banner, and installing replaces /Applications with v0.1.3 + restart.
+
+**Convention check.** Pure additive — workflow change + endpoint change + docs. The two-repo split is operationally lightweight (one cross-repo token, one push step). Reversal: `git revert <commit>` reverts the endpoint flip; release artefacts on the public mirror persist until manually deleted. No orchestrator code touched.
+
+**Recovery tag:** `pre-r5-2026-05-07`.
+
+**Phase 2 fully closed.** R.1 (plumbing) → R.2 (workflow + first private release) → R.3 (operator UI) → R.4 (docs) → R.5 (public mirror). Auto-update is functional; v0.1.3 is the first version operators can detect-and-install via the public update path.
+
+---
+
 ### Phase 2 / Release pipeline — R.3 + R.4 (operator-approved update UI + docs) → v0.1.2
 
 Closes Phase 2. R.3 adds the operator-visible update flow inside the Doctor (background poll, system notification on detection, Settings banner with Install button, manual "Check now" trigger). R.4 documents the release model end-to-end. Together these ship as **v0.1.2** — the first version where operators see updates land themselves rather than learning about them out of band.
