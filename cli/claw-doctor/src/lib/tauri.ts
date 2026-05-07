@@ -80,6 +80,27 @@ export interface Settings {
   notify_on_state_change: boolean;
   notify_audible: boolean;
   hide_until_amber: boolean;
+  auto_check_updates: boolean;
+  last_update_check_at: string | null;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Update types — mirror commands.rs UpdateInfo + UpdateAvailableEvent.
+// ──────────────────────────────────────────────────────────────────────
+
+export interface UpdateInfo {
+  version: string;
+  current_version: string;
+  date: string | null;
+  body: string | null;
+}
+
+/** Payload of the `update-available` Tauri event fired by the
+ *  background poll loop in lib.rs::run_update_check_loop. */
+export interface UpdateAvailableEvent {
+  version: string;
+  current_version: string;
+  body: string | null;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -108,6 +129,30 @@ export async function getLogPath(): Promise<string | null> {
 
 export async function tailLog(lines: number): Promise<string> {
   return await invoke<string>('tail_log', { lines });
+}
+
+export async function getCurrentVersion(): Promise<string> {
+  return await invoke<string>('get_current_version');
+}
+
+export async function checkForUpdates(): Promise<UpdateInfo | null> {
+  return await invoke<UpdateInfo | null>('check_for_updates');
+}
+
+/** Downloads + verifies + installs the available update + restarts.
+ *  Resolves only after the new process is launching. Throws if no
+ *  update is available or the download/verify fails. */
+export async function installUpdateAndRestart(): Promise<void> {
+  return await invoke<void>('install_update_and_restart');
+}
+
+/** Subscribe to background update detections. The poll loop fires
+ *  this when `latest.json` reports a newer version than the running
+ *  binary. The Settings window listens to surface a banner. */
+export async function onUpdateAvailable(
+  cb: (event: UpdateAvailableEvent) => void,
+): Promise<UnlistenFn> {
+  return await listen<UpdateAvailableEvent>('update-available', (e) => cb(e.payload));
 }
 
 // ──────────────────────────────────────────────────────────────────────

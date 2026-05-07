@@ -6,6 +6,73 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-07
 
+### Phase 2 / Release pipeline — R.3 + R.4 (operator-approved update UI + docs) → v0.1.2
+
+Closes Phase 2. R.3 adds the operator-visible update flow inside the Doctor (background poll, system notification on detection, Settings banner with Install button, manual "Check now" trigger). R.4 documents the release model end-to-end. Together these ship as **v0.1.2** — the first version where operators see updates land themselves rather than learning about them out of band.
+
+**R.3 — Update detection + UI.**
+
+- `cli/claw-doctor/src-tauri/src/settings.rs` — added two fields with `#[serde(default)]` so existing settings files load cleanly: `auto_check_updates: bool` (default true), `last_update_check_at: Option<String>`.
+- `cli/claw-doctor/src-tauri/src/lib.rs` — new `run_update_check_loop` task spawned at startup. Polls every 4 hours via `UpdaterExt::check`. Honours `auto_check_updates`. On detection, fires three signals: a Tauri event `update-available`, a system notification ("Factotem Doctor vX.Y.Z available — Open Settings → Updates to install"), and an updated `last_update_check_at` persisted to disk.
+- `cli/claw-doctor/src-tauri/src/commands.rs` — added `get_current_version()` Tauri command.
+- `cli/claw-doctor/src/lib/tauri.ts` — new typed wrappers: `getCurrentVersion`, `checkForUpdates`, `installUpdateAndRestart`, `onUpdateAvailable` (event subscription).
+- `cli/claw-doctor/src/views/SettingsView.tsx` — new "Updates" section: current-version display, auto-check toggle, "Last checked Xm ago" text, "Check now" button. Plus a prominent banner at the top of Settings when an update is detected: release notes + "Install + restart now" / "Later" buttons. Banner subscribes to `update-available` so a new release detected while Settings is open appears immediately without polling.
+
+The four-hour cadence is deliberately conservative — operators can hit "Check now" any time, and we don't want to spam GitHub. Tighter cadences would be wasteful: the typical release cycle is days-to-weeks, not hours. Once shipped, this becomes adjustable via Settings if operators ask.
+
+**R.4 — Documentation + installer fallback.**
+
+- **NEW** `docs/RELEASES.md` — end-to-end operator + maintainer guide. Covers download paths, the four files in each release, the auto-update flow step-by-step, manual downgrade procedure, the maintainer tag-and-publish runbook (bump 5 version locations, commit, tag, watch CI), and the trust model (Apple Dev ID + Tauri ed25519 separation).
+- `README.md` — Phase 2 added to the status table; new "Releases" section pointing operators at GitHub Releases.
+- `docs/SETUP_WIZARD.md` — extended the "Factotem Doctor (Phase 1)" subsection to describe the install source order (local bundle → GitHub Release fallback → skip with warning).
+- `scripts/install-doctor.sh` — new fallback path: if the local source bundle is missing AND `gh` is installed + authenticated, the script downloads the latest `.dmg` from `donkruger/factotem` releases, mounts it, dittos the .app to a temp dir, detaches the DMG, and installs from there. Operators who clone the repo without building (e.g. for the Doctor only, no Rust toolchain) get a working install.
+
+**Version bumped.** 0.1.1 → 0.1.2 in `package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, and `tauri.conf.json`. Tagging `v0.1.2` after this commit lands triggers the second CI release.
+
+**Cross-version compatibility.**
+
+| Running version | Detects updates? | Update UI visible? |
+|---|---|---|
+| v0.1.0 (M1.6 + earlier) | No (no updater plugin) | No |
+| v0.1.1 (R.1 + R.2) | No (no auto-poll loop) | No (commands exist but no UI) |
+| **v0.1.2** (R.3) | Yes — auto every 4h + manual "Check now" | Yes — banner + Settings section |
+
+Operators on v0.1.0 or v0.1.1 install v0.1.2 manually (drag from .dmg). From v0.1.2 onwards it's automatic. Documented in `docs/RELEASES.md` § "How to upgrade an existing install."
+
+**Files changed.**
+
+```
+NEW   docs/RELEASES.md                                                       ~150 lines
+M     README.md                                                              + Phase 2 row + Releases section
+M     docs/SETUP_WIZARD.md                                                   + install source order
+M     scripts/install-doctor.sh                                              + gh release download fallback
+M     cli/claw-doctor/src-tauri/src/settings.rs                              + 2 fields
+M     cli/claw-doctor/src-tauri/src/lib.rs                                   + update poll loop + notification helper
+M     cli/claw-doctor/src-tauri/src/commands.rs                              + get_current_version
+M     cli/claw-doctor/src/lib/tauri.ts                                       + 4 wrappers + event subscription
+M     cli/claw-doctor/src/views/SettingsView.tsx                             + banner + Updates section + CSS
+M     cli/claw-doctor/package.json + package-lock.json                       v0.1.2
+M     cli/claw-doctor/src-tauri/Cargo.toml + Cargo.lock                      v0.1.2
+M     cli/claw-doctor/src-tauri/tauri.conf.json                              v0.1.2
+M     docs/CHANGE_LOG.md                                                     this entry
+```
+
+**Convention check.** Pure additive — new fields with `serde(default)` so old settings files migrate transparently; new commands; new UI section. No orchestrator code touched. The poll loop is independent of the probe loop; either can fail without affecting the other. Reversal: `git revert <commit>` removes everything; the on-disk Doctor at /Applications stays put until the operator manually reinstalls.
+
+**Phase 2 complete (with one operator decision pending).** R.1 (plumbing) → R.2 (CI + first release) → R.3 (operator-approved UI) → R.4 (docs). The Doctor is now a self-updating macOS app with a transparent operator approval gate at every install step.
+
+**⚠ Repo visibility gate.** The Tauri updater polls `https://github.com/donkruger/factotem/releases/latest/download/latest.json`. As of this commit, that URL returns 404 because `donkruger/factotem` is a **private repo** — public asset download URLs don't resolve for private repos. Three resolution paths:
+
+1. **Make the repo public** — the simplest fix; the workflow + URLs work as designed for "anyone can auto-update." Nothing committed contains secrets (the keypair + Apple cert live in GitHub Actions secrets or in iCloud, never in the repo). Don's call.
+2. **Operate with authenticated downloads** — Tauri updater supports custom HTTP headers via a builder configuration; operators each need a GitHub token in their environment. Defeats the "anyone" goal.
+3. **Mirror releases to a separate public repo** — publish `latest.json` + the .tar.gz to `donkruger/factotem-releases` (public) while keeping `donkruger/factotem` (private). More overhead but preserves source-code privacy.
+
+The R.1–R.4 code is correct and ships regardless; the operator-visible flow waits on the visibility decision. v0.1.1 release assets are uploaded and discoverable via `gh release download` (authenticated); auto-update detection just doesn't trigger until the public URL resolves.
+
+**Recovery tag:** `pre-r3-2026-05-07`.
+
+---
+
 ### Phase 2 / Release pipeline — R.2 (GitHub Actions release workflow + v0.1.1)
 
 Second of four. R.1 added the in-app updater plumbing; R.2 publishes the first release. Tagging `v0.1.1` triggers a macOS-14 GitHub Actions workflow that builds, signs, notarises, and publishes the .dmg + .app.tar.gz + .app.tar.gz.sig + latest.json as release assets — operators can download from `https://github.com/donkruger/factotem/releases/latest` from this point forward.

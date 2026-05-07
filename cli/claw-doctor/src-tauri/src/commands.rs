@@ -235,6 +235,11 @@ pub struct UpdateInfo {
 }
 
 #[tauri::command]
+pub fn get_current_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
 pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| format!("{}", e))?;

@@ -112,17 +112,13 @@ Wizard step **03 (`configure-onecli`)** invokes `onecli config add` with `--type
 
 The wizard's handoff step (M1.6) installs the signed + notarized **Factotem Doctor** menu-bar app to `/Applications/Factotem Doctor.app` and launches it so the tray icon appears immediately. The Doctor surfaces Docker / OneCLI / NanoClaw health every 5 seconds and exposes a typed-confirm `Repair Stack…` action for cold-start recovery.
 
-The install is **best-effort** and never fails the wizard. It depends on the Doctor having been built first:
+The install is **best-effort** and never fails the wizard. Source order:
 
-```bash
-cd cli/claw-doctor && cargo tauri build
-```
+1. **Locally-built bundle** at `cli/claw-doctor/src-tauri/target/release/bundle/macos/Factotem Doctor.app` (produced by `cd cli/claw-doctor && cargo tauri build`).
+2. **GitHub Release fallback** — if the local bundle is missing AND `gh` is installed + authenticated, `install-doctor.sh` downloads the latest `.dmg` from [github.com/donkruger/factotem/releases](https://github.com/donkruger/factotem/releases), mounts it, and installs from there. Lets operators who only want the Doctor (not the orchestrator) install without a Rust toolchain.
+3. **If both fail**, the wizard warns and skips — operator can install later by running `bash scripts/install-doctor.sh` after building or installing `gh`.
 
-If the bundle is missing at wizard time, step 11 warns and skips. The operator can install later by re-running:
-
-```bash
-bash scripts/install-doctor.sh
-```
+After install, the running Doctor (v0.1.2+) auto-detects future releases and prompts the operator. See [`docs/RELEASES.md`](RELEASES.md) for the full update flow.
 
 ### Standalone installer
 

@@ -16,7 +16,16 @@
  * `~/Library/Application Support/Factotem/doctor-settings.json`.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { getSettings, saveSettings, type Settings } from '../lib/tauri';
+import {
+  checkForUpdates,
+  getCurrentVersion,
+  getSettings,
+  installUpdateAndRestart,
+  onUpdateAvailable,
+  saveSettings,
+  type Settings,
+  type UpdateInfo,
+} from '../lib/tauri';
 
 const POLL_MIN_MS = 1_000;
 const POLL_MAX_MS = 60_000;
@@ -28,6 +37,14 @@ export function SettingsView() {
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // R.3 — update state. The Settings window is the operator's
+  // approval surface for in-app updates: banner + Install button.
+  const [currentVersion, setCurrentVersion] = useState<string>('');
+  const [pendingUpdate, setPendingUpdate] = useState<UpdateInfo | null>(null);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     getSettings()
@@ -37,9 +54,79 @@ export function SettingsView() {
       .catch((e) => {
         if (!cancelled) setLoadError(String(e));
       });
+    getCurrentVersion()
+      .then((v) => {
+        if (!cancelled) setCurrentVersion(v);
+      })
+      .catch(() => {
+        // best-effort — version display tolerates absence
+      });
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // Listen for `update-available` events fired by the background
+  // update-check loop. When the operator opens Settings while an
+  // update was previously detected, the banner appears immediately.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    onUpdateAvailable((evt) => {
+      setPendingUpdate({
+        version: evt.version,
+        current_version: evt.current_version,
+        date: null,
+        body: evt.body,
+      });
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((e) => {
+        console.warn('update-available subscribe failed', e);
+      });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const onCheckUpdatesNow = useCallback(async () => {
+    setCheckingUpdates(true);
+    setUpdateError(null);
+    try {
+      const info = await checkForUpdates();
+      setPendingUpdate(info);
+      // Refresh settings to pick up the new last_update_check_at the
+      // backend persisted as a side effect.
+      try {
+        const fresh = await getSettings();
+        setSettings(fresh);
+      } catch {
+        // best-effort
+      }
+    } catch (e) {
+      setUpdateError(String(e));
+    } finally {
+      setCheckingUpdates(false);
+    }
+  }, []);
+
+  const onInstallUpdate = useCallback(async () => {
+    setInstallingUpdate(true);
+    setUpdateError(null);
+    try {
+      await installUpdateAndRestart();
+      // If we get here, the restart hasn't happened yet (extremely
+      // brief window). The plugin then triggers app.restart and this
+      // process is replaced.
+    } catch (e) {
+      setUpdateError(String(e));
+      setInstallingUpdate(false);
+    }
+  }, []);
+
+  const onDismissUpdate = useCallback(() => {
+    setPendingUpdate(null);
   }, []);
 
   const update = useCallback(<K extends keyof Settings>(key: K, value: Settings[K]) => {
@@ -87,6 +174,47 @@ export function SettingsView() {
 
       {settings && (
         <>
+          {pendingUpdate && (
+            <section className="section update-banner" role="alert">
+              <h2>Update available</h2>
+              <p className="update-headline">
+                Factotem Doctor <strong>v{pendingUpdate.version}</strong> is
+                available — you&apos;re running v{pendingUpdate.current_version || currentVersion}.
+              </p>
+              {pendingUpdate.body && (
+                <pre className="update-notes">{pendingUpdate.body}</pre>
+              )}
+              {updateError && (
+                <p className="error" role="alert">
+                  {updateError}
+                </p>
+              )}
+              <div className="update-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={onInstallUpdate}
+                  disabled={installingUpdate}
+                >
+                  {installingUpdate ? 'Installing…' : 'Install + restart now'}
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={onDismissUpdate}
+                  disabled={installingUpdate}
+                >
+                  Later
+                </button>
+              </div>
+              <p className="hint">
+                Install replaces the .app in /Applications, verifies the
+                ed25519 signature against the bundled public key, and
+                restarts the Doctor. Cancel anytime before clicking Install.
+              </p>
+            </section>
+          )}
+
           <section className="section">
             <h2>Probe</h2>
             <div className="row">
@@ -123,6 +251,42 @@ export function SettingsView() {
               onChange={(v) => update('launch_at_login', v)}
               disabled={busy}
             />
+          </section>
+
+          <section className="section">
+            <h2>Updates</h2>
+            <div className="row">
+              <span>Current version</span>
+              <code>{currentVersion || '…'}</code>
+            </div>
+            <Toggle
+              id="auto_check_updates"
+              label="Check for updates automatically"
+              hint="Polls github.com/donkruger/factotem/releases every 4 hours when the Doctor is running. Updates require your explicit click to install."
+              checked={settings.auto_check_updates}
+              onChange={(v) => update('auto_check_updates', v)}
+              disabled={busy}
+            />
+            <div className="row update-row">
+              <span className="muted">
+                {settings.last_update_check_at
+                  ? `Last checked ${formatRelative(settings.last_update_check_at)}`
+                  : 'Not yet checked'}
+              </span>
+              <button
+                type="button"
+                className="ghost compact"
+                onClick={onCheckUpdatesNow}
+                disabled={checkingUpdates}
+              >
+                {checkingUpdates ? 'Checking…' : 'Check now'}
+              </button>
+            </div>
+            {!pendingUpdate && updateError && (
+              <p className="hint" style={{ color: '#d33' }}>
+                {updateError}
+              </p>
+            )}
           </section>
 
           <section className="section">
@@ -216,6 +380,20 @@ function timeAgo(ts: number): string {
   if (secs < 60) return `${secs}s ago`;
   const m = Math.floor(secs / 60);
   return `${m}m ago`;
+}
+
+/** ISO-8601 string from settings.last_update_check_at → human "Xm ago". */
+function formatRelative(iso: string): string {
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return iso;
+  const secs = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (secs < 60) return 'just now';
+  const m = Math.floor(secs / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
 }
 
 function Styles() {
@@ -325,6 +503,72 @@ function Styles() {
         display: block;
         font-size: 0.9rem;
         font-weight: 500;
+      }
+
+      .update-banner {
+        border-color: var(--color-accent);
+        background: linear-gradient(
+          0deg,
+          rgba(255, 122, 58, 0.04),
+          rgba(255, 122, 58, 0.04)
+        ), var(--color-bg-elevated);
+      }
+      .update-banner h2 {
+        color: var(--color-accent);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .update-headline {
+        margin: 0 0 0.55rem;
+        font-size: 0.95rem;
+      }
+      .update-notes {
+        background: var(--color-bg);
+        border: 1px solid var(--color-hairline);
+        border-radius: 0.5rem;
+        padding: 0.5rem 0.7rem;
+        font-size: 0.78rem;
+        max-height: 9rem;
+        overflow: auto;
+        white-space: pre-wrap;
+        margin: 0.4rem 0 0.6rem;
+      }
+      .update-actions {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 0.5rem;
+      }
+      button.ghost {
+        background: var(--color-bg);
+        color: var(--color-ink);
+        border: 1px solid var(--color-hairline);
+        border-radius: 9999px;
+        padding: 0.55rem 1.1rem;
+        font-size: 0.9rem;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      button.ghost:hover:not(:disabled) {
+        background: var(--color-bg-subtle);
+      }
+      button.compact {
+        padding: 0.32rem 0.85rem;
+        font-size: 0.82rem;
+      }
+      .update-row {
+        margin-top: 0.55rem;
+        padding-top: 0.55rem;
+        border-top: 1px solid var(--color-hairline);
+      }
+      .row code {
+        font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+        font-size: 0.82rem;
+        background: var(--color-bg);
+        padding: 0.15rem 0.45rem;
+        border-radius: 0.4rem;
+      }
+      .muted {
+        color: var(--color-ink-muted);
       }
 
       .footer-bar {

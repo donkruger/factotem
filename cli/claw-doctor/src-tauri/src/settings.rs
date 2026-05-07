@@ -36,6 +36,20 @@ pub struct Settings {
     pub notify_on_state_change: bool,
     pub notify_audible: bool,
     pub hide_until_amber: bool,
+    /// R.3 — automatic update polling against the GitHub Releases
+    /// `latest.json`. When false, the operator can still manually
+    /// trigger a check from the Settings window.
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
+    /// ISO-8601 timestamp of the most recent update check (success
+    /// OR failure). Surfaced in the Settings window as "Last checked
+    /// Xm ago." Persisted so the value survives restarts.
+    #[serde(default)]
+    pub last_update_check_at: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -46,6 +60,8 @@ impl Default for Settings {
             notify_on_state_change: true,
             notify_audible: false,
             hide_until_amber: false,
+            auto_check_updates: true,
+            last_update_check_at: None,
         }
     }
 }

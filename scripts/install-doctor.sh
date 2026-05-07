@@ -161,13 +161,49 @@ if ! is_macos; then
 fi
 
 if [[ ! -d "$SOURCE_APP" ]]; then
+  # R.4 fallback: try the latest GitHub Release. Useful for operators
+  # who cloned the repo without running `cargo tauri build` (e.g. they
+  # only want the Doctor, not the orchestrator). Requires `gh` CLI.
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    echo "ℹ Source bundle missing; trying GitHub Release fallback…"
+    TMP_DIR=$(mktemp -d)
+    if gh release download --repo donkruger/factotem \
+        --pattern "*aarch64.dmg" \
+        --dir "$TMP_DIR" 2>/dev/null; then
+      DMG=$(find "$TMP_DIR" -name "*.dmg" | head -1)
+      if [[ -n "$DMG" && -f "$DMG" ]]; then
+        echo "  Mounting $(basename "$DMG")…"
+        MOUNT_POINT=$(hdiutil attach "$DMG" -nobrowse -noverify | tail -1 | awk '{print $3}')
+        DMG_APP=$(find "$MOUNT_POINT" -name "*.app" -maxdepth 2 | head -1)
+        if [[ -n "$DMG_APP" && -d "$DMG_APP" ]]; then
+          # Stage to a writable location so we can ditto + cleanup the mount.
+          STAGED_APP="$TMP_DIR/$(basename "$DMG_APP")"
+          /usr/bin/ditto "$DMG_APP" "$STAGED_APP"
+          hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true
+          SOURCE_APP="$STAGED_APP"
+          echo "  Installing from GitHub Release ($(bundle_version_of "$SOURCE_APP"))…"
+        else
+          hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true
+          rm -rf "$TMP_DIR"
+        fi
+      else
+        rm -rf "$TMP_DIR"
+      fi
+    else
+      rm -rf "$TMP_DIR"
+    fi
+  fi
+fi
+
+if [[ ! -d "$SOURCE_APP" ]]; then
   echo "✗ Doctor .app not found at:" >&2
   echo "    $SOURCE_APP" >&2
   echo >&2
-  echo "  Build it first:" >&2
+  echo "  Either build from source:" >&2
   echo "    cd cli/claw-doctor && cargo tauri build" >&2
   echo >&2
-  echo "  Then re-run this installer:" >&2
+  echo "  Or install gh + authenticate, then re-run (uses GitHub Release):" >&2
+  echo "    brew install gh && gh auth login" >&2
   echo "    bash scripts/install-doctor.sh" >&2
   exit 1
 fi

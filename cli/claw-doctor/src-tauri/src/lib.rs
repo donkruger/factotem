@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
+use tauri::Emitter;
 use tracing_subscriber::EnvFilter;
 
 mod commands;
@@ -15,9 +16,9 @@ mod settings;
 mod tray;
 
 use commands::{
-    check_for_updates, get_last_status, get_log_path, get_recovery_manifest, get_settings,
-    install_update_and_restart, probe_stack_now, save_settings, start_repair, tail_log,
-    LastStatus, SettingsState,
+    check_for_updates, get_current_version, get_last_status, get_log_path, get_recovery_manifest,
+    get_settings, install_update_and_restart, probe_stack_now, save_settings, start_repair,
+    tail_log, LastStatus, SettingsState,
 };
 use probe::{probe_stack, OverallStatus};
 use tray::{build_tray, update_tray};
@@ -109,6 +110,17 @@ pub fn run() {
                 run_probe_loop(app_for_loop, last_status_clone, settings_clone).await;
             });
 
+            // Spawn the update-check loop. Polls GitHub releases every
+            // UPDATE_CHECK_INTERVAL when `auto_check_updates` is true.
+            // Operator-approved install — this loop only DETECTS updates
+            // and emits an event; the frontend prompts the operator and
+            // calls `install_update_and_restart` on their click.
+            let app_for_updates = app.handle().clone();
+            let settings_for_updates = settings_for_loop.clone();
+            tauri::async_runtime::spawn(async move {
+                run_update_check_loop(app_for_updates, settings_for_updates).await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -122,6 +134,7 @@ pub fn run() {
             tail_log,
             check_for_updates,
             install_update_and_restart,
+            get_current_version,
         ])
         // No windows at startup — this is a tray-only app. Windows open
         // on demand via the menu actions.
@@ -261,5 +274,111 @@ fn state_label(s: OverallStatus) -> &'static str {
         OverallStatus::Amber => "degraded",
         OverallStatus::Red => "offline",
         OverallStatus::Grey => "starting",
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// R.3 — Update-check loop.
+//
+// Polls GitHub Releases' `latest.json` every UPDATE_CHECK_INTERVAL.
+// When a newer version than the running binary is found, fires:
+//   1. A Tauri event `update-available` with the version + body.
+//   2. A system notification ("Factotem Doctor v0.X.Y available").
+//   3. State that the tray menu's `update_available` field consumes
+//      to surface a "📦 Update available" headline (see tray.rs).
+//
+// Operator-approved install — we only DETECT updates here. The
+// frontend banner + Settings window's button drive `install_update_and_restart`.
+// ──────────────────────────────────────────────────────────────────────
+
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60); // 4h
+const UPDATE_CHECK_INITIAL_DELAY: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct UpdateAvailableEvent {
+    version: String,
+    current_version: String,
+    body: Option<String>,
+}
+
+async fn run_update_check_loop(
+    app: tauri::AppHandle,
+    settings: Arc<Mutex<settings::Settings>>,
+) {
+    // Small initial delay so the first check doesn't compete with the
+    // probe loop's first tick + the tray rebuild.
+    tokio::time::sleep(UPDATE_CHECK_INITIAL_DELAY).await;
+
+    let current_version = app.package_info().version.to_string();
+
+    loop {
+        let auto_check = settings.lock().auto_check_updates;
+        if auto_check {
+            match try_check_update(&app, &current_version).await {
+                Ok(Some(info)) => {
+                    tracing::info!(
+                        new_version = %info.version,
+                        current = %current_version,
+                        "update detected"
+                    );
+                    record_update_check(&settings);
+                    fire_update_notification(&app, &info);
+                    let _ = app.emit("update-available", &info);
+                }
+                Ok(None) => {
+                    tracing::debug!(current = %current_version, "no update available");
+                    record_update_check(&settings);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "update check failed");
+                    record_update_check(&settings);
+                }
+            }
+        } else {
+            tracing::debug!("auto_check_updates is off — skipping");
+        }
+        tokio::time::sleep(UPDATE_CHECK_INTERVAL).await;
+    }
+}
+
+async fn try_check_update(
+    app: &tauri::AppHandle,
+    current_version: &str,
+) -> Result<Option<UpdateAvailableEvent>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| format!("{}", e))?;
+    match updater.check().await {
+        Ok(Some(update)) => Ok(Some(UpdateAvailableEvent {
+            version: update.version.clone(),
+            current_version: current_version.to_string(),
+            body: update.body.clone(),
+        })),
+        Ok(None) => Ok(None),
+        Err(e) => Err(format!("{}", e)),
+    }
+}
+
+fn record_update_check(settings: &Arc<Mutex<settings::Settings>>) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let snapshot = {
+        let mut s = settings.lock();
+        s.last_update_check_at = Some(now);
+        s.clone()
+    };
+    // Best-effort persistence — never fails the loop.
+    if let Err(e) = settings::save(&snapshot) {
+        tracing::warn!(error = %e, "could not persist last_update_check_at");
+    }
+}
+
+fn fire_update_notification(app: &tauri::AppHandle, info: &UpdateAvailableEvent) {
+    use tauri_plugin_notification::NotificationExt;
+    let title = format!("Factotem Doctor v{} available", info.version);
+    let body = format!(
+        "Currently running v{}. Open Settings → Updates to install.",
+        info.current_version
+    );
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        tracing::warn!(error = %e, "update notification failed");
     }
 }

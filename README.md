@@ -304,8 +304,17 @@ Critical files for anyone (human or agent) modifying behaviour:
 |---|---|---|
 | **Phase 0** — Dashboard, telemetry, recovery panel | ✓ Shipped | Operator HTTP server on :7842, `agent_turns` schema, six dashboard panels, `recovery.html` cold-start surface |
 | **Phase 1** — Tauri Doctor menu-bar app | ✓ Shipped | Multi-instance probe, Repair Stack, Settings + Logs, code-signed + notarised, wizard installs to `/Applications` |
-| **Phase 2** — Multi-deployment federation (v2) | Planned | Aggregator app surveys multiple deployments over Tailscale; per-machine tokens; fleet view |
-| **Phase 3** — Multi-tenant boundary (v3) | Planned | Segment admin permission tier; tenant isolation; productisation |
+| **Phase 2** — Release pipeline + auto-updates | ✓ Shipped | GitHub Actions builds signed + notarised .dmg on `v*` tag push; Doctor auto-detects new releases via Tauri updater, operator approves install |
+| **Phase 3** — Multi-deployment federation (v2) | Planned | Aggregator app surveys multiple deployments over Tailscale; per-machine tokens; fleet view |
+| **Phase 4** — Multi-tenant boundary (v3) | Planned | Segment admin permission tier; tenant isolation; productisation |
+
+## Releases
+
+The Doctor menu-bar app ships as a notarised `.dmg` from [github.com/donkruger/factotem/releases](https://github.com/donkruger/factotem/releases). New versions auto-detect on running v0.1.2+ installs — operator approves each install via the Settings window.
+
+See [`docs/RELEASES.md`](docs/RELEASES.md) for the full release model: download paths, auto-update flow, manual downgrade, trust model, and the maintainer tag-and-publish runbook.
+
+The orchestrator + dashboard + claw-setup wizard ship via the fork-and-modify workflow (`git pull` + `npm run build`) — they're not auto-updated because operators customise them. Only the Doctor (binary, signed) is auto-updateable.
 
 See [`docs/CHANGE_LOG.md`](docs/CHANGE_LOG.md) for the full timestamped history of what shipped when.
 
