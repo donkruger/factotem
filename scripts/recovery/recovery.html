@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Factotem Recovery</title>
+<style>
+  /* Mirrors the dashboard's design tokens so the recovery panel feels
+   * like part of the same product when the operator hits it after a
+   * cold-start. Inlined here because file:// pages can't reach the
+   * dashboard's CSS bundles. */
+  :root {
+    --color-bg: #0a0a0c;
+    --color-bg-elevated: #1c1c20;
+    --color-bg-subtle: #131316;
+    --color-ink: #f5f5f7;
+    --color-ink-muted: #86868b;
+    --color-hairline: #2c2c30;
+    --color-accent: #ff7a3a;
+    --color-accent-secondary: #6a00ff;
+    --color-success: #34d399;
+    --color-warning: #fbbf24;
+    --color-error: #f87171;
+    --radius-pill: 9999px;
+    --radius-2xl: 1.5rem;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+      "Comfortaa", "SF Pro Text", sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --color-bg: #ffffff;
+      --color-bg-elevated: #f5f5f7;
+      --color-bg-subtle: #fafafa;
+      --color-ink: #1d1d1f;
+      --color-ink-muted: #86868b;
+      --color-hairline: #e5e5e7;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 2.5rem 1.5rem 4rem;
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    line-height: 1.55;
+    min-height: 100vh;
+  }
+  main {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  header {
+    margin-bottom: 2rem;
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 1.05rem;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    color: var(--color-ink);
+  }
+  .brand .dot {
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 9999px;
+    background: var(--color-accent);
+    display: inline-block;
+  }
+  h1 {
+    font-size: 2.25rem;
+    line-height: 1.15;
+    letter-spacing: -0.015em;
+    margin: 1.25rem 0 0.5rem;
+    font-weight: 500;
+  }
+  .lede {
+    color: var(--color-ink-muted);
+    font-size: 0.95rem;
+    margin: 0 0 1.5rem;
+  }
+  .status-card {
+    border: 1px solid var(--color-hairline);
+    background: var(--color-bg-elevated);
+    border-radius: var(--radius-2xl);
+    padding: 1rem 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+  .status-card .label {
+    font-size: 0.85rem;
+    color: var(--color-ink-muted);
+  }
+  .status-card .state {
+    font-weight: 500;
+  }
+  .status-dot {
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 9999px;
+    display: inline-block;
+    margin-right: 0.5rem;
+    background: var(--color-warning);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .status-dot.ok { background: var(--color-success); animation: none; }
+  .status-dot.error { background: var(--color-error); animation: none; }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+  .step {
+    border: 1px solid var(--color-hairline);
+    background: var(--color-bg-elevated);
+    border-radius: var(--radius-2xl);
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1rem;
+  }
+  .step.done {
+    border-color: var(--color-success);
+    opacity: 0.85;
+  }
+  .step h2 {
+    margin: 0 0 0.4rem;
+    font-size: 1.05rem;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .step h2 .num {
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 9999px;
+    background: var(--color-accent);
+    color: var(--color-bg);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+  .step.done h2 .num {
+    background: var(--color-success);
+  }
+  .step .why {
+    color: var(--color-ink-muted);
+    font-size: 0.85rem;
+    margin: 0 0 0.85rem;
+  }
+  .cmd {
+    display: flex;
+    align-items: stretch;
+    gap: 0.5rem;
+    margin: 0.4rem 0;
+  }
+  .cmd code {
+    flex: 1;
+    background: var(--color-bg-subtle);
+    border: 1px solid var(--color-hairline);
+    border-radius: 0.6rem;
+    padding: 0.55rem 0.85rem;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    color: var(--color-ink);
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .copy-btn {
+    background: var(--color-bg);
+    color: var(--color-ink);
+    border: 1px solid var(--color-hairline);
+    border-radius: 0.6rem;
+    padding: 0.4rem 0.85rem;
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: background 200ms cubic-bezier(0.32, 0.72, 0, 1);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .copy-btn:hover { background: var(--color-bg-subtle); }
+  .copy-btn.ok { background: var(--color-success); color: var(--color-bg); border-color: var(--color-success); }
+  .verify-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: var(--color-ink);
+    color: var(--color-bg);
+    border: 1px solid var(--color-ink);
+    border-radius: var(--radius-pill);
+    padding: 0.6rem 1.4rem;
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+    text-decoration: none;
+    cursor: pointer;
+    transition: transform 200ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .verify-btn:hover { transform: translateY(-1px); }
+  .footer {
+    margin-top: 2.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--color-hairline);
+    color: var(--color-ink-muted);
+    font-size: 0.78rem;
+  }
+  .footer p { margin: 0.4rem 0; }
+  .footer a { color: var(--color-ink-muted); }
+  .pin-tip {
+    margin-top: 1.5rem;
+    padding: 0.85rem 1rem;
+    background: var(--color-bg-subtle);
+    border-radius: 0.85rem;
+    border: 1px dashed var(--color-hairline);
+    font-size: 0.82rem;
+    color: var(--color-ink-muted);
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="brand">
+      <span class="dot" aria-hidden="true"></span>
+      <span>Factotem</span>
+    </div>
+    <h1>Recovery Center</h1>
+    <p class="lede">
+      NanoClaw isn't responding. Run the four steps below in order — each
+      starts the layer beneath the next. The status indicator will turn
+      green when the dashboard is reachable again.
+    </p>
+  </header>
+
+  <div class="status-card" id="statusCard" role="status" aria-live="polite">
+    <div>
+      <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+      <span class="state" id="statusState">Checking dashboard…</span>
+    </div>
+    <div class="label" id="statusDetail">Polling localhost:7842/health every 3s</div>
+  </div>
+
+  <section class="step" id="step1">
+    <h2><span class="num">1</span> Open Docker Desktop</h2>
+    <p class="why">
+      Docker provides the container runtime for every NanoClaw agent. It must be running before the next two steps will work.
+    </p>
+    <div class="cmd">
+      <code>open -a Docker</code>
+      <button class="copy-btn" data-copy="open -a Docker">Copy</button>
+    </div>
+    <p class="why">
+      Or click the Docker whale icon in <kbd>/Applications</kbd> → wait until the icon stops animating.
+    </p>
+  </section>
+
+  <section class="step" id="step2">
+    <h2><span class="num">2</span> Start OneCLI</h2>
+    <p class="why">
+      OneCLI is the credential gateway. Without it, agent containers spawn but get HTTP 401 from Anthropic.
+    </p>
+    <div class="cmd">
+      <code>cd ~/.onecli &amp;&amp; docker compose up -d</code>
+      <button class="copy-btn" data-copy="cd ~/.onecli &amp;&amp; docker compose up -d">Copy</button>
+    </div>
+  </section>
+
+  <section class="step" id="step3">
+    <h2><span class="num">3</span> Restart NanoClaw</h2>
+    <p class="why">
+      Reloads the orchestrator so it picks up Docker + OneCLI being available.
+    </p>
+    <div class="cmd">
+      <code>launchctl kickstart -k gui/$(id -u)/com.nanoclaw</code>
+      <button class="copy-btn" data-copy="launchctl kickstart -k gui/$(id -u)/com.nanoclaw">Copy</button>
+    </div>
+  </section>
+
+  <section class="step" id="step4">
+    <h2><span class="num">4</span> Verify</h2>
+    <p class="why">
+      Open the dashboard. If it loads with green badges, you're back. The status indicator above will also turn green.
+    </p>
+    <p>
+      <a class="verify-btn" href="http://localhost:7842/" target="_blank" rel="noopener noreferrer">
+        Open the dashboard ↗
+      </a>
+    </p>
+  </section>
+
+  <div class="pin-tip">
+    Tip — bookmark this page in your browser, drag it onto the Dock, or
+    pin the <code>~/Desktop/Factotem Recovery.html</code> shortcut so the
+    next cold-start is one click away.
+  </div>
+
+  <div class="footer">
+    <p>
+      Phase 0 of the embedded recovery experience. The full runbook lives at
+      <a href="https://github.com/donkruger/benclaw/blob/main/docs/OPERATIONS.md#recovery" target="_blank" rel="noopener noreferrer">docs/OPERATIONS.md</a>
+      — refer to it for advanced incidents (Docker disk full, WhatsApp re-pair, OneCLI credential rotation).
+    </p>
+    <p id="genStamp">Generated by claw-setup · v0.1 · loaded <span id="loadTime"></span></p>
+  </div>
+</main>
+
+<script>
+  // Copy-to-clipboard for each command. Uses navigator.clipboard with a
+  // legacy execCommand fallback for older browsers / file:// origins.
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', async function () {
+      const text = btn.getAttribute('data-copy');
+      const original = btn.textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (e) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch (_) {}
+        document.body.removeChild(ta);
+      }
+      btn.textContent = '✓ Copied';
+      btn.classList.add('ok');
+      setTimeout(function () {
+        btn.textContent = original;
+        btn.classList.remove('ok');
+      }, 1600);
+    });
+  });
+
+  // Lightweight liveness probe. file:// → http://localhost:7842/health is
+  // cross-origin, so we use no-cors mode: the response is opaque, but we
+  // can detect "did the request resolve" vs "did it throw". This is
+  // enough to flip the status card green.
+  const dot = document.getElementById('statusDot');
+  const state = document.getElementById('statusState');
+  const detail = document.getElementById('statusDetail');
+  const HEALTH_URL = 'http://localhost:7842/health';
+
+  async function probe() {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(function () { ctrl.abort(); }, 2000);
+      await fetch(HEALTH_URL, { mode: 'no-cors', signal: ctrl.signal });
+      clearTimeout(t);
+      dot.classList.remove('error');
+      dot.classList.add('ok');
+      state.textContent = 'Dashboard reachable';
+      detail.textContent = 'Click "Open the dashboard" below to confirm.';
+      // Once it's up, slow the polling so we don't burn cycles.
+      return 30000;
+    } catch (e) {
+      dot.classList.remove('ok');
+      dot.classList.add('error');
+      state.textContent = 'Dashboard unreachable';
+      detail.textContent = 'Run the steps below; this will turn green automatically.';
+      return 3000;
+    }
+  }
+
+  let timeoutId;
+  function scheduleNext(ms) {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(tick, ms);
+  }
+  async function tick() {
+    const next = await probe();
+    scheduleNext(next);
+  }
+
+  // Stamp the load time at the bottom for diagnostic clarity.
+  document.getElementById('loadTime').textContent =
+    new Date().toLocaleString();
+
+  tick();
+</script>
+</body>
+</html>
