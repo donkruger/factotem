@@ -1,210 +1,360 @@
-<p align="center">
-  <img src="assets/nanoclaw-logo.png" alt="NanoClaw" width="400">
-</p>
+# Factotem
 
-<p align="center">
-  An AI assistant that runs agents securely in their own containers. Lightweight, built to be easily understood and completely customized for your needs.
-</p>
-
-<p align="center">
-  <a href="https://nanoclaw.dev">nanoclaw.dev</a>&nbsp; • &nbsp;
-  <a href="README_zh.md">中文</a>&nbsp; • &nbsp;
-  <a href="README_ja.md">日本語</a>&nbsp; • &nbsp;
-  <a href="https://discord.gg/VDdww8qS42"><img src="https://img.shields.io/discord/1470188214710046894?label=Discord&logo=discord&v=2" alt="Discord" valign="middle"></a>&nbsp; • &nbsp;
-  <a href="repo-tokens"><img src="repo-tokens/badge.svg" alt="34.9k tokens, 17% of context window" valign="middle"></a>
-</p>
+> **Personal AI infrastructure that lives on your machine, owned by you, customised to your life.**
+>
+> Factotem brings together messaging channels, containerised Claude agents, and an operator dashboard into a single deployment that you fork, modify, and run yourself. No SaaS to depend on, no central control plane — your agents, your containers, your data, on the hardware you choose.
 
 ---
 
-## Why I Built NanoClaw
+## Vision
 
-[OpenClaw](https://github.com/openclaw/openclaw) is an impressive project, but I wouldn't have been able to sleep if I had given complex software I didn't understand full access to my life. OpenClaw has nearly half a million lines of code, 53 config files, and 70+ dependencies. Its security is at the application level (allowlists, pairing codes) rather than true OS-level isolation. Everything runs in one Node process with shared memory.
+Most "AI assistant" products are SaaS — your agents, your data, and your control surface live on someone else's infrastructure. Factotem inverts that: the entire stack runs on a Mac (or Linux box) you own, behind your network boundary, against credentials you hold. The codebase is small enough to understand end-to-end and the architecture is structured so that **the operator is always the highest-trust party** — the orchestrator never trusts agent output, the dashboard never trusts inbound messages, and every destructive action passes through a typed-confirm gate.
 
-NanoClaw provides that same core functionality, but in a codebase small enough to understand: one process and a handful of files. Claude agents run in their own Linux containers with filesystem isolation, not merely behind permission checks.
+The medium-term arc is to evolve Factotem from a single-operator tool into a **multi-deployment, multi-tier platform** where a segment admin (e.g. running an instance on a community Mac Mini) can operate independently of the platform aggregator, with permission boundaries enforced as a structural property of the system rather than a config file. v1 ships the single-operator primitive; v2 is multi-deployment federation; v3 is multi-tenant.
 
-## Quick Start
+This fork is built on the [NanoClaw](https://github.com/qwibitai/nanoclaw) foundation (full credit below) and carries forward its core philosophy — small, container-isolated, skills-over-features — while adding the surfaces an operator needs to actually run this at home or for a small organisation.
+
+---
+
+## What's in the box
+
+- **Multi-channel messaging** — WhatsApp, Telegram, Slack, Discord, Gmail. Channels self-register at startup; add one with a `/add-<channel>` skill.
+- **Per-group container isolation** — every chat group runs its agent in its own Linux container with its own mount allowlist, its own `CLAUDE.md` memory, and its own SQLite session record. Bash-in-the-agent is safe because Bash runs inside the container, not on your host.
+- **Scheduled tasks** — recurring jobs that wake an agent and message you back.
+- **Operator dashboard** — local web UI on `:7842` over Tailscale. Server health, activity feed, group management, cost tracking, alerts, audit log.
+- **Factotem Doctor** — signed + notarised macOS menu-bar app. Probes Docker / OneCLI / NanoClaw every 5s, surfaces multi-instance state honestly, exposes a typed-confirm `Repair Stack…` action for cold-start recovery.
+- **claw-setup wizard** — twelve-step cold-start that takes a fresh Mac from "nothing" to "agent alive on WhatsApp" without manual config-file editing.
+- **OneCLI gateway** — local credential proxy at `127.0.0.1:10254`; secrets never reach agent containers directly.
+- **Brain integration** — markdown ticket store synced via Google Drive; cross-linked to KanbanPro via `kanbanpro://` URLs.
+
+---
+
+## Quick start
 
 ```bash
-gh repo fork qwibitai/nanoclaw --clone
+gh repo fork donkruger/benclaw --clone
 cd nanoclaw
 claude
 ```
 
-<details>
-<summary>Without GitHub CLI</summary>
-
-1. Fork [qwibitai/nanoclaw](https://github.com/qwibitai/nanoclaw) on GitHub (click the Fork button)
-2. `git clone https://github.com/<your-username>/nanoclaw.git`
-3. `cd nanoclaw`
-4. `claude`
-
-</details>
-
-Then run `/setup`. Claude Code handles everything: dependencies, authentication, container setup and service configuration.
-
-> **Note:** Commands prefixed with `/` (like `/setup`, `/add-whatsapp`) are [Claude Code skills](https://code.claude.com/docs/en/skills). Type them inside the `claude` CLI prompt, not in your regular terminal. If you don't have Claude Code installed, get it at [claude.com/product/claude-code](https://claude.com/product/claude-code).
-
-## Philosophy
-
-**Small enough to understand.** One process, a few source files and no microservices. If you want to understand the full NanoClaw codebase, just ask Claude Code to walk you through it.
-
-**Secure by isolation.** Agents run in Linux containers (Apple Container on macOS, or Docker) and they can only see what's explicitly mounted. Bash access is safe because commands run inside the container, not on your host.
-
-**Built for the individual user.** NanoClaw isn't a monolithic framework; it's software that fits each user's exact needs. Instead of becoming bloatware, NanoClaw is designed to be bespoke. You make your own fork and have Claude Code modify it to match your needs.
-
-**Customization = code changes.** No configuration sprawl. Want different behavior? Modify the code. The codebase is small enough that it's safe to make changes.
-
-**AI-native.**
-- No installation wizard; Claude Code guides setup.
-- No monitoring dashboard; ask Claude what's happening.
-- No debugging tools; describe the problem and Claude fixes it.
-
-**Skills over features.** Instead of adding features (e.g. support for Telegram) to the codebase, contributors submit [claude code skills](https://code.claude.com/docs/en/skills) like `/add-telegram` that transform your fork. You end up with clean code that does exactly what you need.
-
-**Best harness, best model.** NanoClaw runs on the Claude Agent SDK, which means you're running Claude Code directly. Claude Code is highly capable and its coding and problem-solving capabilities allow it to modify and expand NanoClaw and tailor it to each user.
-
-## What It Supports
-
-- **Multi-channel messaging** - Talk to your assistant from WhatsApp, Telegram, Discord, Slack, or Gmail. Add channels with skills like `/add-whatsapp` or `/add-telegram`. Run one or many at the same time.
-- **Isolated group context** - Each group has its own `CLAUDE.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted to it.
-- **Main channel** - Your private channel (self-chat) for admin control; every group is completely isolated
-- **Scheduled tasks** - Recurring jobs that run Claude and can message you back
-- **Web access** - Search and fetch content from the Web
-- **Container isolation** - Agents are sandboxed in Docker (macOS/Linux), [Docker Sandboxes](docs/docker-sandboxes.md) (micro VM isolation), or Apple Container (macOS)
-- **Agent Swarms** - Spin up teams of specialized agents that collaborate on complex tasks
-- **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
-
-## Usage
-
-Talk to your assistant with the trigger word (default: `@Andy`):
+Then in the Claude Code prompt:
 
 ```
-@Andy send an overview of the sales pipeline every weekday morning at 9am (has access to my Obsidian vault folder)
-@Andy review the git history for the past week each Friday and update the README if there's drift
-@Andy every Monday at 8am, compile news on AI developments from Hacker News and TechCrunch and message me a briefing
+/setup
 ```
 
-From the main channel (your self-chat), you can manage groups and tasks:
+Or run the full guided wizard from a regular terminal:
+
+```bash
+npx claw-setup
 ```
-@Andy list all scheduled tasks across groups
-@Andy pause the Monday briefing task
-@Andy join the Family Chat group
+
+The wizard walks twelve steps (host prereqs → OneCLI → Anthropic auth → mount allowlist → container build → WhatsApp pairing → main group registration → launchd install → smoke test → handoff) and ends by installing the Factotem Doctor to `/Applications/`.
+
+> Commands prefixed with `/` are [Claude Code skills](https://code.claude.com/docs/en/skills) — type them inside the `claude` CLI prompt, not your shell. If you don't have Claude Code, get it at [claude.com/product/claude-code](https://claude.com/product/claude-code).
+
+---
+
+## Architecture at a glance
+
+```mermaid
+flowchart TB
+    subgraph Inbound[Inbound channels]
+        WA[WhatsApp]
+        TG[Telegram]
+        SL[Slack]
+        GM[Gmail]
+    end
+
+    subgraph Host[Host process — orchestrator]
+        REG[Channel registry]
+        Q[Per-group FIFO queue]
+        SCHED[Task scheduler]
+        DB[(SQLite<br/>messages · groups<br/>sessions · audit)]
+        IPC[IPC watcher<br/>data/ipc/]
+    end
+
+    subgraph Sandbox[Per-group container — Linux]
+        AGENT[Claude Agent SDK<br/>tool use · MCP]
+        MNT[Mount allowlist<br/>brain · global<br/>per-group memory]
+    end
+
+    subgraph Operator[Operator surfaces]
+        DASH[Dashboard<br/>:7842 over Tailscale]
+        DOC[Factotem Doctor<br/>menu-bar · macOS]
+        REC[recovery.html<br/>cold-start panel]
+    end
+
+    OneCLI[OneCLI gateway<br/>127.0.0.1:10254<br/>credential proxy]
+
+    WA & TG & SL & GM -->|messages| REG
+    REG --> Q
+    SCHED --> Q
+    Q -->|spawn| AGENT
+    AGENT --> MNT
+    AGENT -->|HTTP| OneCLI
+    OneCLI -->|injected creds| ANTHROPIC[Anthropic API]
+    AGENT -->|reply| Q
+    Q -->|outbound| WA
+    AGENT --> DB
+    AGENT --> IPC
+    DASH --> DB
+    DOC -->|/health probes| Host
+    DOC -->|optional| REC
+
+    classDef host fill:#fff,stroke:#0071e3,stroke-width:2px
+    classDef sandbox fill:#fff,stroke:#ff7a3a,stroke-width:2px
+    classDef operator fill:#fff,stroke:#6a00ff,stroke-width:2px
+    class Host,REG,Q,SCHED,DB,IPC host
+    class Sandbox,AGENT,MNT sandbox
+    class Operator,DASH,DOC,REC operator
 ```
 
-## Customizing
+Single Node.js process for the orchestrator. Channels are added via skills and self-register at startup — the orchestrator connects whichever ones have credentials present. Per-group message queue with global concurrency control. Agent execution happens entirely inside Linux containers; the host never executes agent-suggested code.
 
-NanoClaw doesn't use configuration files. To make changes, just tell Claude Code what you want:
+For full detail see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/SPEC.md`](docs/SPEC.md), [`docs/SECURITY.md`](docs/SECURITY.md), and [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
-- "Change the trigger word to @Bob"
-- "Remember in the future to make responses shorter and more direct"
-- "Add a custom greeting when I say good morning"
-- "Store conversation summaries weekly"
+---
 
-Or run `/customize` for guided changes.
+## Per-group isolation model
 
-The codebase is small enough that Claude can safely modify it.
+This is the security primitive most worth understanding before contributing or modifying agent-runner code:
 
-## Contributing
+```mermaid
+flowchart LR
+    subgraph Host[Host filesystem]
+        BR[/Brain/<br/>markdown corpus]
+        GLOB[groups/global/<br/>shared CLAUDE.md]
+        G1MEM[groups/main/<br/>CLAUDE.md]
+        G2MEM[groups/whatsapp_xyz/<br/>CLAUDE.md]
+        IPC[(data/ipc/{group}/<br/>messages tasks input)]
+        STORE[(store/messages.db<br/>store/auth/)]
+    end
 
-**Don't add features. Add skills.**
+    subgraph C1[Container — group: main]
+        A1[Agent · main profile<br/>full mount allowlist<br/>SendMessage cross-group]
+    end
 
-If you want to add Telegram support, don't create a PR that adds Telegram to the core codebase. Instead, fork NanoClaw, make the code changes on a branch, and open a PR. We'll create a `skill/telegram` branch from your PR that other users can merge into their fork.
+    subgraph C2[Container — group: whatsapp_xyz]
+        A2[Agent · standard profile<br/>scoped mount allowlist<br/>SendMessage own group only]
+    end
 
-Users then run `/add-telegram` on their fork and get clean code that does exactly what they need, not a bloated system trying to support every use case.
+    BR --> A1
+    BR --> A2
+    GLOB --> A1
+    GLOB --> A2
+    G1MEM --> A1
+    G2MEM --> A2
+    IPC --> A1
+    IPC --> A2
+    A1 -.no access.-> G2MEM
+    A2 -.no access.-> G1MEM
+    A1 -.no access.-> STORE
+    A2 -.no access.-> STORE
 
-### RFS (Request for Skills)
+    classDef host fill:#fff,stroke:#0071e3,stroke-width:1px
+    classDef main fill:#fff,stroke:#ff7a3a,stroke-width:2px
+    classDef other fill:#fff,stroke:#6a00ff,stroke-width:2px
+    class Host,BR,GLOB,G1MEM,G2MEM,IPC,STORE host
+    class C1,A1 main
+    class C2,A2 other
+```
 
-Skills we'd like to see:
+**Trust boundaries (top to bottom of trust):**
 
-**Communication Channels**
-- `/add-signal` - Add Signal as a channel
+1. **Operator** (you, at the keyboard) — highest trust
+2. **Orchestrator** (the Node host process) — trusted to mediate
+3. **Main group container** — full mount allowlist; can `SendMessage` cross-group
+4. **Per-group containers** — scoped mounts; can only `SendMessage` to own group
+5. **Inbound message content** — never trusted; treated as data, never executed
+
+Every per-group container sees:
+- Its own `groups/{name}/CLAUDE.md` (memory)
+- The shared `groups/global/CLAUDE.md` (brand voice, common rules)
+- The Brain corpus (read-only by default)
+- Its own slice of `data/ipc/{group}/`
+
+It does **not** see other groups' memory, the SQLite database, or `store/auth/`.
+
+The host filters mounts before container spawn (`src/container-runner.ts`). The agent-runner inside the container enforces tool-level scoping (`container/agent-runner/src/ipc-mcp-stdio.ts`). Both layers must agree before a tool call lands.
+
+---
+
+## Operator surfaces
+
+Three places to operate Factotem after it's installed:
+
+| Surface | Where | What it's for |
+|---|---|---|
+| **Factotem Doctor** | macOS menu bar | Live health probe (Docker / OneCLI / NanoClaw / port :7842), Repair Stack action with typed-confirm gate, Settings, log tail. Always visible — your first read on whether the stack is alive. |
+| **Dashboard** | `http://<host>:7842` over Tailscale | Server health, activity feed, group management, cost tracking, alerts, audit log. Authenticated via Tailscale (single-operator) or `operators.json` (multi-operator). |
+| **Messaging** | The trigger word in any registered channel | Talk to your assistant. Trigger word configurable; default `@Andy` (Don's fork uses `@Ben`). |
+
+Plus two CLIs:
+
+- **`claude` + `/setup` / `/customize` / `/debug`** — the AI-native operator surface; ask Claude Code to walk through the codebase, modify behaviour, or diagnose an incident.
+- **`npx claw-setup`** — guided cold-start wizard for fresh deployments. Idempotent + resumable.
+
+---
+
+## Cold-start flow
+
+`npx claw-setup` walks an operator from "nothing installed" to "menu-bar Doctor visible, agent alive on WhatsApp" in roughly 30 minutes:
+
+```mermaid
+flowchart TD
+    A[Fresh Mac] -->|npx claw-setup| B[00 · profile mode<br/>solo · hobbyist · invite]
+    B --> C[01 · prereqs<br/>Node · Docker · Tailscale]
+    C --> D[02 · install missing tools]
+    D --> E[03 · OneCLI<br/>Anthropic credential]
+    E --> F[04 · mount allowlist]
+    F --> G[05 · build agent container]
+    G --> H[06 · pair WhatsApp<br/>QR scan]
+    H --> I[07 · register main group]
+    I --> J[08 · OpenMode budget<br/>optional]
+    J --> K[09 · launchd plist]
+    K --> L[10 · smoke test<br/>send + receive]
+    L --> M[11 · handoff<br/>install Doctor + recovery panel<br/>print cheat-sheet]
+    M --> N[Operational]
+
+    style B fill:#fff,stroke:#0071e3
+    style M fill:#fff,stroke:#ff7a3a,stroke-width:2px
+    style N fill:#fff,stroke:#6a00ff,stroke-width:2px
+```
+
+State persists at `~/.config/nanoclaw/setup-state.json`; rerun with `--resume` to pick up where you stopped. See [`docs/SETUP_WIZARD.md`](docs/SETUP_WIZARD.md) for full step semantics, recovery, and the standalone installers (`scripts/install-recovery.sh`, `scripts/install-doctor.sh`).
+
+---
+
+## Customising
+
+Factotem doesn't use configuration files for behaviour — it uses code. To change something, tell Claude Code what you want:
+
+```
+"Change the trigger word to @Bob"
+"Make replies shorter and more direct in the work group"
+"Add a custom greeting when I say good morning"
+"Store conversation summaries weekly"
+```
+
+Or run `/customize` for a guided change. The codebase is small enough that this is safe — and tracked changes mean nothing leaks into your fork unintentionally.
+
+### Skills over features
+
+Capabilities are added as skills, not as code merged into the base. Want Telegram? Don't PR it into the orchestrator — fork, branch, open a PR. We'll create a `skill/telegram` branch from your work, and other operators run `/add-telegram` on their own forks. Each operator ends up with clean code that does exactly what they need; nobody inherits features they don't want.
+
+Skill types:
+
+- **Feature skills** (`/add-whatsapp`, `/add-telegram`) — merge a `skill/*` branch
+- **Utility skills** (`/claw`) — ship code alongside `SKILL.md`
+- **Operational skills** (`/setup`, `/debug`) — instruction-only workflows
+- **Container skills** (`container/skills/`) — loaded inside the agent container at runtime
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`docs/skills-as-branches.md`](docs/skills-as-branches.md) for the full taxonomy.
+
+---
+
+## Project structure
+
+```
+nanoclaw/
+├── src/                              orchestrator (single Node process)
+│   ├── index.ts                      state, message loop, agent invocation
+│   ├── channels/registry.ts          channel registry (skills self-register)
+│   ├── ipc.ts                        IPC watcher · task processing
+│   ├── router.ts                     message formatting · outbound routing
+│   ├── group-queue.ts                per-group FIFO + global concurrency
+│   ├── container-runner.ts           spawns streaming agent containers
+│   ├── task-scheduler.ts             recurring jobs
+│   ├── http/                         dashboard HTTP server (Phase 0)
+│   └── db.ts                         SQLite operations
+├── container/
+│   ├── agent-runner/src/             Claude Agent SDK driver inside containers
+│   ├── skills/                       container-side skills (browser, status)
+│   └── build.sh                      Docker build w/ git-sha tag
+├── dashboard/                        Next.js operator dashboard (Phase 0)
+│   └── src/                          Server Health · Activity · Groups · Cost · Alerts · Audit
+├── cli/
+│   ├── claw-doctor/                  Phase 1 Tauri menu-bar app (Rust + React)
+│   └── claw-setup/                   cold-start wizard (TypeScript)
+├── scripts/
+│   ├── install-recovery.sh           Phase 0 recovery panel installer
+│   ├── install-doctor.sh             Phase 1 Doctor installer
+│   ├── recovery/recovery.html        cold-start operator panel
+│   └── set-auth-mode.sh              api-key / oauth-workaround toggle
+├── groups/{name}/CLAUDE.md           per-group memory (isolated)
+├── data/ipc/{group}/                 host↔container IPC namespace
+├── store/                            messages.db · auth/
+└── docs/                             SPEC · ARCHITECTURE · SECURITY · OPERATIONS · SETUP_WIZARD · CHANGE_LOG
+```
+
+Critical files for anyone (human or agent) modifying behaviour:
+
+- **`src/index.ts`** — the orchestrator. Message loop, agent invocation, IPC fan-in.
+- **`src/container-runner.ts`** — mount filtering and container spawn. Trust boundary.
+- **`container/agent-runner/src/ipc-mcp-stdio.ts`** — tool-scope enforcement inside the container.
+- **`docs/REQUIREMENTS.md`** — design philosophy and tier framing (single-operator → multi-deployment → multi-tenant).
+- **`docs/CHANGE_LOG.md`** — every shipped change with date, rationale, and recovery tag.
+
+---
+
+## Phase status
+
+| Phase | Status | What |
+|---|---|---|
+| **Phase 0** — Dashboard, telemetry, recovery panel | ✓ Shipped | Operator HTTP server on :7842, `agent_turns` schema, six dashboard panels, `recovery.html` cold-start surface |
+| **Phase 1** — Tauri Doctor menu-bar app | ✓ Shipped | Multi-instance probe, Repair Stack, Settings + Logs, code-signed + notarised, wizard installs to `/Applications` |
+| **Phase 2** — Multi-deployment federation (v2) | Planned | Aggregator app surveys multiple deployments over Tailscale; per-machine tokens; fleet view |
+| **Phase 3** — Multi-tenant boundary (v3) | Planned | Segment admin permission tier; tenant isolation; productisation |
+
+See [`docs/CHANGE_LOG.md`](docs/CHANGE_LOG.md) for the full timestamped history of what shipped when.
+
+---
 
 ## Requirements
 
-- macOS or Linux
-- Node.js 20+
-- [Claude Code](https://claude.ai/download)
-- [Apple Container](https://github.com/apple/container) (macOS) or [Docker](https://docker.com/products/docker-desktop) (macOS/Linux)
+- **macOS** or Linux (the Doctor menu-bar app is macOS-only; the orchestrator runs on either)
+- **Node.js 20+**
+- **[Claude Code](https://claude.ai/download)**
+- **[Docker Desktop](https://docker.com/products/docker-desktop)** (default) or [Apple Container](https://github.com/apple/container) on macOS
+- **[Tailscale](https://tailscale.com/)** for accessing the dashboard from other devices on your tailnet
+- **An Anthropic API key or subscription OAuth token** (configured into OneCLI; never passed to containers directly)
+- **Apple Developer ID** if you want to sign + notarise your own Doctor build (otherwise build it ad-hoc-signed)
 
-## Architecture
+---
 
-```
-Channels --> SQLite --> Polling loop --> Container (Claude Agent SDK) --> Response
-```
+## Third-party / open-source models
 
-Single Node.js process. Channels are added via skills and self-register at startup — the orchestrator connects whichever ones have credentials present. Agents execute in isolated Linux containers with filesystem isolation. Only mounted directories are accessible. Per-group message queue with concurrency control. IPC via filesystem.
-
-For the full architecture details, see [docs/SPEC.md](docs/SPEC.md). For startup, recovery, and troubleshooting, see [docs/OPERATIONS.md](docs/OPERATIONS.md).
-
-Key files:
-- `src/index.ts` - Orchestrator: state, message loop, agent invocation
-- `src/channels/registry.ts` - Channel registry (self-registration at startup)
-- `src/ipc.ts` - IPC watcher and task processing
-- `src/router.ts` - Message formatting and outbound routing
-- `src/group-queue.ts` - Per-group queue with global concurrency limit
-- `src/container-runner.ts` - Spawns streaming agent containers
-- `src/task-scheduler.ts` - Runs scheduled tasks
-- `src/db.ts` - SQLite operations (messages, groups, sessions, state)
-- `groups/*/CLAUDE.md` - Per-group memory
-
-## FAQ
-
-**Why Docker?**
-
-Docker provides cross-platform support (macOS, Linux and even Windows via WSL2) and a mature ecosystem. On macOS, you can optionally switch to Apple Container via `/convert-to-apple-container` for a lighter-weight native runtime. For additional isolation, [Docker Sandboxes](docs/docker-sandboxes.md) run each container inside a micro VM.
-
-**Can I run this on Linux?**
-
-Yes. Docker is the default runtime and works on both macOS and Linux. Just run `/setup`.
-
-**Is this secure?**
-
-Agents run in containers, not behind application-level permission checks. They can only access explicitly mounted directories. You should still review what you're running, but the codebase is small enough that you actually can. See [docs/SECURITY.md](docs/SECURITY.md) for the full security model.
-
-**Why no configuration files?**
-
-We don't want configuration sprawl. Every user should customize NanoClaw so that the code does exactly what they want, rather than configuring a generic system. If you prefer having config files, you can tell Claude to add them.
-
-**Can I use third-party or open-source models?**
-
-Yes. NanoClaw supports any Claude API-compatible model endpoint. Set these environment variables in your `.env` file:
+Factotem speaks the Anthropic API format. Set in your `.env`:
 
 ```bash
 ANTHROPIC_BASE_URL=https://your-api-endpoint.com
 ANTHROPIC_AUTH_TOKEN=your-token-here
 ```
 
-This allows you to use:
-- Local models via [Ollama](https://ollama.ai) with an API proxy
-- Open-source models hosted on [Together AI](https://together.ai), [Fireworks](https://fireworks.ai), etc.
-- Custom model deployments with Anthropic-compatible APIs
+This works with [Ollama](https://ollama.ai) via an API proxy, [Together AI](https://together.ai), [Fireworks](https://fireworks.ai), or any custom deployment that speaks the Anthropic format.
 
-Note: The model must support the Anthropic API format for best compatibility.
+---
 
-**How do I debug issues?**
+## Roots & acknowledgments
 
-Ask Claude Code. "Why isn't the scheduler running?" "What's in the recent logs?" "Why did this message not get a response?" That's the AI-native approach that underlies NanoClaw.
+Factotem is built on the [NanoClaw](https://github.com/qwibitai/nanoclaw) foundation, which is itself a deliberate pruning of [OpenClaw](https://github.com/openclaw/openclaw) into a single-process, container-isolated, skills-over-features primitive. The container-isolated agent model, the channel-as-skill registry, and the no-config-file philosophy come directly from NanoClaw and remain unchanged in this fork.
 
-**Why isn't the setup working for me?**
+What this fork (Factotem) adds on top:
 
-If you have issues, during setup, Claude will try to dynamically fix them. If that doesn't work, run `claude`, then run `/debug`. If Claude finds an issue that is likely affecting other users, open a PR to modify the setup SKILL.md.
+- **Operator dashboard** at `:7842` with six panels (Phase 0)
+- **Tauri Doctor** menu-bar app with multi-instance probe + Repair Stack (Phase 1)
+- **claw-setup** cold-start wizard
+- **Brain + KanbanPro** integration for ticket/task lifecycle
+- **OAuth-workaround auth mode** with launchd watcher for rotating subscription tokens
+- **Audit log + reversible-undo** dashboard surface
+- **`agent_turns`** SDK-faithful telemetry schema (32 columns) for cost tracking
+- A more deliberate **trust boundary** posture (operators.json, scopes, typed-confirm gates) suitable for multi-operator + future multi-tenant evolution
 
-**What changes will be accepted into the codebase?**
+Package name remains `nanoclaw` for backward-compatibility with existing skill branches and the upstream channel ecosystem; the user-facing brand is **Factotem** when referring to the operator surfaces, and **NanoClaw** when referring to the underlying orchestrator.
 
-Only security fixes, bug fixes, and clear improvements will be accepted to the base configuration. That's all.
-
-Everything else (new capabilities, OS compatibility, hardware support, enhancements) should be contributed as skills.
-
-This keeps the base system minimal and lets every user customize their installation without inheriting features they don't want.
-
-## Community
-
-Questions? Ideas? [Join the Discord](https://discord.gg/VDdww8qS42).
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for breaking changes and migration notes.
+---
 
 ## License
 
-MIT
+MIT.
