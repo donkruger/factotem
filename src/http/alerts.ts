@@ -63,7 +63,7 @@ export interface AlertsResponse {
 }
 
 const OPERATIONS_RECOVERY_URL =
-  'https://github.com/donkruger/benclaw/blob/main/docs/OPERATIONS.md#recovery';
+  'https://github.com/donkruger/factotem/blob/main/docs/OPERATIONS.md#recovery';
 
 // Per-detection caches so log tailing doesn't thrash. The dashboard
 // polls /api/alerts every 10s, so 30s cache is safe.

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Cold-start helper + multi-instance-aware status icon for Factotem / NanoClaw."
 authors = ["Don Kruger"]
 license = "MIT"
-repository = "https://github.com/donkruger/benclaw"
+repository = "https://github.com/donkruger/factotem"
 edition = "2021"
 rust-version = "1.74"
 

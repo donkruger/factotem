@@ -313,9 +313,9 @@ Per-group settings live in the `container_config` JSON column on `registered_gro
 
 ---
 
-## BenClaw: Fork Identity
+## Factotem: Fork Identity
 
-This project is **BenClaw** — a fork of NanoClaw (`donkruger/benclaw`) customized as a personal AI assistant named Ben. The upstream NanoClaw provides the messaging infrastructure and container isolation. BenClaw adds a persistent cognitive layer on top.
+This project is **Factotem** — operator-facing brand for the AI infrastructure built on the NanoClaw orchestrator primitive (fork: `donkruger/factotem`, originally forked as `donkruger/benclaw`). The upstream NanoClaw provides the messaging infrastructure and container isolation. Factotem adds a persistent cognitive layer, an operator dashboard, the Tauri Doctor menu-bar app, and the claw-setup cold-start wizard on top. **Ben** is the specific deployment of Factotem running on Don's machine (`@Ben` trigger word, WhatsApp number 27752007263).
 
 | Setting | Value |
 |---------|-------|

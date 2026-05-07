@@ -32,7 +32,7 @@ This fork is built on the [NanoClaw](https://github.com/qwibitai/nanoclaw) found
 ## Quick start
 
 ```bash
-gh repo fork donkruger/benclaw --clone
+gh repo fork donkruger/factotem --clone
 cd nanoclaw
 claude
 ```

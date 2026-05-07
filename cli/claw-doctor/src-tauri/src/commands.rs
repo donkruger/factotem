@@ -326,7 +326,7 @@ fn open_recovery_panel(app: &AppHandle) {
             // somewhere useful.
             open_url(
                 app,
-                "https://github.com/donkruger/benclaw/blob/main/docs/OPERATIONS.md#recovery",
+                "https://github.com/donkruger/factotem/blob/main/docs/OPERATIONS.md#recovery",
             );
         }
     }

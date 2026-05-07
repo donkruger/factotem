@@ -1,6 +1,6 @@
 # NanoClaw
 
-Personal Claude assistant (fork: `donkruger/benclaw`).
+Personal Claude assistant — operator-facing brand **Factotem**, orchestrator primitive **NanoClaw** (fork: `donkruger/factotem`, originally forked as `donkruger/benclaw`).
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Full current-state architecture, message flow, security model
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — Philosophy and design decisions
