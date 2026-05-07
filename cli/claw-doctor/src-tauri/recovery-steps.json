@@ -41,15 +41,15 @@
     {
       "id": "verify",
       "title": "Verify the dashboard is reachable",
-      "why": "Confirms NanoClaw's HTTP server is bound and serving /health.",
-      "command": "curl -sf http://localhost:7842/health",
-      "timeout_ms": 10000,
+      "why": "Confirms NanoClaw's HTTP server is bound and serving /health. The primary command runs once; the verify block polls the same endpoint for up to 30 seconds because launchctl kickstart returns instantly while NanoClaw takes ~5s to bind port 7842.",
+      "command": "true",
+      "timeout_ms": 5000,
       "required": true,
       "verify": {
         "command": "curl -sf http://localhost:7842/health",
         "timeout_ms": 5000,
-        "max_wait_ms": 20000,
-        "poll_ms": 2000
+        "max_wait_ms": 30000,
+        "poll_ms": 1500
       }
     }
   ]

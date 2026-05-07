@@ -260,7 +260,9 @@ async fn run_shell_bash(cmd: &str, dur: Duration) -> Result<(), String> {
                 } else if !stdout.trim().is_empty() {
                     stdout.trim().to_string()
                 } else {
-                    format!("exit {}", output.status)
+                    // ExitStatus's Display impl already includes "exit status: N";
+                    // don't prefix another "exit ".
+                    output.status.to_string()
                 };
                 // Cap the detail length so it fits in the React UI without
                 // forcing horizontal scroll.
