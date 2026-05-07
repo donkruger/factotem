@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 use crate::manifest::{load_manifest, RecoveryManifest};
@@ -208,6 +209,77 @@ pub fn tail_log(lines: usize) -> Result<String, String> {
         ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// R.1 — Updater commands.
+//
+// Wraps tauri-plugin-updater so the React side can poll, prompt, and
+// install updates. Two commands surface to the UI:
+//   - check_for_updates() → returns Some(UpdateInfo) or None
+//   - install_update_and_restart() → downloads + verifies + installs +
+//     calls app.restart() (auto-relaunches the new version)
+//
+// The plugin's signature verification uses the ed25519 pubkey baked
+// into tauri.conf.json plugins.updater.pubkey. CI signs each release's
+// .tar.gz with the matching private key (kept out of the repo); a
+// release with an invalid signature is rejected before install.
+// ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub current_version: String,
+    pub date: Option<String>,
+    pub body: Option<String>,
+}
+
+#[tauri::command]
+pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| format!("{}", e))?;
+    let current_version = app.package_info().version.to_string();
+    match updater.check().await {
+        Ok(Some(update)) => Ok(Some(UpdateInfo {
+            version: update.version.clone(),
+            current_version,
+            date: update.date.map(|d| d.to_string()),
+            body: update.body.clone(),
+        })),
+        Ok(None) => Ok(None),
+        Err(e) => Err(format!("update check failed: {}", e)),
+    }
+}
+
+#[tauri::command]
+pub async fn install_update_and_restart(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| format!("{}", e))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| format!("check: {}", e))?
+        .ok_or_else(|| "no update available".to_string())?;
+
+    // download_and_install streams bytes to a temp file, verifies the
+    // ed25519 signature against tauri.conf.json's pubkey, then replaces
+    // the running .app bundle. The two closures are progress callbacks;
+    // we pipe them into tracing for now and surface progress to the UI
+    // in R.3 once the operator-approved flow lands.
+    update
+        .download_and_install(
+            |chunk_length, content_length| {
+                tracing::debug!(chunk_length, content_length, "update downloading");
+            },
+            || {
+                tracing::info!("update download finished — installing");
+            },
+        )
+        .await
+        .map_err(|e| format!("install: {}", e))?;
+
+    tracing::info!("update installed — restarting");
+    app.restart();
 }
 
 // ──────────────────────────────────────────────────────────────────────

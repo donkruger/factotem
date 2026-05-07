@@ -9,6 +9,18 @@
     "devUrl": "http://localhost:1422",
     "frontendDist": "../dist"
   },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVDMjIzNjhBMjhCNkYxQTYKUldTbThiWW9pallpN0dUeUZzUEdkY01HSzQwOHIwVXBuczkxMzJnREM5OWRXS2Y2NWR0QWVYWVcK",
+      "endpoints": [
+        "https://github.com/donkruger/factotem/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "app": {
     "windows": [],
     "security": {
@@ -27,6 +39,7 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

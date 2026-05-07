@@ -15,8 +15,9 @@ mod settings;
 mod tray;
 
 use commands::{
-    get_last_status, get_log_path, get_recovery_manifest, get_settings, probe_stack_now,
-    save_settings, start_repair, tail_log, LastStatus, SettingsState,
+    check_for_updates, get_last_status, get_log_path, get_recovery_manifest, get_settings,
+    install_update_and_restart, probe_stack_now, save_settings, start_repair, tail_log,
+    LastStatus, SettingsState,
 };
 use probe::{probe_stack, OverallStatus};
 use tray::{build_tray, update_tray};
@@ -63,6 +64,12 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        // Updater plugin: in-app check + download + install of new
+        // releases from github.com/donkruger/factotem. Endpoint + pubkey
+        // are declared in tauri.conf.json plugins.updater. The plugin
+        // is invoked via the commands in commands.rs; no auto-poll
+        // happens until R.3 wires the operator-approved scheduler.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Autostart plugin: pass the launch arg so the spawned instance
         // knows it was started by login (no-op for now, but reserved
         // for "skip first-run UX when relaunched").
@@ -113,6 +120,8 @@ pub fn run() {
             save_settings,
             get_log_path,
             tail_log,
+            check_for_updates,
+            install_update_and_restart,
         ])
         // No windows at startup — this is a tray-only app. Windows open
         // on demand via the menu actions.

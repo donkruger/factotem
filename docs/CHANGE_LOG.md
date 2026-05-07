@@ -6,6 +6,44 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-07
 
+### Phase 2 / Release pipeline — R.1 (Tauri updater plumbing in the Doctor)
+
+First of four sequential milestones that turn the Doctor into an auto-updateable artifact distributed via GitHub Releases. R.1 adds the in-app plumbing without changing operator-visible behaviour — the Doctor now contains the updater plugin and three Tauri commands, but doesn't poll for updates yet (R.3 wires the operator-approved scheduler).
+
+**Updater keypair generated.** Ed25519 keypair generated via `cargo tauri signer generate`, separate from the Apple Developer ID certificate (different threat model — Gatekeeper trust vs. in-app update integrity). Private key saved to `~/Library/Mobile Documents/com~apple~CloudDocs/Keychain Certificates/Factotem/factotem-doctor-updater.key` (iCloud Keychain Certificates folder, alongside KanbanPro's .p12 — same convention). Public key embedded in `tauri.conf.json plugins.updater.pubkey`. The private key is **not committed**; it lives in iCloud + will land as a GitHub Actions secret in R.2.
+
+**Files changed.**
+
+- `cli/claw-doctor/src-tauri/Cargo.toml` — added `tauri-plugin-updater = "2"`.
+- `cli/claw-doctor/src-tauri/tauri.conf.json` — new `plugins.updater` block with the pubkey + the GitHub Releases endpoint (`https://github.com/donkruger/factotem/releases/latest/download/latest.json`); `bundle.createUpdaterArtifacts: true` so the build produces the `.app.tar.gz` + `.app.tar.gz.sig` pair the updater plugin consumes.
+- `cli/claw-doctor/src-tauri/capabilities/default.json` — added `updater:default` permission.
+- `cli/claw-doctor/src-tauri/src/lib.rs` — `.plugin(tauri_plugin_updater::Builder::new().build())` in the builder chain; new commands wired through `invoke_handler`.
+- `cli/claw-doctor/src-tauri/src/commands.rs` — two new Tauri commands:
+  - `check_for_updates()` — calls `UpdaterExt::check()`, returns a serialisable `UpdateInfo` DTO (version, current version, date, body) or `None` when up-to-date.
+  - `install_update_and_restart()` — downloads + verifies signature + replaces /Applications/Factotem Doctor.app + calls `app.restart()`. Single atomic operation from the operator's POV.
+- `docs/CHANGE_LOG.md` — this entry.
+
+The updater plugin's signature verification uses the ed25519 pubkey in tauri.conf.json. CI (R.2) will sign each release's `.tar.gz` with the matching private key from a GitHub Actions secret; a release with an invalid signature is rejected before install. Two layers of trust now: Apple Dev ID + notarisation (Gatekeeper, OS-level) AND ed25519 signature (in-app update integrity, app-level).
+
+**Build verification.** `cargo tauri build` with `APPLE_*` + `TAURI_SIGNING_PRIVATE_KEY` env vars produces:
+
+```
+Factotem Doctor.app                      (signed + notarised + stapled)
+Factotem Doctor_0.1.0_aarch64.dmg        (signed)
+Factotem Doctor.app.tar.gz               (updater payload)
+Factotem Doctor.app.tar.gz.sig           (ed25519 signature)
+```
+
+Notarisation Accepted (id 5ed92ca1-…). The new build was NOT installed to /Applications — the running M1.6 Doctor (v0.1.0, PID 31969) stays in place. R.2 will tag v0.1.1 and CI will produce the first auto-updateable release; operators manually install v0.1.1 to bridge the gap (the running v0.1.0 doesn't have the updater plugin and so can't auto-detect future releases).
+
+**Convention check.** Pure additive — one new dependency, three modified config files, two new commands, one CHANGE_LOG entry. No orchestrator code touched. No operator-visible behaviour change. Reversal is `git revert <commit>`. The keypair in iCloud is operator-side state, not committed.
+
+**Recovery tag:** `pre-r1-2026-05-07`.
+
+R.2 follows: GitHub Actions workflow + first signed release (`v0.1.1`).
+
+---
+
 ### Phase 1 / Tauri Doctor — M1.6 (claw-setup wizard installs the Doctor to /Applications)
 
 Sixth and final execution session of Phase 1. M1.5 produced the signed + notarized .app earlier today, but operators still had to find it manually under `cli/claw-doctor/src-tauri/target/release/bundle/macos/` and `open` it themselves. M1.6 closes that gap: the cold-start wizard now installs the Doctor at the end of every fresh `npx claw-setup` run, so a brand-new Bob Mac Mini (or Mark's laptop) goes from "nothing" to "menu-bar Doctor running, autostart registered, ready to repair the stack" in one continuous flow.
