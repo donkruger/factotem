@@ -123,12 +123,12 @@ This is the security primitive most worth understanding before contributing or m
 ```mermaid
 flowchart LR
     subgraph Host[Host filesystem]
-        BR[/Brain/<br/>markdown corpus]
+        BR["/Brain/<br/>markdown corpus"]
         GLOB[groups/global/<br/>shared CLAUDE.md]
         G1MEM[groups/main/<br/>CLAUDE.md]
         G2MEM[groups/whatsapp_xyz/<br/>CLAUDE.md]
-        IPC[(data/ipc/{group}/<br/>messages tasks input)]
-        STORE[(store/messages.db<br/>store/auth/)]
+        IPC[("data/ipc/{group}/<br/>messages tasks input")]
+        STORE[("store/messages.db<br/>store/auth/")]
     end
 
     subgraph C1[Container — group: main]
