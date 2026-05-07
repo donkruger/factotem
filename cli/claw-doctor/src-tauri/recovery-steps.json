@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "steps": [
+    {
+      "id": "docker",
+      "title": "Open Docker Desktop",
+      "why": "Docker provides the container runtime for every NanoClaw agent. It must be running before the next two steps will work.",
+      "command": "open -a Docker",
+      "timeout_ms": 60000,
+      "required": true,
+      "verify": {
+        "command": "docker info",
+        "timeout_ms": 5000,
+        "max_wait_ms": 60000,
+        "poll_ms": 2000
+      }
+    },
+    {
+      "id": "onecli",
+      "title": "Start OneCLI",
+      "why": "OneCLI is the credential gateway. Without it, agent containers spawn but get HTTP 401 from Anthropic.",
+      "command": "cd ~/.onecli && docker compose up -d",
+      "timeout_ms": 30000,
+      "required": true,
+      "verify": {
+        "command": "curl -sf http://127.0.0.1:10254/",
+        "timeout_ms": 5000,
+        "max_wait_ms": 30000,
+        "poll_ms": 2000
+      }
+    },
+    {
+      "id": "nanoclaw",
+      "title": "Restart NanoClaw",
+      "why": "Reloads the orchestrator so it picks up Docker + OneCLI being available.",
+      "command": "launchctl kickstart -k gui/$(id -u)/com.nanoclaw",
+      "timeout_ms": 10000,
+      "required": true,
+      "verify": null
+    },
+    {
+      "id": "verify",
+      "title": "Verify the dashboard is reachable",
+      "why": "Confirms NanoClaw's HTTP server is bound and serving /health.",
+      "command": "curl -sf http://localhost:7842/health",
+      "timeout_ms": 10000,
+      "required": true,
+      "verify": {
+        "command": "curl -sf http://localhost:7842/health",
+        "timeout_ms": 5000,
+        "max_wait_ms": 20000,
+        "poll_ms": 2000
+      }
+    }
+  ]
+}

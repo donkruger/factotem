@@ -4,6 +4,50 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ---
 
+## 2026-05-07
+
+### Phase 1 / Tauri Doctor — M1.1 + M1.2 (cli/claw-doctor scaffold + multi-instance probe)
+
+First execution session for Phase 1 of the embedded recovery experience. Don approved supervisor mode (long-term Electron Factotem talks to NanoClaw via `/api/*`; doesn't replace it) and asked for explicit multi-instance detection because his machine has both `com.nanoclaw` (V1 fork) and `com.nanoclaw-v2-0a765b3b` (V2 upstream) loaded simultaneously. This commit ships M1.1 (project scaffold + bundled `.app`) and M1.2 (probe + tray status with multi-instance detection baked in). M1.3–M1.6 follow in subsequent sessions per [`~/.claude/plans/research/phase-1-tauri-menu-bar-design.md`](~/.claude/plans/research/phase-1-tauri-menu-bar-design.md).
+
+**New directory: `cli/claw-doctor/`** — Tauri 2 app, Rust backend + Vite/React frontend (placeholder until M1.3 windows). 28 source files, ~5.7 MB bundled `.app`. Full file layout in `cli/claw-doctor/README.md`.
+
+**Toolchain bumps performed during this session.** Homebrew Rust 1.77.2 → 1.95.0 (Tauri CLI 2.11.1 requires edition 2024 / Rust 1.85+). Homebrew Node 25.7.0 → 25.9.0 (the 25.7.0 binary was looking for `libllhttp.9.3.dylib` which Homebrew had moved to `9.4.dylib` — `brew reinstall llhttp node` fixed it). `cargo install tauri-cli@^2.0` succeeded after the Rust bump.
+
+**Probe layer (`src-tauri/src/probe.rs`).** The heart of M1.2. Six parallel probes wrapped in `tokio::time::timeout`:
+
+1. `probe_docker()` — `docker info` with 3s timeout
+2. `probe_onecli()` — HTTP GET `127.0.0.1:10254/` with 2s timeout
+3. `probe_nanoclaw_processes()` — `pgrep -fla "dist/index.js"` parses every matching process; `ps -o ppid=` resolves parent PID; `launchd_spawned` flag indicates parent_pid == 1
+4. `probe_launchd_labels()` — `launchctl list` filtered to `com.nanoclaw*` labels (excludes `com.nanoclaw.oauth-refresh` because that's the watcher, not an orchestrator)
+5. `probe_port_7842()` — `lsof -nP -iTCP:7842 -sTCP:LISTEN -F pcL` machine-readable output; cross-references PID against the process list to flag foreign owners
+6. `probe_nanoclaw_http()` — HTTP GET `localhost:7842/health` with 2s timeout
+
+Synthesis (`synthesize_overall()`) distinguishes six concrete scenarios — healthy single instance, dev-mode + launchd both running, multiple launchd labels (Don's case), process running with port unbound, foreign port owner, stack offline — and produces a human-readable headline + detail per case. The amber states explicitly *don't* trip Repair Stack (M1.3); they need operator judgement.
+
+**Tray + menu (`src-tauri/src/tray.rs`).** Status-driven menu builder: headline emoji-prefixed (🟢 / 🟡 / 🔴 / ⚪) + secondary detail line on amber/red, "Last checked: Ns ago", three actions (Open Dashboard, Open Recovery Panel, Show diagnostic details — placeholder until M1.3), Quit. Tooltip + menu rebuilt on every probe tick. Tray icon as macOS template image so the OS tints to match light/dark menu bar.
+
+**Entry + scheduler (`src-tauri/src/lib.rs` + `main.rs`).** Tauri 2 lib/bin split (`pub fn run()` in lib for mobile-target compat). Probe loop runs on `tauri::async_runtime::spawn` (shared tokio runtime) with `tokio::time::interval(5s)`; first tick delayed 200ms to avoid races with tray-icon construction. Window-close-requested events hide rather than quit so the tray stays alive.
+
+**Reused primitives (no duplication).**
+- `tauri-plugin-shell` + `tauri-plugin-opener` — for "Open Dashboard" and "Open Recovery Panel" — opens default browser via OS conventions, no in-app WebView (the WebView is reserved for Repair Stack and Settings windows in M1.3+)
+- `~/Library/Application Support/Factotem/recovery.html` from Phase 0 (`scripts/install-recovery.sh`) — the Doctor's "Open Recovery Panel" action falls back to the github runbook URL if the file isn't installed
+- `recovery-steps.json` — same step manifest planned for the M1.3 Repair Stack window; loaded via `include_str!` so it's tamper-resistant inside the bundle
+
+**Smoke test passed.** PID 37915, 32s uptime, 69 MB RSS, 5.7 MB bundled .app. Multi-instance scenario captured live during testing: PID 71363 (`/Documents/NanoClaw/nanoclaw/dist/index.js`) owns port 7842, PID 1428 (`/Documents/NanoClaw V2/nanoclaw-v2/dist/index.js`) doesn't. Doctor's headline reads "2 NanoClaw services loaded" with detail "Loaded labels: com.nanoclaw, com.nanoclaw-v2-0a765b3b. Only one is bound to :7842; the others may be stale installs."
+
+**Convention check.** Pure additive — entirely new directory `cli/claw-doctor/`, sibling to `cli/claw-setup/`. No orchestrator code touched. No dashboard code touched. No mutations to the running NanoClaw deployment. Reversal: delete `cli/claw-doctor/`. Zero risk.
+
+**What ships in subsequent sessions.**
+- M1.3 — Repair Stack window + sequential execution + typed-confirm gate (~1.5 days)
+- M1.4 — Settings + Logs windows (~0.5 day)
+- M1.5 — Code signing via Don's Apple Dev ID (~0.5 day)
+- M1.6 — `claw-setup` step 11 drops the `.app` into `/Applications` (~0.5 day)
+
+Recovery tag: `pre-phase1-m1.1-m1.2-2026-05-07` (HEAD before this commit).
+
+---
+
 ## 2026-05-06
 
 ### Wave 9 follow-up — operator-feedback fixes
