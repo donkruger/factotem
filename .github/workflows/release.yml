@@ -144,10 +144,18 @@ jobs:
           DMG_DST="$RELEASE_DIR/Factotem-Doctor_${VERSION}_aarch64.dmg"
           TARGZ_DST="$RELEASE_DIR/Factotem-Doctor_${VERSION}_aarch64.app.tar.gz"
           SIG_DST="$RELEASE_DIR/Factotem-Doctor_${VERSION}_aarch64.app.tar.gz.sig"
+          # Versionless copy of the .dmg so the README + external pages
+          # can link to a stable URL:
+          #   https://github.com/<mirror>/releases/latest/download/Factotem-Doctor.dmg
+          # GitHub's /latest/download/<filename> redirect requires the
+          # filename to be constant across releases — versioned names
+          # don't work for that pattern.
+          DMG_LATEST="$RELEASE_DIR/Factotem-Doctor.dmg"
 
           cp "$DMG_SRC" "$DMG_DST"
           cp "$TARGZ_SRC" "$TARGZ_DST"
           cp "$SIG_SRC" "$SIG_DST"
+          cp "$DMG_SRC" "$DMG_LATEST"
 
           # Record outputs for later steps.
           echo "version=$VERSION"            >> "$GITHUB_OUTPUT"

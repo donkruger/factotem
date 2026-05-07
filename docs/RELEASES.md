@@ -8,16 +8,27 @@ Releases are published to the **public mirror repo**: **[github.com/RichardBNel/
 
 The source repo (`donkruger/factotem`) is private. CI builds + signs + notarises in the source repo, then pushes the release artefacts to `RichardBNel/Factotem` (public) so the Tauri updater plugin can poll `https://github.com/RichardBNel/Factotem/releases/latest/download/latest.json` without authentication. Operators only ever see + interact with the public mirror.
 
-Each release ships four files:
+### Stable download URL
 
-| File | Purpose |
-|---|---|
-| `Factotem-Doctor_X.Y.Z_aarch64.dmg` | Drag-installable disk image. Apple Silicon only (arm64). Signed by Don's Developer ID + notarised by Apple. |
-| `Factotem-Doctor_X.Y.Z_aarch64.app.tar.gz` | Same .app, packed for the in-app updater. Operators don't download this directly — the running Doctor consumes it during auto-update. |
-| `Factotem-Doctor_X.Y.Z_aarch64.app.tar.gz.sig` | Ed25519 signature of the .tar.gz. The Doctor verifies this against its embedded public key before installing. |
-| `latest.json` | Tauri updater manifest. The Doctor polls this URL: `https://github.com/RichardBNel/Factotem/releases/latest/download/latest.json` |
+For a fresh install on **Apple Silicon (M1/M2/M3) macOS**, the only file you need is the **.dmg**. The simplest stable link is:
 
-For a fresh install, you only need the `.dmg`.
+> **⬇ [Download Factotem Doctor for macOS (always-latest)](https://github.com/RichardBNel/Factotem/releases/latest/download/Factotem-Doctor.dmg)**
+
+That URL redirects to the latest release's `Factotem-Doctor.dmg` (a versionless copy that ships alongside the versioned `Factotem-Doctor_X.Y.Z_aarch64.dmg`). Bookmark it; it never goes stale.
+
+### Asset inventory
+
+Each release ships **five files** (plus GitHub's auto-attached "Source code" archives, which only contain the mirror repo's README — see [Why two repos?](#why-two-repos) below):
+
+| File | Purpose | Operator downloads this? |
+|---|---|---|
+| **`Factotem-Doctor.dmg`** | **Versionless copy** of the latest .dmg. The stable-URL target. | ✓ For first install. |
+| `Factotem-Doctor_X.Y.Z_aarch64.dmg` | Versioned copy of the same .dmg. Lets operators pin to a specific version. | Optional — only when you need a specific version (e.g. for downgrade). |
+| `Factotem-Doctor_X.Y.Z_aarch64.app.tar.gz` | The .app packed for the in-app updater. The running Doctor consumes this during auto-update. | ✗ Never — the auto-updater fetches it. |
+| `Factotem-Doctor_X.Y.Z_aarch64.app.tar.gz.sig` | Ed25519 signature of the .tar.gz. The Doctor verifies this before installing. | ✗ Never — auto-updater consumes it. |
+| `latest.json` | Tauri updater manifest. The Doctor polls this every 4h. | ✗ Never — auto-updater consumes it. URL: `https://github.com/RichardBNel/Factotem/releases/latest/download/latest.json` |
+
+The "Source code (zip)" and "Source code (tar.gz)" links you see on the release page are auto-attached by GitHub from the **mirror repo's** tagged tree — which is just the mirror's README. Your private orchestrator/dashboard/agent-runner code lives in `donkruger/factotem` (private) and is never in the public mirror.
 
 ## How auto-updates work
 
@@ -159,13 +170,22 @@ The workflow extracts everything from the **first** `## YYYY-MM-DD` heading unti
 The workflow stages artefacts with **URL-safe names** (hyphens, no spaces) before uploading. Always:
 
 ```
-Factotem-Doctor_X.Y.Z_<arch>.dmg
-Factotem-Doctor_X.Y.Z_<arch>.app.tar.gz
-Factotem-Doctor_X.Y.Z_<arch>.app.tar.gz.sig
+Factotem-Doctor.dmg                           # versionless copy — STABLE URL target
+Factotem-Doctor_X.Y.Z_<arch>.dmg              # versioned copy — for specific-version downloads
+Factotem-Doctor_X.Y.Z_<arch>.app.tar.gz       # updater payload (consumed by the in-app updater)
+Factotem-Doctor_X.Y.Z_<arch>.app.tar.gz.sig   # ed25519 signature
 latest.json                                   # singular — overwritten per release
 ```
 
-Currently `<arch>` is `aarch64` only (Apple Silicon). When the build matrix expands to Intel, add `x86_64` artefacts; add a `darwin-x86_64` entry to `latest.json`'s `platforms` block alongside `darwin-aarch64`.
+The **versionless `Factotem-Doctor.dmg`** is what the README's download CTA points at:
+
+```
+https://github.com/RichardBNel/Factotem/releases/latest/download/Factotem-Doctor.dmg
+```
+
+GitHub's `/releases/latest/download/<filename>` redirect requires the filename to be **constant** across releases — versioned filenames don't work for that pattern. The versionless copy + the versioned copy ship side-by-side; operators who want to pin a specific version use the versioned name, everyone else uses the stable URL.
+
+Currently `<arch>` is `aarch64` only (Apple Silicon). When the build matrix expands to Intel, add `x86_64` artefacts; add a `darwin-x86_64` entry to `latest.json`'s `platforms` block alongside `darwin-aarch64`. The versionless `Factotem-Doctor.dmg` stays Apple-Silicon-only because it's a single filename and can't disambiguate architectures — Intel operators will need either a separate `Factotem-Doctor-Intel.dmg` (added later) or the versioned filename.
 
 ### Pre-release flagging
 

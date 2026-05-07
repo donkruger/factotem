@@ -4,6 +4,16 @@
 >
 > Factotem brings together messaging channels, containerised Claude agents, and an operator dashboard into a single deployment that you fork, modify, and run yourself. No SaaS to depend on, no central control plane — your agents, your containers, your data, on the hardware you choose.
 
+<p align="center">
+  <a href="https://github.com/RichardBNel/Factotem/releases/latest/download/Factotem-Doctor.dmg">
+    <strong>⬇ Download Factotem Doctor for macOS (Apple Silicon)</strong>
+  </a>
+  <br />
+  <sub>Signed + notarised .dmg · ~3 MB · auto-updates on subsequent releases</sub>
+  <br />
+  <sub>Other releases: <a href="https://github.com/RichardBNel/Factotem/releases">all versions</a> · <a href="docs/RELEASES.md">how releases work</a></sub>
+</p>
+
 ---
 
 ## Vision

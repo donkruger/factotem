@@ -6,6 +6,38 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-07
 
+### Phase 2 / Release pipeline — R.6 (stable download URL + asset clarity)
+
+Small follow-up to R.5 once Don saw the v0.1.3 release page. Two operator-experience improvements:
+
+1. **A stable single-click download URL.** The README now opens with a prominent download CTA pointing at `https://github.com/RichardBNel/Factotem/releases/latest/download/Factotem-Doctor.dmg` — a constant URL that always redirects to the latest release's `.dmg`. GitHub's `/releases/latest/download/<filename>` redirect requires the filename to be **constant across releases**, so versioned filenames (`Factotem-Doctor_0.1.3_aarch64.dmg`) don't work for the pattern. The fix: add a versionless copy of the .dmg to every release alongside the versioned one. The workflow's "Stage release artefacts" step now copies the source DMG to both `Factotem-Doctor_${VERSION}_aarch64.dmg` (for archival / specific-version downloads) AND `Factotem-Doctor.dmg` (for the stable URL). `gh release upload` was used to retroactively add `Factotem-Doctor.dmg` to v0.1.3 so the URL works immediately, without waiting for the next release.
+
+2. **Disambiguate the auto-attached "Source code" archives.** GitHub auto-attaches `<repo>/archive/refs/tags/<tag>.zip` to every release. These cannot be removed via API. Operators reading the v0.1.3 release page wondered whether those archives leak the private source. They don't: the mirror repo (`RichardBNel/Factotem`) has only a README — verified via `curl https://github.com/RichardBNel/Factotem/archive/refs/tags/v0.1.3.zip` which extracts to a single 1,225-byte README. The mirror's README has been expanded to make this explicit ("About the 'Source code' archives — these only contain this README"). RELEASES.md's asset inventory now calls this out too.
+
+**Files changed.**
+
+- `.github/workflows/release.yml` — `Stage release artefacts` step now produces a versionless `Factotem-Doctor.dmg` alongside the versioned one (one extra `cp`).
+- `README.md` — new download CTA at the top with the stable URL + a sub-link to all-versions and to `docs/RELEASES.md`.
+- `docs/RELEASES.md`:
+  - New "Stable download URL" subsection at the top (operator-first).
+  - "Asset inventory" table reformatted to show 5 files (was 4) and a clear "Operator downloads this?" column.
+  - "Asset naming" section in the conventions documents the versionless DMG convention + the future-Intel caveat (versionless filenames can't disambiguate architecture).
+- `RichardBNel/Factotem` mirror's `README.md` (separate commit on the mirror repo): added the stable download CTA + an "About the 'Source code' archives" section that demystifies the auto-attached files.
+- `docs/CHANGE_LOG.md` — this entry.
+
+**Operator experience after R.6.**
+
+1. Land on the README → see the download CTA at the top → click → `.dmg` downloads.
+2. Open .dmg → drag .app to /Applications → eject.
+3. Click the menu-bar icon → Doctor running, autostart registered.
+4. Future releases auto-detect via the in-app updater; no further manual downloads needed.
+
+**Convention check.** Pure additive — workflow gains one extra `cp`; doc changes are pure additions; the mirror repo's README is the only commit on a public-visible surface and contains no secrets. Reversal: drop the `cp "$DMG_SRC" "$DMG_LATEST"` line in the workflow + revert the docs. The retroactively-uploaded `Factotem-Doctor.dmg` on v0.1.3 can stay or be removed via `gh release delete-asset`.
+
+**Recovery tag:** `pre-r6-2026-05-07`.
+
+---
+
 ### Phase 2 / Release pipeline — R.5 (public mirror to RichardBNel/Factotem) → v0.1.3
 
 Closes the visibility gate flagged in R.3+R.4. Source repo (`donkruger/factotem`) stays private; release artefacts mirror to **`RichardBNel/Factotem`** (public, Don has write access, zero existing releases — clean slate). The Tauri updater now polls the public mirror's `latest.json`, so unauthenticated clients (the running Doctor) can resolve the URL. Operator-approved auto-update flow now functional end-to-end.
