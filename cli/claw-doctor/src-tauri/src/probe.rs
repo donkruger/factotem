@@ -86,10 +86,21 @@ pub struct PortOwner {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum OverallStatus {
+    /// Stack alive and healthy.
     Green,
+    /// Stack reachable but in a degraded / multi-instance / slow state.
     Amber,
+    /// Stack offline — services were configured to run but aren't.
     Red,
+    /// Initial state before the first probe completes.
     Grey,
+    /// Stack has never been installed on this machine. Distinguishes
+    /// "I tried to set up the orchestrator and it crashed" (Red) from
+    /// "I'm a fresh-install operator who downloaded the Doctor and
+    /// hasn't run claw-setup yet" (NotInstalled). UX consequences:
+    /// menu items relabel ("Set up NanoClaw…" instead of "Repair Stack"),
+    /// destructive actions are gated, dashboard menu item disables.
+    NotInstalled,
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -145,6 +156,30 @@ fn synthesize_overall(
     port_owner: &Option<PortOwner>,
     http: &ProbeResult,
 ) -> (OverallStatus, String, Option<String>) {
+    // "Stack not installed" — distinguishes a fresh-install operator
+    // (Doctor downloaded but no claw-setup run yet) from a configured
+    // operator whose stack happens to be down. Detected when EVERY
+    // NanoClaw indicator is absent: zero orchestrator processes, zero
+    // launchd labels matching com.nanoclaw* (excluding the OAuth-refresh
+    // watcher which can persist past an uninstall), no owner of port
+    // 7842. Independent of Docker / OneCLI status — those tools may
+    // already be installed on the operator's machine for other reasons.
+    let no_processes = processes.is_empty();
+    let no_orchestrator_labels = launchd_jobs
+        .iter()
+        .all(|j| j.label.starts_with("com.nanoclaw.oauth-refresh"));
+    let no_port_owner = port_owner.is_none();
+    if no_processes && no_orchestrator_labels && no_port_owner {
+        return (
+            OverallStatus::NotInstalled,
+            "NanoClaw not installed".to_string(),
+            Some(
+                "Run `npx claw-setup` in your terminal to set up the orchestrator."
+                    .to_string(),
+            ),
+        );
+    }
+
     // Red conditions, evaluated in priority order.
 
     // 1. Foreign process holds port 7842 — NanoClaw can't bind.

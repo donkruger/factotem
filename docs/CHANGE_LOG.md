@@ -6,6 +6,86 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-07
 
+### Phase 2 / Release pipeline — R.7 (first-run UX + state-aware Doctor) → v0.1.4
+
+Closes the UX gaps Don found while testing v0.1.3 on a clean device with no NanoClaw orchestrator. Six changes shipping together as v0.1.4 — every operator-visible failure mode from that test session now has a friendly path through it.
+
+**1. Single-instance enforcement.** Added `tauri-plugin-single-instance = "2"`. Wired BEFORE other plugins in `lib.rs`'s builder chain so it gates the entire app. The duplicate tray icon Don observed (autostart's launchd `RunAtLoad` spawning instance 2 from a stale `target/release/bundle/...` path while instance 1 ran from `/Applications/`) is now eliminated regardless of how the duplicate spawn happened. The second instance calls into a closure that focuses any open Doctor window and exits cleanly.
+
+**2. First-run welcome window.** New `WelcomeView.tsx` (~330 lines, two states):
+- **A. Stack detected** — "Welcome. The Factotem Doctor lives in your menu bar. Click the F icon for status." Animated arrow points up at the menu bar. Single Got it CTA.
+- **B. Stack not installed** — same intro, then a setup card: copy-to-clipboard `npx claw-setup` + a primary button that opens Terminal.app pre-staged with the command (operator confirms with Enter — Doctor never auto-executes wizard mutations).
+
+`lib.rs` opens `?view=welcome` automatically when `settings.first_run_completed == false`. New settings field `first_run_completed: bool` (`#[serde(default)]` so existing settings files migrate transparently) flips to true on Got it via the new `dismiss_welcome` command. Subsequent launches don't auto-open the welcome.
+
+**3. New probe state `OverallStatus::NotInstalled`.** `probe.rs::synthesize_overall` gains a branch BEFORE the Red checks: when zero NanoClaw processes + zero `com.nanoclaw*` launchd labels (excluding `com.nanoclaw.oauth-refresh`) + no port :7842 owner, the probe returns `NotInstalled` instead of conflating with Red. Tray icon dot is blue (informational, not alarmed); headline reads "NanoClaw not installed".
+
+**4. Contextual menu labels.** `tray.rs::build_status_menu` now adapts to state:
+
+| Item | Configured (Green/Amber/Red) | NotInstalled |
+|---|---|---|
+| Open Dashboard | Enabled, gated on `nanoclaw_http.ok` | Disabled, label reads "Open Dashboard (NanoClaw not installed)" |
+| Repair Stack… | Enabled (typed-confirm-gated) | **Replaced by "Set up NanoClaw…"** which opens the welcome window |
+| View NanoClaw logs… | Enabled when log path resolves | Disabled, label "View NanoClaw logs (no log file yet)" |
+| Open Recovery Panel | Enabled (always — see below) | Enabled |
+| Settings… | Enabled | Enabled |
+
+The "Set up NanoClaw…" item gives operators a permanent re-entry point to the welcome window's setup-mode card, even after they've dismissed the first-run welcome.
+
+**5. Bundled `recovery.html`.** The Doctor now ships with a copy of `scripts/recovery/recovery.html` at `Contents/Resources/recovery.html` inside the .app, via `tauri.conf.json`'s `bundle.resources`. `commands.rs::open_recovery_panel` falls back through three sources:
+
+1. Operator-installed copy at `~/Library/Application Support/Factotem/recovery.html` (placed by `scripts/install-recovery.sh`; possibly customised per deployment).
+2. Bundled copy at `Resources/recovery.html` inside the .app — works on completely fresh machines without the orchestrator installed.
+3. Last-resort: GitHub URL.
+
+This kills the "Open Recovery Panel falls back to opening a GitHub markdown file" UX failure on fresh installs.
+
+**6. Stale-plist remediation.** New `lib.rs::remediate_stale_plist` runs at startup (when `launch_at_login: true`):
+
+1. Reads `~/Library/LaunchAgents/Factotem Doctor.plist` if present.
+2. Extracts `ProgramArguments[0]` via `plutil -extract`.
+3. Compares to `std::env::current_exe()`.
+4. If mismatched, calls `manager.disable() → manager.enable()` to regenerate the plist with the right path.
+
+Operators upgrading from v0.1.3 (where the plist might point at `target/release/bundle/...`) automatically get the plist fixed on first v0.1.4 launch — no operator action required.
+
+**Verification (live on Don's machine).**
+
+- `bash scripts/install-doctor.sh --verify` → installed copy v0.1.4, single PID 22501, autostart agent registered.
+- `pgrep -fl factotem-doctor` → exactly **one** PID (was two on stale-plist installs before single-instance plugin landed).
+- `plutil -extract ProgramArguments.0 raw -o - "~/Library/LaunchAgents/Factotem Doctor.plist"` → returns `/Applications/Factotem Doctor.app/Contents/MacOS/factotem-doctor` (was `target/release/...` pre-R.7 — confirmation that stale-plist remediation worked).
+- `spctl --assess --type execute --verbose=2 "/Applications/Factotem Doctor.app"` → `accepted; source=Notarized Developer ID`.
+- `ls "Contents/Resources/recovery.html"` inside the .app → 12.3 KB, present.
+- Welcome window auto-opened on first launch (operator-side visual confirmation pending).
+
+**Files changed.**
+
+```
+NEW   cli/claw-doctor/src/views/WelcomeView.tsx                 ~330 lines (UI + scoped CSS)
+M     cli/claw-doctor/src-tauri/Cargo.toml                      + tauri-plugin-single-instance, version 0.1.4
+M     cli/claw-doctor/src-tauri/Cargo.lock                      refresh
+M     cli/claw-doctor/src-tauri/tauri.conf.json                 + bundle.resources, version 0.1.4
+M     cli/claw-doctor/src-tauri/capabilities/default.json       + welcome window
+M     cli/claw-doctor/src-tauri/src/settings.rs                 + first_run_completed
+M     cli/claw-doctor/src-tauri/src/probe.rs                    + OverallStatus::NotInstalled + synthesis branch
+M     cli/claw-doctor/src-tauri/src/tray.rs                     + SETUP_NANOCLAW menu id; contextual labels per state
+M     cli/claw-doctor/src-tauri/src/commands.rs                 + 3 commands + recovery.html fallback chain + open_welcome_window helper
+M     cli/claw-doctor/src-tauri/src/lib.rs                      + single-instance plugin + first-run auto-open + stale-plist remediation
+M     cli/claw-doctor/src/lib/tauri.ts                          + StackStatus types + 4 new wrappers
+M     cli/claw-doctor/src/main.tsx                              + welcome route
+M     cli/claw-doctor/{package.json,package-lock.json}          version 0.1.4
+M     docs/RELEASES.md                                          upgrade-path table updated
+M     docs/CHANGE_LOG.md                                        this entry
+```
+
+**Convention check.** Pure additive — new dependency (`tauri-plugin-single-instance`), one new probe variant, one new settings field with `serde(default)`, three new commands, one new React view. No orchestrator code touched. No Sensitive-functionality-list touch. Reversal is `git revert <r7 commit>`. Operators on v0.1.4 who downgrade to v0.1.3 (manually) get the old behaviour back; the `first_run_completed` field is silently ignored on v0.1.3 thanks to `serde`'s default tolerance.
+
+**Recovery tag:** `pre-r7-2026-05-07`.
+
+R.7 also marks the first time we exercise the live auto-update round-trip: the running v0.1.3 Doctor will detect v0.1.4 once CI publishes it to `RichardBNel/Factotem`, then operators can install via the in-app banner.
+
+---
+
 ### Phase 2 / Release pipeline — R.6 (stable download URL + asset clarity)
 
 Small follow-up to R.5 once Don saw the v0.1.3 release page. Two operator-experience improvements:

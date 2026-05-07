@@ -62,9 +62,10 @@ In the Settings window, click **Check now** to force an immediate poll. Useful w
 | v0.1.0 (M1.6 build, no updater plugin) | Any later version | Manual: download the .dmg from the GitHub release page, drag to /Applications. |
 | v0.1.1 (R.1 + R.2 build, plugin but no UI) | Any later version | Manual: as above. The next install bridges to v0.1.2 (auto-update UI) or v0.1.3+ (public-mirror endpoint). |
 | v0.1.2 (R.3 + R.4 build, UI but private endpoint) | v0.1.3 or later | Manual: the v0.1.2 build still polls the old `donkruger/factotem` URL which returns 404. Install v0.1.3+ from the public mirror once. |
-| **v0.1.3 or later** | Any newer release | **Auto:** notification + Settings banner + click Install. |
+| v0.1.3 (R.5 + R.6 build, public mirror) | v0.1.4 or later | **Auto:** notification + Settings banner + click Install. The v0.1.4 install also brings the welcome window + state-aware tray (R.7). |
+| **v0.1.4 or later** | Any newer release | **Auto.** Plus first-run welcome window orients new operators; tray correctly distinguishes "stack not installed" from "stack offline". |
 
-The first version with end-to-end auto-update against the public mirror is **v0.1.3**. v0.1.0 → v0.1.3 needs one manual install; from v0.1.3 onwards the operator never has to touch the .dmg again.
+The first version with end-to-end auto-update against the public mirror is **v0.1.3**. The first version with the polished first-run UX (welcome window + NotInstalled state + bundled recovery.html + single-instance enforcement) is **v0.1.4**. v0.1.0 → v0.1.4 needs one manual install; from v0.1.3 onwards the operator never has to touch the .dmg again.
 
 ## How to manually downgrade
 

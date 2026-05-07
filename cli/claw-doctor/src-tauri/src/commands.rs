@@ -327,6 +327,12 @@ pub fn handle_menu_event(app: &AppHandle, event_id: &str) {
         ids::OPEN_LOGS => {
             open_or_focus_window(app, "logs", "?view=logs", "NanoClaw Logs", 720.0, 560.0);
         }
+        ids::SETUP_NANOCLAW => {
+            // R.7 — operator clicked "Set up NanoClaw…" from the tray.
+            // Opens the welcome window; the React side renders it in
+            // setup-mode because the probe state is NotInstalled.
+            open_welcome_window(app);
+        }
         ids::QUIT => {
             app.exit(0);
         }
@@ -377,34 +383,116 @@ fn open_url(app: &AppHandle, url: &str) {
 }
 
 fn open_recovery_panel(app: &AppHandle) {
-    // The recovery panel was installed by `scripts/install-recovery.sh`
-    // (Phase 0). On macOS the file lives at:
-    //   ~/Library/Application Support/Factotem/recovery.html
-    // On other OSes the install path varies; for now we only support
-    // the macOS canonical location.
+    // R.7 fallback chain — try in order:
+    //   1. Operator-installed copy at
+    //      ~/Library/Application Support/Factotem/recovery.html
+    //      (placed by scripts/install-recovery.sh; possibly customised
+    //      per deployment).
+    //   2. Bundled copy inside the .app at Resources/recovery.html
+    //      (ships with every Doctor release; works on completely
+    //      fresh machines without the orchestrator installed).
+    //   3. Last-resort: GitHub URL (Markdown rendered in the operator's
+    //      browser; not great UX but better than a no-op click).
     if let Some(home) = std::env::var_os("HOME") {
         let mut path = std::path::PathBuf::from(home);
         path.push("Library");
         path.push("Application Support");
         path.push("Factotem");
         path.push("recovery.html");
-
         if path.exists() {
-            // Use `open` via the shell plugin to honor the operator's
-            // default browser preference.
             let url = format!("file://{}", path.display());
             open_url(app, &url);
-        } else {
-            tracing::warn!(
-                path = %path.display(),
-                "recovery panel not installed — operator can run scripts/install-recovery.sh"
-            );
-            // Fall back to the github runbook so the click still leads
-            // somewhere useful.
-            open_url(
-                app,
-                "https://github.com/donkruger/factotem/blob/main/docs/OPERATIONS.md#recovery",
-            );
+            return;
         }
+        tracing::debug!(
+            path = %path.display(),
+            "operator-installed recovery.html not found — trying bundled copy"
+        );
     }
+
+    // 2. Bundled copy in the .app's Resources/.
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let bundled = resource_dir.join("recovery.html");
+        if bundled.exists() {
+            let url = format!("file://{}", bundled.display());
+            tracing::info!(path = %bundled.display(), "opening bundled recovery.html");
+            open_url(app, &url);
+            return;
+        }
+        tracing::debug!(
+            path = %bundled.display(),
+            "bundled recovery.html not found either — falling back to GitHub URL"
+        );
+    }
+
+    // 3. Last-resort fallback.
+    open_url(
+        app,
+        "https://github.com/donkruger/factotem/blob/main/docs/OPERATIONS.md#recovery",
+    );
+}
+
+/// R.7 — Open the welcome window (used by the tray menu's "Set up
+/// NanoClaw…" item AND auto-opened on first launch by lib.rs).
+pub fn open_welcome_window(app: &AppHandle) {
+    open_or_focus_window(
+        app,
+        "welcome",
+        "?view=welcome",
+        "Welcome to Factotem Doctor",
+        540.0,
+        600.0,
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// R.7 — Welcome / first-run commands.
+// ──────────────────────────────────────────────────────────────────────
+
+/// Returns whether the operator hasn't dismissed the welcome window yet.
+/// The React side reads this on mount to decide whether to render the
+/// "Got it" CTA prominently or as a smaller dismiss control.
+#[tauri::command]
+pub fn is_first_run(state: State<'_, SettingsState>) -> bool {
+    !state.0.lock().first_run_completed
+}
+
+/// Operator clicked "Got it" in the welcome window. Persists the flag
+/// so subsequent launches don't auto-open the welcome window again.
+#[tauri::command]
+pub fn dismiss_welcome(state: State<'_, SettingsState>) -> Result<(), String> {
+    let snapshot = {
+        let mut s = state.0.lock();
+        s.first_run_completed = true;
+        s.clone()
+    };
+    settings::save(&snapshot)
+}
+
+/// Open Terminal.app with `npx claw-setup` pre-staged on the command
+/// line. The operator must press Enter to actually run it — we don't
+/// auto-execute, since that would surprise an operator who hasn't
+/// approved the wizard's mutations. AppleScript is used because Tauri's
+/// shell plugin doesn't expose a clean "open Terminal with stdin" API.
+#[tauri::command]
+pub fn open_setup_in_terminal() -> Result<(), String> {
+    // The `do script` form opens a new Terminal window. The trailing
+    // `\n` would auto-execute; we omit it so the operator confirms.
+    // Escape literal quotes carefully — the AppleScript runs through
+    // /usr/bin/osascript -e which is sensitive to shell quoting.
+    let script = r#"tell application "Terminal" to activate
+tell application "Terminal" to do script "npx claw-setup""#;
+    let output = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", script])
+        .output()
+        .map_err(|e| format!("spawn osascript: {}", e))?;
+    if !output.status.success() {
+        return Err(format!(
+            "osascript exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    tracing::info!("opened Terminal.app with `npx claw-setup` pre-staged");
+    Ok(())
 }

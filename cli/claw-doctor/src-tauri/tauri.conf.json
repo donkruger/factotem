@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Factotem Doctor",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "identifier": "co.factotem.doctor",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -40,6 +40,9 @@
     "active": true,
     "targets": ["app", "dmg"],
     "createUpdaterArtifacts": true,
+    "resources": {
+      "../../../scripts/recovery/recovery.html": "recovery.html"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

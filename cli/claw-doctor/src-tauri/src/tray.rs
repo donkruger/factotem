@@ -13,6 +13,7 @@ pub mod ids {
     pub const OPEN_DASHBOARD: &str = "open_dashboard";
     pub const OPEN_RECOVERY: &str = "open_recovery";
     pub const REPAIR_STACK: &str = "repair_stack";
+    pub const SETUP_NANOCLAW: &str = "setup_nanoclaw"; // R.7 — replaces REPAIR_STACK in NotInstalled state
     pub const SHOW_DETAILS: &str = "show_details";
     pub const OPEN_SETTINGS: &str = "open_settings";
     pub const OPEN_LOGS: &str = "open_logs";
@@ -114,6 +115,7 @@ pub fn update_tray(app: &AppHandle, status: &StackStatus) -> tauri::Result<()> {
         OverallStatus::Amber => "🟡",
         OverallStatus::Red => "🔴",
         OverallStatus::Grey => "⚪",
+        OverallStatus::NotInstalled => "🔵",
     };
     let tooltip = format!("{}  {}", dot, status.headline);
     tray.set_tooltip(Some(&tooltip))?;
@@ -133,6 +135,7 @@ fn build_status_menu(app: &AppHandle, status: &StackStatus) -> tauri::Result<Men
         OverallStatus::Amber => "🟡",
         OverallStatus::Red => "🔴",
         OverallStatus::Grey => "⚪",
+        OverallStatus::NotInstalled => "🔵",
     };
     let headline = MenuItem::with_id(
         app,
@@ -166,34 +169,59 @@ fn build_status_menu(app: &AppHandle, status: &StackStatus) -> tauri::Result<Men
         None::<&str>,
     )?;
 
+    // R.7 — gate items on the probe's overall state. NotInstalled
+    // operators (fresh-install Doctor, no orchestrator yet) see a
+    // friendlier surface: "Set up NanoClaw…" replaces "Repair Stack…",
+    // dashboard + logs are disabled with greyed labels that explain why.
+    let is_not_installed = matches!(status.overall, OverallStatus::NotInstalled);
+
+    let dashboard_label = if is_not_installed {
+        "Open Dashboard (NanoClaw not installed)"
+    } else if status.nanoclaw_http.ok {
+        "Open Dashboard"
+    } else {
+        "Open Dashboard (offline)"
+    };
     let open_dashboard = MenuItem::with_id(
         app,
         ids::OPEN_DASHBOARD,
-        "Open Dashboard",
-        // Disable when NanoClaw HTTP is unreachable — the link would
-        // just produce a connection-refused error.
-        status.nanoclaw_http.ok,
+        dashboard_label,
+        // Disabled when HTTP unreachable OR not installed — both produce
+        // an unreachable URL.
+        !is_not_installed && status.nanoclaw_http.ok,
         Some("CmdOrCtrl+Shift+D"),
     )?;
     let open_recovery = MenuItem::with_id(
         app,
         ids::OPEN_RECOVERY,
         "Open Recovery Panel",
+        // Always enabled — the bundled recovery.html ships with the
+        // Doctor (R.7), so this works on completely fresh installs.
         true,
         Some("CmdOrCtrl+Shift+R"),
     )?;
 
-    // Repair Stack — destructive, env-of-design typed-confirm gated.
-    // The button is enabled even when state is green (operator may want
-    // to manually run a repair after a config edit); the *window* itself
-    // surfaces the typed-confirm gate.
-    let repair_stack = MenuItem::with_id(
-        app,
-        ids::REPAIR_STACK,
-        "Repair Stack…",
-        true,
-        None::<&str>,
-    )?;
+    // Repair Stack OR Set up NanoClaw — same menu slot, different
+    // verb depending on state. NotInstalled state opens the welcome
+    // window in setup mode; configured state opens the typed-confirm
+    // Repair Stack window (destructive).
+    let repair_stack = if is_not_installed {
+        MenuItem::with_id(
+            app,
+            ids::SETUP_NANOCLAW,
+            "Set up NanoClaw…",
+            true,
+            None::<&str>,
+        )?
+    } else {
+        MenuItem::with_id(
+            app,
+            ids::REPAIR_STACK,
+            "Repair Stack…",
+            true,
+            None::<&str>,
+        )?
+    };
 
     // "Show details" surfaces multi-instance / foreign-port-owner /
     // per-probe-detail in a small read-only window. Implemented as
@@ -214,11 +242,17 @@ fn build_status_menu(app: &AppHandle, status: &StackStatus) -> tauri::Result<Men
         true,
         Some("CmdOrCtrl+,"),
     )?;
+    // R.7: disable logs viewer when there's no installation to log from.
+    let logs_label = if is_not_installed {
+        "View NanoClaw logs (no log file yet)"
+    } else {
+        "View NanoClaw logs…"
+    };
     let open_logs = MenuItem::with_id(
         app,
         ids::OPEN_LOGS,
-        "View NanoClaw logs…",
-        true,
+        logs_label,
+        !is_not_installed,
         Some("CmdOrCtrl+Shift+L"),
     )?;
 

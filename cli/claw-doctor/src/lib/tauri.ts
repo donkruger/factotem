@@ -71,6 +71,26 @@ export type RepairEvent =
   | { type: 'failed'; failed_step_id: string };
 
 // ──────────────────────────────────────────────────────────────────────
+// Probe / StackStatus types — mirror probe.rs (subset; only fields the
+// frontend reads). The full snapshot includes per-probe details which
+// the diagnostics window will surface in a future milestone.
+// ──────────────────────────────────────────────────────────────────────
+
+export type OverallStatus =
+  | 'green'
+  | 'amber'
+  | 'red'
+  | 'grey'
+  | 'notinstalled';
+
+export interface StackStatus {
+  overall: OverallStatus;
+  headline: string;
+  detail: string | null;
+  last_probed_at: string;
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Settings types — mirror settings.rs.
 // ──────────────────────────────────────────────────────────────────────
 
@@ -131,8 +151,32 @@ export async function tailLog(lines: number): Promise<string> {
   return await invoke<string>('tail_log', { lines });
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// R.7 — Welcome window commands.
+// ──────────────────────────────────────────────────────────────────────
+
+export async function isFirstRun(): Promise<boolean> {
+  return await invoke<boolean>('is_first_run');
+}
+
+export async function dismissWelcome(): Promise<void> {
+  return await invoke<void>('dismiss_welcome');
+}
+
+/** Opens Terminal.app with `npx claw-setup` pre-staged. The operator
+ *  must press Enter to actually run it — we don't auto-execute. */
+export async function openSetupInTerminal(): Promise<void> {
+  return await invoke<void>('open_setup_in_terminal');
+}
+
 export async function getCurrentVersion(): Promise<string> {
   return await invoke<string>('get_current_version');
+}
+
+/** Returns the most recent probe snapshot, or null if no probe has
+ *  completed yet (the loop runs every poll_interval_ms). */
+export async function getLastStatus(): Promise<StackStatus | null> {
+  return await invoke<StackStatus | null>('get_last_status');
 }
 
 export async function checkForUpdates(): Promise<UpdateInfo | null> {

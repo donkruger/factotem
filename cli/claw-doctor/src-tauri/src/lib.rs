@@ -16,10 +16,12 @@ mod settings;
 mod tray;
 
 use commands::{
-    check_for_updates, get_current_version, get_last_status, get_log_path, get_recovery_manifest,
-    get_settings, install_update_and_restart, probe_stack_now, save_settings, start_repair,
+    check_for_updates, dismiss_welcome, get_current_version, get_last_status, get_log_path,
+    get_recovery_manifest, get_settings, install_update_and_restart, is_first_run,
+    open_setup_in_terminal, open_welcome_window, probe_stack_now, save_settings, start_repair,
     tail_log, LastStatus, SettingsState,
 };
+use tauri::Manager;
 use probe::{probe_stack, OverallStatus};
 use tray::{build_tray, update_tray};
 
@@ -62,6 +64,22 @@ pub fn run() {
     let last_status_for_loop = last_status.0.clone();
 
     tauri::Builder::default()
+        // R.7 — single-instance enforcement. Wired BEFORE other plugins
+        // so it gates the entire app: a second invocation of the same
+        // binary (e.g. autostart's launchd bootstrap firing while the
+        // operator's manual launch is also alive) calls into this
+        // closure to focus the existing window, then exits cleanly.
+        // Eliminates the duplicate-icon class of bug.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            tracing::info!("second instance attempted — focusing welcome window if present");
+            if let Some(w) = app.get_webview_window("welcome") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            } else if let Some(w) = app.webview_windows().values().next().cloned() {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -90,6 +108,32 @@ pub fn run() {
             // are non-fatal — operator can flip via Settings later.
             if let Err(e) = sync_autostart_initial(&app.handle(), settings.launch_at_login) {
                 tracing::warn!(error = %e, "initial autostart sync failed");
+            }
+
+            // R.7 — remediate a stale autostart plist. Operators who
+            // first ran the Doctor from `target/release/bundle/...`
+            // and later moved to `/Applications/Factotem Doctor.app`
+            // end up with a plist whose ProgramArguments[0] points at
+            // the old source-tree path. launchd's RunAtLoad then
+            // spawns a stale binary (often killed by single-instance
+            // detection but visible briefly as a duplicate tray icon).
+            // Fix: detect the path mismatch and regenerate via
+            // disable() → enable().
+            if settings.launch_at_login {
+                if let Err(e) = remediate_stale_plist(&app.handle()) {
+                    tracing::warn!(error = %e, "stale-plist remediation failed");
+                }
+            }
+
+            // R.7 — auto-open the welcome window on first launch.
+            // The React side reads probe state to decide whether to
+            // render state A (stack detected) or state B (NotInstalled).
+            // After the operator clicks "Got it", `dismiss_welcome`
+            // flips first_run_completed to true and this branch stops
+            // firing on subsequent launches.
+            if !settings.first_run_completed {
+                tracing::info!("first run — auto-opening welcome window");
+                open_welcome_window(&app.handle());
             }
 
             // Wire menu events to the command router.
@@ -135,6 +179,9 @@ pub fn run() {
             check_for_updates,
             install_update_and_restart,
             get_current_version,
+            is_first_run,
+            dismiss_welcome,
+            open_setup_in_terminal,
         ])
         // No windows at startup — this is a tray-only app. Windows open
         // on demand via the menu actions.
@@ -169,6 +216,76 @@ fn sync_autostart_initial(app: &tauri::AppHandle, enabled: bool) -> Result<(), S
         manager.disable().map_err(|e| format!("{}", e))?;
         tracing::info!("autostart disabled at startup");
     }
+    Ok(())
+}
+
+/// R.7 — Detect + repair a stale autostart plist. The autostart plugin
+/// records the binary path at the moment `enable()` was first called.
+/// Operators who first ran the Doctor from `target/release/bundle/...`
+/// and later moved to `/Applications/Factotem Doctor.app/...` end up
+/// with a plist whose ProgramArguments[0] points at the obsolete path.
+/// launchd's RunAtLoad then spawns the stale binary on every login;
+/// single-instance detection kills it, but it's visible briefly as a
+/// duplicate tray icon. Fix: compare the plist's ProgramArguments[0]
+/// to `current_exe()`; if they differ, disable + re-enable autostart
+/// so the plugin regenerates the plist with the right path.
+fn remediate_stale_plist(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+
+    // Resolve the canonical plist path (macOS only — guard against
+    // non-macOS hosts that might run the Doctor in dev).
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    let home = std::env::var_os("HOME").ok_or_else(|| "HOME not set".to_string())?;
+    let plist = std::path::PathBuf::from(home)
+        .join("Library/LaunchAgents/Factotem Doctor.plist");
+    if !plist.exists() {
+        // No plist yet — nothing to remediate. The autostart plugin
+        // will write a fresh one on next enable().
+        return Ok(());
+    }
+
+    // Extract the first ProgramArguments entry — that's the binary path.
+    let out = std::process::Command::new("/usr/bin/plutil")
+        .args([
+            "-extract",
+            "ProgramArguments.0",
+            "raw",
+            "-o",
+            "-",
+            plist.to_str().unwrap_or(""),
+        ])
+        .output()
+        .map_err(|e| format!("plutil spawn: {}", e))?;
+    if !out.status.success() {
+        return Err(format!(
+            "plutil exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let plist_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    // Resolve the running binary's path.
+    let current = std::env::current_exe().map_err(|e| format!("current_exe: {}", e))?;
+    let current_str = current.to_string_lossy().to_string();
+
+    if plist_path == current_str {
+        tracing::debug!(plist = %plist_path, "plist path matches current_exe — no remediation needed");
+        return Ok(());
+    }
+
+    tracing::info!(
+        plist = %plist_path,
+        current = %current_str,
+        "plist path stale — regenerating via disable+enable"
+    );
+
+    let manager = app.autolaunch();
+    manager.disable().map_err(|e| format!("disable: {}", e))?;
+    manager.enable().map_err(|e| format!("enable: {}", e))?;
+    tracing::info!("plist regenerated with current_exe()");
     Ok(())
 }
 
@@ -247,6 +364,7 @@ fn fire_state_change_notification(
         OverallStatus::Amber => "Factotem stack degraded",
         OverallStatus::Red => "Factotem stack offline",
         OverallStatus::Grey => "Factotem stack starting",
+        OverallStatus::NotInstalled => "NanoClaw not installed",
     };
     let body = format!("{} → {}: {}", state_label(prev), state_label(next), headline);
 
@@ -274,6 +392,7 @@ fn state_label(s: OverallStatus) -> &'static str {
         OverallStatus::Amber => "degraded",
         OverallStatus::Red => "offline",
         OverallStatus::Grey => "starting",
+        OverallStatus::NotInstalled => "not installed",
     }
 }
 

@@ -46,6 +46,15 @@ pub struct Settings {
     /// Xm ago." Persisted so the value survives restarts.
     #[serde(default)]
     pub last_update_check_at: Option<String>,
+    /// R.7 — true once the operator has dismissed the first-run
+    /// welcome window. The auto-open logic in lib.rs only fires when
+    /// this is false, so re-running a Doctor that's already been
+    /// oriented doesn't pop the welcome again. Operators who want to
+    /// re-see the welcome can use the tray's "Set up NanoClaw…" menu
+    /// item (only visible in NotInstalled state) which opens the
+    /// welcome regardless of this flag.
+    #[serde(default)]
+    pub first_run_completed: bool,
 }
 
 fn default_true() -> bool {
@@ -62,6 +71,7 @@ impl Default for Settings {
             hide_until_amber: false,
             auto_check_updates: true,
             last_update_check_at: None,
+            first_run_completed: false,
         }
     }
 }
