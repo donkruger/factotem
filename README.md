@@ -312,6 +312,8 @@ Critical files for anyone (human or agent) modifying behaviour:
 
 The Doctor menu-bar app ships as a notarised `.dmg` from the public mirror at [github.com/RichardBNel/Factotem/releases](https://github.com/RichardBNel/Factotem/releases). New versions auto-detect on running v0.1.3+ installs — operator approves each install via the Settings window. The source repo (`donkruger/factotem`) is private; CI builds + signs there and pushes release artefacts to the public mirror.
 
+For the operator update flow, manual download/upgrade paths, and trust model see [`docs/RELEASES.md`](docs/RELEASES.md). For the maintainer rules — versioning, tag namespace, the five-file version bump, CHANGE_LOG format, asset naming, pre-release flagging, and the rollback procedure — see [Release conventions](docs/RELEASES.md#release-conventions).
+
 See [`docs/RELEASES.md`](docs/RELEASES.md) for the full release model: download paths, auto-update flow, manual downgrade, trust model, and the maintainer tag-and-publish runbook.
 
 The orchestrator + dashboard + claw-setup wizard ship via the fork-and-modify workflow (`git pull` + `npm run build`) — they're not auto-updated because operators customise them. Only the Doctor (binary, signed) is auto-updateable.

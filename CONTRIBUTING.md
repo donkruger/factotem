@@ -145,3 +145,18 @@ Keep it concise. Remove any template sections that don't apply. The description 
 - **Usage** — how the user invokes it (for skills)
 
 Don't pad the description. A few clear sentences are better than lengthy paragraphs.
+
+## Releasing the Doctor
+
+The Factotem Doctor (Tauri menu-bar app) ships as signed + notarised `.dmg` artefacts via GitHub Releases. Source builds in this private repo (`donkruger/factotem`); CI publishes the release artefacts to the public mirror (`RichardBNel/Factotem`) so the in-app auto-updater can poll a public URL.
+
+**If you're cutting a release**, follow [`docs/RELEASES.md`](docs/RELEASES.md) — the "Release conventions" section is a checklist. Key rules at a glance:
+
+- **Tag namespace** — release tags `vX.Y.Z` (trigger CI), recovery tags `pre-…/post-…-YYYY-MM-DD` (don't trigger CI). Never mix.
+- **Versioning** — semver. While 0.x.x: patch for fixes, minor for new milestone groups, no major bumps yet.
+- **Cadence** — one release per closed milestone group. Group sub-milestones (e.g. R.3 + R.4) into a single release if they ship together.
+- **Five-file version bump** — `package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, `tauri.conf.json`. The lockfiles regenerate via `npm install --package-lock-only` and `cargo check`.
+- **CHANGE_LOG entry** — top of `docs/CHANGE_LOG.md`. The workflow extracts the latest `## YYYY-MM-DD` block as the GitHub release notes — write it well.
+- **Asset naming** — URL-safe (hyphens, no spaces): `Factotem-Doctor_X.Y.Z_aarch64.dmg` etc.
+
+**Other components are NOT released this way.** The orchestrator (`src/`), dashboard, agent-runner, and `claw-setup` wizard ship via the fork-and-modify workflow — operators clone, customise, and `git pull` to update. Releasing those would silently overwrite local customisations. The Doctor is the only artefact distributed as a binary, the only one signed + notarised, and the only one that auto-updates.
