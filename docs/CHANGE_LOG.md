@@ -6,6 +6,69 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-07
 
+### Phase 1 / Tauri Doctor — M1.5 (code signing + Apple notarization)
+
+Fifth execution session. The .app and .dmg now ship fully signed by Don's Developer ID Application certificate (`D8G67T74V6` team) and notarized by Apple's stapling service. Gatekeeper accepts both artifacts on a fresh Mac without "unverified developer" warnings.
+
+**What signed.**
+
+- **`Factotem Doctor.app`** — signed with the team-wide Developer ID Application cert + hardened runtime + the four standard Tauri-WebView entitlements (allow-jit, allow-unsigned-executable-memory, disable-library-validation, allow-dyld-environment-variables). Submitted to Apple notarization, ticket received, ticket stapled into the .app bundle. Output of `spctl --assess --type execute`: `accepted; source=Notarized Developer ID`.
+- **`Factotem Doctor_0.1.0_aarch64.dmg`** — signed by the same cert, then submitted *separately* to notarization (Tauri's bundler signs the DMG but does not auto-notarize it; documented Tauri 2 quirk). Stapled. Output of `spctl --assess --type install`: `accepted; source=Notarized Developer ID`.
+
+Both stapled artifacts pass Gatekeeper offline (the ticket lives inside the bundle/DMG). Online, the .app's ticket is sufficient for the operator's drag-to-/Applications path; the DMG's separate ticket helps when Bob's Mac Mini is offline at first install.
+
+**Files changed.**
+
+- **NEW `cli/claw-doctor/src-tauri/entitlements.plist`** — minimal hardened-runtime exception set for the WebView. Comment-free XML because Apple's AMFI plist parser inside `codesign` rejects DOCTYPE-internal comments (`AMFIUnserializeXML: syntax error near line 7` — encountered on the first build attempt; documented here so future contributors don't redo the diagnosis).
+- **MODIFIED `cli/claw-doctor/src-tauri/tauri.conf.json`** — three keys flipped under `bundle.macOS`:
+  - `signingIdentity: "Developer ID Application: Don Kruger (D8G67T74V6)"`
+  - `entitlements: "entitlements.plist"`
+  - `providerShortName: "D8G67T74V6"`
+- **MODIFIED `~/.zshrc`** — operator-side, NOT committed. Adds:
+  - `APPLE_SIGNING_IDENTITY` (Tauri reads on macOS)
+  - `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` (used by `notarytool` and Tauri's auto-notarization in the bundler)
+  - `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_APP_SPECIFIC_PASSWORD` (electron-builder aliases for the sister KanbanPro app — same secrets, both apps share the cert because Developer ID is team-wide)
+
+**Why no App Store Connect entry.** The Doctor invokes `pkill`, `launchctl`, `docker`, and `bash -c` via subprocess; the App Store sandbox (`com.apple.security.app-sandbox`) blocks every one of those. Mac App Store distribution would require gutting the app. Developer ID + notarization is the right primitive for an operator tool that has to mutate launchd-managed state. Documented in entitlements.plist's preamble (the structural comment lives in CHANGE_LOG instead — see AMFI note above).
+
+**Build run (verbatim, redacted).**
+
+```
+$ cargo tauri build
+Signing with identity "Developer ID Application: Don Kruger (D8G67T74V6)"
+Signing /Factotem Doctor.app/Contents/MacOS/factotem-doctor
+Signing /Factotem Doctor.app
+Notarizing /Factotem Doctor.app
+Notarizing Finished with status Accepted for id 07bb908f-…
+Stapling app...
+Bundling Factotem Doctor_0.1.0_aarch64.dmg
+Signing /Factotem Doctor_0.1.0_aarch64.dmg
+
+$ xcrun notarytool submit Factotem\ Doctor_0.1.0_aarch64.dmg --wait …
+status: Accepted (id 9dd5c271-…)
+
+$ xcrun stapler staple Factotem\ Doctor_0.1.0_aarch64.dmg
+The staple and validate action worked!
+```
+
+**Verification (post-build, live).**
+
+- `codesign --display --verbose=2 "Factotem Doctor.app"` shows the full Apple Root → Developer ID Certification Authority → Developer ID Application: Don Kruger chain, `Notarization Ticket=stapled`, `flags=0x10000(runtime)`, TeamIdentifier `D8G67T74V6`.
+- `codesign --verify --deep --strict` passes.
+- `xcrun stapler validate` passes on both .app and .dmg.
+- `spctl --assess` returns `accepted; source=Notarized Developer ID` on both.
+- New PID 93796 alive after launch via `open Factotem Doctor.app`; tray icon installed and probe loop ticking.
+
+**Sizes.** `.app` = 5.9 MB (was 5.8 MB unsigned — entitlements + signature add ~9 KB). `.dmg` = 3.9 MB. Slightly larger than M1.4 because the signing & notarization metadata adds bytes; still well under any practical distribution constraint.
+
+**Convention check.** Pure additive — new file (`entitlements.plist`), three keys flipped in `tauri.conf.json`, plus this CHANGE_LOG entry. No orchestrator code touched. Reversal: revert the commit and the .app falls back to ad-hoc-signed (operator double-click on a fresh Mac shows the Gatekeeper warning, but the running install on Don's machine is unaffected). Operator-side `~/.zshrc` lines can be commented out with no impact on already-built artifacts; the cert lives in the login Keychain, not in any committed file.
+
+**Distribution next.** With M1.5 done, the .dmg can be uploaded to a release page, hosted at a stable URL, or — per M1.6 — dropped into `/Applications` by `claw-setup` step 11 on every fresh install. M1.6 follows.
+
+Recovery tag: `pre-phase1-m1.5-2026-05-07` (HEAD before this commit).
+
+---
+
 ### Phase 1 / Tauri Doctor — M1.4 (Settings + Logs windows)
 
 Fourth execution session. M1.3's Repair Stack landed earlier today and was operator-tested end-to-end (real `pkill` + Docker restart + step-4 verify polling). M1.4 adds the two remaining surfaces from the milestone plan: operator-configurable preferences and a live tail of `nanoclaw.log`.

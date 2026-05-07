@@ -40,9 +40,9 @@
       "minimumSystemVersion": "13.0",
       "exceptionDomain": "",
       "frameworks": [],
-      "providerShortName": null,
-      "signingIdentity": null,
-      "entitlements": null,
+      "providerShortName": "D8G67T74V6",
+      "signingIdentity": "Developer ID Application: Don Kruger (D8G67T74V6)",
+      "entitlements": "entitlements.plist",
       "dmg": {
         "background": null,
         "windowSize": {
