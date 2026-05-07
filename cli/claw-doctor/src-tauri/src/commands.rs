@@ -1,19 +1,24 @@
 //! Tauri command handlers (the IPC surface) + tray menu event router.
 //!
-//! The set of commands is intentionally small in M1.2:
-//!   - `probe_stack_now()` — force an immediate re-probe (used by Show
-//!      Details window in M1.3 and Settings refresh-now button in M1.4).
+//! M1.2 commands:
+//!   - `probe_stack_now()` — force an immediate re-probe.
 //!   - `get_last_status()` — read the cached last snapshot.
 //!
-//! M1.3 adds `repair_stack()`. M1.4 adds settings persistence. Both
-//! land here.
+//! M1.3 adds:
+//!   - `start_repair(confirm)` — typed-confirm-gated sequential exec.
+//!   - `get_recovery_manifest()` — load bundled recovery-steps.json so
+//!     the React UI can render the steps before invoking start_repair.
+//!
+//! M1.4 will add settings persistence.
 
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
+use crate::manifest::{load_manifest, RecoveryManifest};
 use crate::probe::{probe_stack, StackStatus};
+use crate::repair::{run_repair, RepairResult};
 
 /// Shared snapshot — the latest probe result. Wrapped in a Mutex so the
 /// probe scheduler can write while commands read. Clone is cheap (Arc).
@@ -38,6 +43,31 @@ pub fn get_last_status(state: State<'_, LastStatus>) -> Result<Option<StackStatu
     Ok(state.0.lock().clone())
 }
 
+#[tauri::command]
+pub fn get_recovery_manifest() -> Result<RecoveryManifest, String> {
+    load_manifest()
+}
+
+const REPAIR_CONFIRM_PHRASE: &str = "RESTART STACK";
+
+/// Run the full Repair Stack sequence after the operator types the
+/// confirmation phrase. The frontend gates the button on a local-state
+/// match; this server-side check is defence in depth — the sequence
+/// invokes `pkill`-class shell commands and must never fire on an
+/// accidental click that bypassed the dialog.
+#[tauri::command]
+pub async fn start_repair(app: AppHandle, confirm: String) -> Result<RepairResult, String> {
+    if confirm != REPAIR_CONFIRM_PHRASE {
+        return Err(format!(
+            "confirmation phrase must be exactly \"{}\"",
+            REPAIR_CONFIRM_PHRASE
+        ));
+    }
+    let manifest = load_manifest()?;
+    let result = run_repair(app, manifest).await;
+    Ok(result)
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // Tray menu event router.
 // Connected in main.rs via TrayIconBuilder::on_menu_event.
@@ -52,10 +82,18 @@ pub fn handle_menu_event(app: &AppHandle, event_id: &str) {
         ids::OPEN_RECOVERY => {
             open_recovery_panel(app);
         }
+        ids::REPAIR_STACK => {
+            open_or_focus_window(app, "repair", "?view=repair", "Repair Stack", 480.0, 720.0);
+        }
         ids::SHOW_DETAILS => {
-            // M1.2 fallback: no real window yet — just log.
-            // M1.3 wires the diagnostic window here.
-            tracing::info!("Show details requested (M1.3 will surface this in a window)");
+            open_or_focus_window(
+                app,
+                "diagnostics",
+                "?view=diagnostics",
+                "Diagnostic Details",
+                560.0,
+                720.0,
+            );
         }
         ids::QUIT => {
             app.exit(0);
@@ -64,6 +102,38 @@ pub fn handle_menu_event(app: &AppHandle, event_id: &str) {
             // headline / detail / last_checked are non-interactive labels.
             tracing::debug!(event_id, "menu event for non-interactive item");
         }
+    }
+}
+
+/// Open a Tauri WebView window (or focus an existing one). The label is
+/// the window's stable id; the query string drives client-side routing
+/// inside the React app.
+fn open_or_focus_window(
+    app: &AppHandle,
+    label: &str,
+    query: &str,
+    title: &str,
+    width: f64,
+    height: f64,
+) {
+    if let Some(existing) = app.get_webview_window(label) {
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return;
+    }
+    let url = WebviewUrl::App(format!("index.html{}", query).into());
+    match WebviewWindowBuilder::new(app, label, url)
+        .title(title)
+        .inner_size(width, height)
+        .min_inner_size(420.0, 520.0)
+        .resizable(true)
+        .visible(true)
+        .focused(true)
+        .center()
+        .build()
+    {
+        Ok(_) => tracing::info!(label, "opened window"),
+        Err(e) => tracing::error!(error = %e, label, "failed to open window"),
     }
 }
 

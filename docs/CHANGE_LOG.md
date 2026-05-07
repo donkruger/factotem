@@ -6,6 +6,48 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-07
 
+### Phase 1 / Tauri Doctor — M1.3 (Repair Stack window + sequential executor)
+
+Second execution session. M1.2 was visually verified by Don this morning (multi-instance amber state correctly displayed `2 NanoClaw services loaded` with both labels and the "only one is bound to :7842" framing). M1.3 wires the highest-leverage menu item — `Repair Stack…` — to a real Tauri window backed by a sequential shell-command executor.
+
+**New: `src-tauri/src/repair.rs`.** The executor reads the bundled `recovery-steps.json`, runs each step's `command` via `bash -c`, and (for steps with a `verify` block) polls a verification command until success or `max_wait_ms` elapses. Required steps abort the chain on failure; non-required steps are marked Skipped. Per-step state transitions are streamed to the frontend over the `repair-progress` Tauri event channel; the synchronous return value is the authoritative final result.
+
+The Docker step's `verify` block (`docker info`, polled every 2s up to 60s) is the canonical example — `open -a Docker` returns instantly but the daemon takes 15-30s to be reachable; the verify-with-polling pattern handles this without arbitrary sleeps.
+
+**New: typed-confirm gate.** Operator must type `RESTART STACK` literally before the Run Repair button enables. Both client-side (button disabled state) and server-side (`start_repair(confirm)` checks the phrase before invoking the executor) — defence in depth, mirrors the existing `RestartStackButton` pattern in the dashboard.
+
+**Window management.** New `open_or_focus_window()` helper in `commands.rs` builds windows on demand via `WebviewWindowBuilder`. Repair Stack opens at 480×720 with min size 420×520; "Show diagnostic details" opens its own 560×720 window pointing at the same `index.html` with a different `?view=` query param. React routes on the query param; multi-window architecture is in place even though only the Repair window has full UI in this milestone.
+
+**New React surface (`src/views/RepairView.tsx`).** Self-contained — own component-scoped CSS-in-JS, mirrors the dashboard's design tokens (orange accent, hairline-bordered cards, rounded-2xl radii, Comfortaa typography). Renders:
+
+- Header with Factotem branding + lede explaining "this just wraps OPERATIONS.md commands so you don't have to copy-paste"
+- Confirm bar with the typed-confirm input (auto-uppercases input as the operator types) + the Run Repair button
+- Step list — one card per step with status badge (Pending / Running / Done / Failed / Skipped) flipping live as events arrive, the why text, the actual command, and a collapsible detail block on Failed/Skipped showing stderr
+- Footer state: SuccessFooter on completion (with total duration) or FailureFooter pinpointing which step blew up (with detail and re-run guidance)
+
+**New: `src-tauri/capabilities/default.json`.** Tauri 2 requires explicit capability grants for plugin permissions on WebView windows. The capability covers `core:default`, `core:event:default` (for the `repair-progress` listener), `core:window:default`, `shell:default`, `opener:default`. Listed for windows `main`, `repair`, `diagnostics`, `logs`, `settings` — forward-compatible with M1.4 windows.
+
+**Polish bundled in (the M1.2 freebie).** `truncate_for_menu()` in `tray.rs` bumped from 80 → 130 chars. Don's M1.2 screenshot showed the multi-instance detail truncating mid-port-number at `:78…`; 130 fits the full message ("…Only one is bound to :7842; the others may be stale installs.") with margin.
+
+**Reused primitives.**
+- `recovery-steps.json` from M1.1 — single source of truth for the step content
+- `RepairEvent` shape mirrors the orchestrator's existing audit-log + alerts conventions (tagged-union, snake_case discriminant, `type` field)
+- React design tokens copied verbatim from the dashboard's `tokens.css` (with dark-mode + light-mode media queries)
+- `bash -c` for shell command exec — handles the `&&`, `$()` composition in `cd ~/.onecli && docker compose up -d` and `launchctl kickstart -k gui/$(id -u)/com.nanoclaw`
+
+**Convention check.** Pure additive — new Rust module `repair.rs`, new React view, new capability config, new menu item. No orchestrator code touched. No mutations to the running NanoClaw deployment until the operator explicitly types the confirmation phrase. Reversal: remove `cli/claw-doctor/src-tauri/src/repair.rs` + revert `tray.rs`/`commands.rs`/`lib.rs` additions. Zero risk.
+
+**What ships in subsequent sessions per the design doc.**
+- M1.4 — Settings (poll cadence, launch-at-login, notifications) + Logs window (`nanoclaw.log` tail) (~0.5 day)
+- M1.5 — Code signing via Don's Apple Dev ID (~0.5 day)
+- M1.6 — `claw-setup` step 11 drops the `.app` into `/Applications` (~0.5 day)
+
+The "EPERM durable migration" (move `dashboard/out/` and `data/ipc/` out of `~/Documents/`) remains an outstanding parallel track per the OPERATIONS.md note added on 2026-05-07.
+
+Recovery tag: `pre-phase1-m1.3-2026-05-07` (HEAD before this commit).
+
+---
+
 ### Phase 1 / Tauri Doctor — M1.1 + M1.2 (cli/claw-doctor scaffold + multi-instance probe)
 
 First execution session for Phase 1 of the embedded recovery experience. Don approved supervisor mode (long-term Electron Factotem talks to NanoClaw via `/api/*`; doesn't replace it) and asked for explicit multi-instance detection because his machine has both `com.nanoclaw` (V1 fork) and `com.nanoclaw-v2-0a765b3b` (V2 upstream) loaded simultaneously. This commit ships M1.1 (project scaffold + bundled `.app`) and M1.2 (probe + tray status with multi-instance detection baked in). M1.3–M1.6 follow in subsequent sessions per [`~/.claude/plans/research/phase-1-tauri-menu-bar-design.md`](~/.claude/plans/research/phase-1-tauri-menu-bar-design.md).

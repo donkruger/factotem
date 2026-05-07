@@ -12,6 +12,7 @@ pub mod ids {
     pub const LAST_CHECKED: &str = "last_checked";
     pub const OPEN_DASHBOARD: &str = "open_dashboard";
     pub const OPEN_RECOVERY: &str = "open_recovery";
+    pub const REPAIR_STACK: &str = "repair_stack";
     pub const SHOW_DETAILS: &str = "show_details";
     pub const QUIT: &str = "quit";
 }
@@ -163,9 +164,21 @@ fn build_status_menu(app: &AppHandle, status: &StackStatus) -> tauri::Result<Men
         Some("CmdOrCtrl+Shift+R"),
     )?;
 
-    // "Show details…" surfaces when there's something nuanced to see —
-    // multi-instance, foreign-port-owner, or per-probe-detail. M1.3 will
-    // open a real window; M1.2 makes it a no-op (logs only).
+    // Repair Stack — destructive, env-of-design typed-confirm gated.
+    // The button is enabled even when state is green (operator may want
+    // to manually run a repair after a config edit); the *window* itself
+    // surfaces the typed-confirm gate.
+    let repair_stack = MenuItem::with_id(
+        app,
+        ids::REPAIR_STACK,
+        "Repair Stack…",
+        true,
+        None::<&str>,
+    )?;
+
+    // "Show details" surfaces multi-instance / foreign-port-owner /
+    // per-probe-detail in a small read-only window. Implemented as
+    // M1.3-stub here; the window UI lands later in M1.3 if budget allows.
     let show_details = MenuItem::with_id(
         app,
         ids::SHOW_DETAILS,
@@ -191,6 +204,9 @@ fn build_status_menu(app: &AppHandle, status: &StackStatus) -> tauri::Result<Men
     items.push(&sep1);
     items.push(&open_dashboard);
     items.push(&open_recovery);
+    let sep_actions = PredefinedMenuItem::separator(app)?;
+    items.push(&sep_actions);
+    items.push(&repair_stack);
     items.push(&show_details);
     let sep2 = PredefinedMenuItem::separator(app)?;
     items.push(&sep2);
@@ -200,7 +216,11 @@ fn build_status_menu(app: &AppHandle, status: &StackStatus) -> tauri::Result<Men
 }
 
 fn truncate_for_menu(s: &str) -> String {
-    const MAX: usize = 80;
+    // Bumped from 80 → 130 so the multi-instance detail line fits without
+    // chopping at ":78…" (verified against Don's 2026-05-07 screenshot).
+    // macOS menus comfortably render up to ~140 chars per item before
+    // visual wrapping; 130 leaves a safety margin.
+    const MAX: usize = 130;
     if s.len() <= MAX {
         s.to_string()
     } else {

@@ -10,10 +10,13 @@ use tracing_subscriber::EnvFilter;
 mod commands;
 mod manifest;
 mod probe;
+mod repair;
 mod settings;
 mod tray;
 
-use commands::{get_last_status, probe_stack_now, LastStatus};
+use commands::{
+    get_last_status, get_recovery_manifest, probe_stack_now, start_repair, LastStatus,
+};
 use probe::probe_stack;
 use tray::{build_tray, update_tray};
 
@@ -75,7 +78,12 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![probe_stack_now, get_last_status])
+        .invoke_handler(tauri::generate_handler![
+            probe_stack_now,
+            get_last_status,
+            get_recovery_manifest,
+            start_repair,
+        ])
         // No windows at startup — this is a tray-only app. M1.3 opens
         // windows on demand via the menu actions.
         .on_window_event(|window, event| {

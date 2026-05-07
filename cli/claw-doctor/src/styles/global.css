@@ -1,0 +1,50 @@
+/* Window-level styles. Mirrors the dashboard's design language so the
+ * Doctor windows look like the same product. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button {
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+.placeholder {
+  padding: 2rem;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.placeholder h1 {
+  font-size: 1.5rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.5rem;
+}
+
+.placeholder p {
+  color: var(--color-ink-muted);
+  font-size: 0.9rem;
+}

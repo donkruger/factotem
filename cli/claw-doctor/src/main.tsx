@@ -1,21 +1,48 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 
-// M1.2 placeholder — the WebView never opens a window in M1.2 because
-// the app is tray-only. M1.3 mounts the Repair Stack window here.
+import './styles/tokens.css';
+import './styles/global.css';
+import { RepairView } from './views/RepairView';
 
-const App: React.FC = () => {
+// Window dispatch — ?view=<name> in the URL drives which view renders.
+// Each tray menu action that opens a window passes its own `view` value
+// (commands.rs::open_or_focus_window). Default = a tiny placeholder
+// because the Doctor is tray-first.
+function App() {
+  const params = new URLSearchParams(window.location.search);
+  const view = params.get('view');
+
+  if (view === 'repair') return <RepairView />;
+  if (view === 'diagnostics') return <DiagnosticsPlaceholder />;
+  return <DefaultPlaceholder />;
+}
+
+function DefaultPlaceholder() {
   return (
-    <div style={{ fontFamily: 'system-ui', padding: '2rem' }}>
-      <h1 style={{ marginTop: 0 }}>Factotem Doctor</h1>
-      <p style={{ color: '#86868b' }}>
-        Status windows are not yet implemented (lands in M1.3). The tray
-        icon and the Open Dashboard / Open Recovery Panel actions are
-        the working surface in M1.2.
+    <div className="placeholder">
+      <h1>Factotem Doctor</h1>
+      <p>
+        This window opens on demand from the menu-bar icon. Click the
+        Doctor in your menu bar to access Repair Stack, Diagnostic
+        Details, and Open Dashboard.
       </p>
     </div>
   );
-};
+}
+
+function DiagnosticsPlaceholder() {
+  return (
+    <div className="placeholder">
+      <h1>Diagnostic details</h1>
+      <p>
+        Per-process / launchd / port-owner diagnostic surface. Lands as
+        a follow-up to M1.3 — the probe data is already collected; this
+        window just renders it.
+      </p>
+    </div>
+  );
+}
 
 const root = document.getElementById('root');
 if (root) {
