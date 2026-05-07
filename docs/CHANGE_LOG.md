@@ -6,6 +6,42 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-07
 
+### Phase 2 / Release pipeline — R.8 (welcome CTA fix — source-repo-honest one-liner) → v0.1.5
+
+Patch on top of R.7's welcome window. Don tested v0.1.4 on his external iMac and hit a 404 on `npx claw-setup` — the CTA we shipped pointed at an npm package that has never been published (the wizard at `cli/claw-setup/` has `"private": true` in its package.json). R.7 baked in the misleading command. R.8 fixes it.
+
+**Choice locked: Path A** (keep wizard private, fix the welcome's framing) over Path B (publish wizard publicly). Path A is honest about the prerequisite — the wizard provisions a Factotem deployment from a clone of the (private) source repo, so source-repo access is genuinely required regardless of whether the wizard's npm package is published. Path C (truly self-contained operator-friendly install) is deferred to a future arc.
+
+**Files changed.**
+
+- `package.json` (orchestrator root) — new top-level `claw-setup` script:
+  ```
+  cd cli/claw-setup && npm install --silent && npm run build --silent && cd ../.. && node cli/claw-setup/dist/index.js
+  ```
+  Wraps the wizard's install + build + run in one command. Maintainers with the source repo cloned can now run `npm run claw-setup` from the repo root and start the wizard.
+- `cli/claw-doctor/src/views/WelcomeView.tsx` — setup-state card rewritten:
+  - Lead text now states the prerequisite explicitly: "Setting one up requires source-repo access — the wizard provisions from a clone of `donkruger/factotem` (a private repo)."
+  - The displayed command is the realistic one-liner: `gh repo clone donkruger/factotem && cd factotem && npm run claw-setup`. Copy + Open Terminal buttons stage that exact command.
+  - New "Don't have access yet?" callout below the hint, pointing operators at their Factotem maintainer + reassuring them the Doctor will keep running regardless.
+  - Added monospace styling for inline `<code>` references in the prereq paragraph.
+- `cli/claw-doctor/src-tauri/src/commands.rs` — `open_setup_in_terminal` AppleScript updated to stage the new one-liner. The function's docstring now explains the prerequisite (gh CLI authenticated as a user with access to `donkruger/factotem`).
+- `cli/claw-doctor/{package.json,package-lock.json,src-tauri/Cargo.toml,src-tauri/Cargo.lock,src-tauri/tauri.conf.json}` — version 0.1.4 → 0.1.5.
+- `docs/RELEASES.md` — upgrade-path table extended with the v0.1.4 → v0.1.5 row, noting the welcome CTA fix.
+- `docs/CHANGE_LOG.md` — this entry.
+
+**Verification (live on Don's machine).**
+
+- v0.1.5 installed at `/Applications/Factotem Doctor.app`, running PID 40168, single instance.
+- Welcome window auto-opened on first launch (settings file removed pre-install). State A card visible because Don's main machine has NanoClaw running.
+- `npm run claw-setup` from the repo root invokes the wizard correctly (verified by the script's resolved path: `cd cli/claw-setup && npm install ... && node cli/claw-setup/dist/index.js`).
+- The Open Terminal helper now stages `gh repo clone donkruger/factotem && cd factotem && npm run claw-setup` — confirmed by inspecting `commands.rs::open_setup_in_terminal`. Don's external iMac test would now run a working command (assuming `gh` is installed and authenticated as a user with access).
+
+**Convention check.** Pure additive — one new orchestrator script, one welcome-view rewrite, one Tauri command edit, one doc update. No new dependencies. No orchestrator code touched. Reversal: `git revert <r8 commit>`. Operators on v0.1.5 who downgrade to v0.1.4 manually would see the broken `npx claw-setup` CTA again — but they can manually run `npm run claw-setup` from inside the repo as a workaround until they re-upgrade.
+
+**Recovery tag:** `pre-r8-2026-05-07`.
+
+---
+
 ### Phase 2 / Release pipeline — R.7 (first-run UX + state-aware Doctor) → v0.1.4
 
 Closes the UX gaps Don found while testing v0.1.3 on a clean device with no NanoClaw orchestrator. Six changes shipping together as v0.1.4 — every operator-visible failure mode from that test session now has a friendly path through it.

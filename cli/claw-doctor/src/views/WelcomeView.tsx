@@ -21,7 +21,17 @@ import {
   type StackStatus,
 } from '../lib/tauri';
 
-const SETUP_COMMAND = 'npx claw-setup';
+// One-liner that an operator with source-repo access can paste into a
+// fresh terminal: clones the repo, then runs the wizard via the
+// orchestrator's top-level `npm run claw-setup` script (which handles
+// the wizard's own install + build + run internally).
+//
+// Operators WITHOUT source-repo access need to ask their Factotem
+// maintainer to grant them collaborator access on donkruger/factotem
+// first — the wizard provisions the orchestrator from a clone of that
+// (private) repo. Documented in the welcome copy below.
+const SETUP_COMMAND =
+  'gh repo clone donkruger/factotem && cd factotem && npm run claw-setup';
 
 export function WelcomeView() {
   const [status, setStatus] = useState<StackStatus | null>(null);
@@ -135,8 +145,14 @@ export function WelcomeView() {
           <h2>You don't have NanoClaw set up yet</h2>
           <p>
             The Factotem Doctor monitors a NanoClaw orchestrator running on
-            this machine. To install one, run the cold-start wizard from
-            your terminal:
+            this machine. Setting one up requires <strong>source-repo access</strong>{' '}
+            — the wizard provisions from a clone of <code>donkruger/factotem</code>{' '}
+            (a private repo).
+          </p>
+          <p className="prereq">
+            <strong>If you're a maintainer with access</strong>, run the
+            wizard with this one-liner. It clones the repo and starts the
+            cold-start wizard:
           </p>
           <div className="cmd-row">
             <code className="cmd">{SETUP_COMMAND}</code>
@@ -165,9 +181,18 @@ export function WelcomeView() {
             <p className="error">Could not open Terminal: {terminalError}</p>
           )}
           <p className="hint">
-            Terminal.app opens with the command pre-staged on the prompt.
-            You confirm by pressing Enter — the Doctor never runs setup
-            commands without your explicit approval.
+            Terminal.app opens with the command pre-staged. You press Enter
+            to run it — the Doctor never executes setup commands without
+            your explicit approval. Requires <code>gh</code> CLI installed
+            and authenticated as a user with access to{' '}
+            <code>donkruger/factotem</code>.
+          </p>
+          <p className="hint no-access">
+            <strong>Don't have access yet?</strong> Contact your Factotem
+            maintainer to be added as a collaborator on the source repo.
+            The Doctor will keep running in your menu bar regardless — it
+            shows "NanoClaw not installed" until a deployment exists on
+            this machine.
           </p>
           <p className="docs-link">
             <a href="https://github.com/donkruger/factotem/blob/main/docs/SETUP_WIZARD.md" target="_blank" rel="noopener noreferrer">
@@ -316,6 +341,30 @@ function Styles() {
         font-size: 0.78rem;
         color: var(--color-ink-muted);
         line-height: 1.5;
+      }
+      .hint code {
+        background: var(--color-bg-subtle);
+        padding: 0.05rem 0.3rem;
+        border-radius: 0.3rem;
+        font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+        font-size: 0.72rem;
+      }
+      .hint.no-access {
+        margin-top: 0.85rem;
+        padding-top: 0.65rem;
+        border-top: 1px solid var(--color-hairline);
+      }
+      .prereq {
+        margin: 0.85rem 0 0.5rem;
+        font-size: 0.88rem;
+        color: var(--color-ink);
+      }
+      .state-card.setup p code {
+        background: var(--color-bg-subtle);
+        padding: 0.05rem 0.35rem;
+        border-radius: 0.35rem;
+        font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+        font-size: 0.78rem;
       }
       .docs-link {
         margin: 0.7rem 0 0;

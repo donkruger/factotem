@@ -469,19 +469,28 @@ pub fn dismiss_welcome(state: State<'_, SettingsState>) -> Result<(), String> {
     settings::save(&snapshot)
 }
 
-/// Open Terminal.app with `npx claw-setup` pre-staged on the command
-/// line. The operator must press Enter to actually run it — we don't
-/// auto-execute, since that would surprise an operator who hasn't
-/// approved the wizard's mutations. AppleScript is used because Tauri's
-/// shell plugin doesn't expose a clean "open Terminal with stdin" API.
+/// Open Terminal.app with the cold-start one-liner pre-staged on the
+/// command line. The operator must press Enter to actually run it —
+/// we don't auto-execute, since that would surprise an operator who
+/// hasn't approved the wizard's mutations.
+///
+/// The staged command clones the (private) source repo + invokes the
+/// orchestrator's top-level `npm run claw-setup` script which builds
+/// + runs the wizard. Operators without source-repo access see the
+/// gh clone fail with a clear error from gh itself ("repository not
+/// found or access denied"); the welcome window's UI explains the
+/// prerequisite up front so the failure isn't surprising.
+///
+/// AppleScript is used because Tauri's shell plugin doesn't expose
+/// a clean "open Terminal with a pre-staged command" API.
 #[tauri::command]
 pub fn open_setup_in_terminal() -> Result<(), String> {
-    // The `do script` form opens a new Terminal window. The trailing
-    // `\n` would auto-execute; we omit it so the operator confirms.
-    // Escape literal quotes carefully — the AppleScript runs through
-    // /usr/bin/osascript -e which is sensitive to shell quoting.
+    // The `do script` form opens a new Terminal window with the
+    // command typed at the prompt but NOT executed (no trailing
+    // newline injected by `do script`). Escape literal quotes
+    // carefully — osascript -e is sensitive to nested quoting.
     let script = r#"tell application "Terminal" to activate
-tell application "Terminal" to do script "npx claw-setup""#;
+tell application "Terminal" to do script "gh repo clone donkruger/factotem && cd factotem && npm run claw-setup""#;
     let output = std::process::Command::new("/usr/bin/osascript")
         .args(["-e", script])
         .output()
@@ -493,6 +502,6 @@ tell application "Terminal" to do script "npx claw-setup""#;
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    tracing::info!("opened Terminal.app with `npx claw-setup` pre-staged");
+    tracing::info!("opened Terminal.app with claw-setup one-liner pre-staged");
     Ok(())
 }
