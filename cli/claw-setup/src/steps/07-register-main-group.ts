@@ -6,8 +6,33 @@ import type { Step } from '../types.js';
 
 interface ChatRow {
   jid: string;
-  name?: string | null;
+  name: string | null;
 }
+
+// Wraps the orchestrator's two existing setup primitives:
+//
+//   setup --step groups           Builds the orchestrator's TS (so dist/
+//                                 exists), starts a temp Baileys socket,
+//                                 fetches every WhatsApp group the
+//                                 operator is in via groupFetchAllParticipating,
+//                                 writes them to the chats table.
+//                                 Idempotent.
+//
+//   setup --step register --jid X --name Y --folder main --is-main \
+//                       --channel whatsapp [--trigger @Andy]
+//                                 Inserts a row into registered_groups
+//                                 with all NOT NULL columns populated.
+//
+// Both primitives call src/db.ts's initDatabase() which creates the
+// schema if missing — so step 07 doesn't need to do that itself.
+//
+// Previously step 07 tried to do this work inline and had two bugs:
+//   1. No DB-create path (failed when messages.db was absent).
+//   2. INSERT used `containerConfig` (camelCase) instead of
+//      `container_config` (snake_case per schema), AND omitted the
+//      NOT NULL columns name / folder / trigger_pattern / added_at.
+// Wrapping the existing primitives is correct because the orchestrator
+// owns the schema; the wizard shouldn't reimplement schema knowledge.
 
 export const step: Step = {
   id: '07-register-main-group',
@@ -30,36 +55,77 @@ export const step: Step = {
     }
 
     const orchRoot = process.cwd();
+
+    // 1. Sync WhatsApp groups via Baileys. The orchestrator's
+    // setup --step groups command builds TS first (~30-60s) then
+    // briefly spins up a Baileys socket to call groupFetchAllParticipating
+    // and writes results to chats. Side-effect: messages.db is
+    // created if absent (initDatabase is called).
+    ui.note(
+      'Syncing WhatsApp groups',
+      'Briefly connecting to WhatsApp via Baileys to fetch the groups your\n' +
+        'paired account is a member of. Takes ~30–60s (TS build + socket\n' +
+        'connect + group fetch).',
+    );
+
+    const startedSync = Date.now();
+    const heartbeatSync = setInterval(() => {
+      const secs = Math.round((Date.now() - startedSync) / 1000);
+      process.stdout.write(`  · still syncing… (${secs}s elapsed)\n`);
+    }, 15_000);
+
+    let syncResult;
+    try {
+      syncResult = await ui.runCommand('npx', [
+        'tsx',
+        path.join(orchRoot, 'setup', 'index.ts'),
+        '--step',
+        'groups',
+      ]);
+    } finally {
+      clearInterval(heartbeatSync);
+    }
+    if (syncResult.code !== 0) {
+      ui.error(
+        `setup --step groups failed (exit ${syncResult.code}). stderr: ${syncResult.stderr.slice(-400)}`,
+      );
+      throw new Error('group sync failed');
+    }
+
+    // 2. Read synced groups directly from the DB.
     const dbPath = path.join(orchRoot, 'store', 'messages.db');
     if (!fs.existsSync(dbPath)) {
-      ui.error(`messages.db not found at ${dbPath}. Has the orchestrator started at least once?`);
-      throw new Error('messages.db missing');
+      ui.error(`messages.db still not found at ${dbPath} after sync.`);
+      throw new Error('messages.db missing after sync');
     }
 
-    let db: Database.Database;
-    try {
-      db = new Database(dbPath, { readonly: false });
-    } catch (err: any) {
-      ui.error(`failed to open ${dbPath}: ${err?.message ?? err}`);
-      throw err;
-    }
-
-    // List groups
+    const db = new Database(dbPath, { readonly: true });
     let chats: ChatRow[];
     try {
-      chats = db.prepare("SELECT jid, name FROM chats WHERE jid LIKE '%@g.us'").all() as ChatRow[];
-    } catch (err: any) {
+      chats = db
+        .prepare(
+          "SELECT jid, name FROM chats " +
+            "WHERE jid LIKE '%@g.us' " +
+            "AND jid <> '__group_sync__' " +
+            "AND name IS NOT NULL " +
+            'ORDER BY last_message_time DESC',
+        )
+        .all() as ChatRow[];
+    } finally {
       db.close();
-      ui.error(`could not query chats: ${err?.message ?? err}`);
-      throw err;
     }
 
     if (chats.length === 0) {
-      db.close();
-      ui.warn('No WhatsApp groups found in messages.db. Send a message to your intended main group first, then resume.');
-      return { warning: 'no groups available yet' };
+      ui.warn(
+        'WhatsApp group sync returned zero groups. Either you\'re not in any\n' +
+          'groups on the paired account, or the sync didn\'t pick them up.\n' +
+          'Add the paired number to your intended main group on WhatsApp,\n' +
+          'then resume the wizard.',
+      );
+      return { warning: 'no groups available yet — resume after adding to a group' };
     }
 
+    // 3. Prompt operator to pick a group.
     const choice = await clack.select({
       message: 'Which WhatsApp group should be your main control group?',
       options: chats.map((c) => ({
@@ -69,34 +135,39 @@ export const step: Step = {
       })),
     });
     if (clack.isCancel(choice)) {
-      db.close();
       throw new Error('Group selection cancelled');
     }
-
     const jid = choice as string;
+    const selectedName = chats.find((c) => c.jid === jid)?.name ?? jid;
 
-    // Ensure registered_groups table exists. We don't create the schema here —
-    // the orchestrator owns it. If it's missing, surface the error.
-    const containerConfig = JSON.stringify({
-      model: 'claude-sonnet-4-5',
-      agentProfile: 'main',
-    });
-
-    try {
-      db.prepare(
-        `INSERT OR REPLACE INTO registered_groups
-          (jid, is_main, requires_trigger, containerConfig)
-         VALUES (?, 1, 1, ?)`,
-      ).run(jid, containerConfig);
-    } catch (err: any) {
-      db.close();
-      ui.error(`failed to insert into registered_groups: ${err?.message ?? err}`);
-      throw err;
+    // 4. Register via the orchestrator's setup --step register primitive.
+    // It writes the proper schema with all NOT NULL columns and calls
+    // initDatabase() for safety.
+    const registerResult = await ui.runCommand('npx', [
+      'tsx',
+      path.join(orchRoot, 'setup', 'index.ts'),
+      '--step',
+      'register',
+      '--',
+      '--jid',
+      jid,
+      '--name',
+      selectedName,
+      '--folder',
+      'main',
+      '--channel',
+      'whatsapp',
+      '--is-main',
+    ]);
+    if (registerResult.code !== 0) {
+      ui.error(
+        `setup --step register failed (exit ${registerResult.code}). stderr: ${registerResult.stderr.slice(-400)}`,
+      );
+      throw new Error('group registration failed');
     }
 
-    db.close();
-    ui.success(`Registered ${jid} as main group`);
-    return { data: { main_jid: jid } };
+    ui.success(`Registered ${selectedName} (${jid}) as the main group`);
+    return { data: { main_jid: jid, main_name: selectedName } };
   },
 
   async verify(state) {
