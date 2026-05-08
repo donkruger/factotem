@@ -94,6 +94,7 @@ constraint we apply when choosing between options.
 | v0.1.9 (Doctor) | ✓ shipped | Per-step badge propagation fix — Pull/Repair UIs reconcile from the synchronous result so failure detail always renders | 2 |
 | Wizard UX Tier 1+2 (orchestrator) | ✓ shipped | 14 copy + feedback edits across the 12-step CLI wizard — labels, heartbeats, error tails, `machine.json` backstop | 2, 5 |
 | EasyClaw-inspired inline install (orchestrator) | ✓ shipped | Step 03 OneCLI install runs in the wizard's terminal instead of opening a second one. First `osascript "tell Terminal"` removed from the cold-start flow | 4, 5 |
+| v0.1.10 (Doctor + orchestrator) | ✓ shipped | Pre-flight checklist in the Welcome window (probes git, node, docker, tailscale + one-click Launch Docker) and curl-bootstrap one-liner — the cold-start collapses from a multi-line `git clone … && cd … && npm` chain to a single `curl -fsSL …/bootstrap.sh \| sh` (oh-my-zsh / nvm / rustup shape). Wizard side gets Docker auto-launch (R3), Doctor-first handoff cheat-sheet (F11), and a stale-`gh`-CLI-fallback fix in `docs/SETUP_WIZARD.md` (F13). Implements R1+R2+R3+F11+F13 from `assessments/2026-05-08-setup-journey-ux.md` | 4, 5 |
 | Phase 3 | planned | Multi-deployment federation (v2) | 3 |
 | Phase 4 | planned | Multi-tenant boundary (v3) — segment-admin tier, tenant isolation | 3, 5 |
 | Future | — | Pluggable LLM providers (`add-ollama-tool` is a precursor) | 1 |
