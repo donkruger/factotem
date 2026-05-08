@@ -159,7 +159,7 @@ export class WhatsAppChannel implements Channel {
         );
 
         if (shouldReconnect) {
-          this.scheduleReconnect(1);
+          this.scheduleReconnect(1, onFirstOpen);
         } else {
           logger.info('Logged out. Run /setup to re-authenticate.');
           process.exit(0);
@@ -550,13 +550,16 @@ export class WhatsAppChannel implements Channel {
     }
   }
 
-  private scheduleReconnect(attempt: number): void {
+  private scheduleReconnect(
+    attempt: number,
+    onFirstOpen?: () => void,
+  ): void {
     const delayMs = Math.min(5000 * Math.pow(2, attempt - 1), 300000);
     logger.info({ attempt, delayMs }, 'Reconnecting...');
     setTimeout(() => {
-      this.connectInternal().catch((err) => {
+      this.connectInternal(onFirstOpen).catch((err) => {
         logger.error({ err, attempt }, 'Reconnection attempt failed');
-        this.scheduleReconnect(attempt + 1);
+        this.scheduleReconnect(attempt + 1, onFirstOpen);
       });
     }, delayMs);
   }
