@@ -1,3 +1,4 @@
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import * as clack from '@clack/prompts';
@@ -9,30 +10,87 @@ interface ChatRow {
   name: string | null;
 }
 
-// Wraps the orchestrator's two existing setup primitives:
+// W.1 (2026-05-08) — Step 07 now runs AFTER the orchestrator is live
+// (step 09 bootstrapped launchd). That eliminates the brittle two-process
+// Baileys race the old version had — we no longer spin up our own
+// `setup --step groups` Baileys socket while the orchestrator owns the
+// auth state. Instead we read the chats table the orchestrator's WhatsApp
+// channel populates as messages flow in, prompt the operator to pick
+// one, register it via `setup --step register`, then SIGHUP the live
+// orchestrator to reload `registered_groups` without a launchctl restart.
 //
-//   setup --step groups           Builds the orchestrator's TS (so dist/
-//                                 exists), starts a temp Baileys socket,
-//                                 fetches every WhatsApp group the
-//                                 operator is in via groupFetchAllParticipating,
-//                                 writes them to the chats table.
-//                                 Idempotent.
-//
-//   setup --step register --jid X --name Y --folder main --is-main \
-//                       --channel whatsapp [--trigger @Andy]
-//                                 Inserts a row into registered_groups
-//                                 with all NOT NULL columns populated.
-//
-// Both primitives call src/db.ts's initDatabase() which creates the
-// schema if missing — so step 07 doesn't need to do that itself.
-//
-// Previously step 07 tried to do this work inline and had two bugs:
-//   1. No DB-create path (failed when messages.db was absent).
-//   2. INSERT used `containerConfig` (camelCase) instead of
-//      `container_config` (snake_case per schema), AND omitted the
-//      NOT NULL columns name / folder / trigger_pattern / added_at.
-// Wrapping the existing primitives is correct because the orchestrator
-// owns the schema; the wizard shouldn't reimplement schema knowledge.
+// Reused primitives:
+//   - `setup --step register` (setup/register.ts) — writes the row
+//     with all NOT NULL columns + `--trigger`, `--assistant-name`.
+//   - `process.kill(pid, 'SIGHUP')` via `kill -HUP <pid>` — caught by
+//     src/index.ts:1084's SIGHUP handler which reloads from DB.
+//   - /health endpoint — used to confirm the orchestrator is alive.
+//   - pgrep -f 'dist/index.js' — fallback when /health doesn't bind
+//     (we expect this to return one PID; if not, we surface a clear
+//     warning so operators can investigate).
+
+const HEALTH_URL = 'http://localhost:7842/health';
+const ORCHESTRATOR_WAIT_TIMEOUT_MS = 30_000;
+const ORCHESTRATOR_WAIT_INTERVAL_MS = 2_000;
+const GROUP_POLL_TIMEOUT_MS = 90_000;
+const GROUP_POLL_INTERVAL_MS = 5_000;
+
+function readGroupChats(dbPath: string): ChatRow[] {
+  if (!fs.existsSync(dbPath)) return [];
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    return db
+      .prepare(
+        "SELECT jid, name FROM chats " +
+          "WHERE jid LIKE '%@g.us' " +
+          "AND jid <> '__group_sync__' " +
+          "AND name IS NOT NULL " +
+          'ORDER BY last_message_time DESC',
+      )
+      .all() as ChatRow[];
+  } finally {
+    db.close();
+  }
+}
+
+function findOrchestratorPid(): number | null {
+  try {
+    const out = execSync("pgrep -f 'dist/index.js'", { encoding: 'utf8' });
+    const lines = out
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => /^\d+$/.test(l));
+    if (lines.length === 0) return null;
+    // If multiple PIDs match, take the first — pgrep returns parent
+    // before children. The orchestrator is a single Node process so
+    // we generally expect exactly one match.
+    return parseInt(lines[0], 10);
+  } catch {
+    return null;
+  }
+}
+
+async function waitForOrchestrator(
+  ui: { runCommand: (c: string, a: string[]) => Promise<{ code: number; stdout: string; stderr: string }> },
+): Promise<{ ok: boolean; via: 'health' | 'pgrep' | 'none' }> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < ORCHESTRATOR_WAIT_TIMEOUT_MS) {
+    // Prefer /health — definitive signal the HTTP server is bound and
+    // the orchestrator is fully initialised. Fall back to pgrep so the
+    // wizard works on machines where /health hasn't been fixed yet
+    // (W.1.D addresses /health binding separately).
+    const health = await ui.runCommand('curl', [
+      '-sf',
+      '-o',
+      '/dev/null',
+      HEALTH_URL,
+    ]);
+    if (health.code === 0) return { ok: true, via: 'health' };
+    if (findOrchestratorPid() !== null) return { ok: true, via: 'pgrep' };
+    await new Promise((resolve) => setTimeout(resolve, ORCHESTRATOR_WAIT_INTERVAL_MS));
+  }
+  return { ok: false, via: 'none' };
+}
 
 export const step: Step = {
   id: '07-register-main-group',
@@ -55,139 +113,89 @@ export const step: Step = {
     }
 
     const orchRoot = process.cwd();
+    const dbPath = path.join(orchRoot, 'store', 'messages.db');
+    const assistantName =
+      typeof state.assistantName === 'string' && state.assistantName.length > 0
+        ? state.assistantName
+        : 'Andy';
+    const trigger = `@${assistantName}`;
 
-    // 1. Sync WhatsApp groups via Baileys. The orchestrator's
-    // setup --step groups command builds TS, spins up a Baileys
-    // socket (using the auth state from step 06), calls
-    // groupFetchAllParticipating, writes to chats. Calls
-    // initDatabase() so messages.db is created if absent.
-    //
-    // Fresh Baileys pairings sometimes need a few minutes to
-    // settle before group sync returns reliably — we retry up to
-    // three times with 30-second pauses. If the sync succeeds but
-    // returns zero groups (operator's account isn't in any
-    // WhatsApp groups yet), we guide them to join one and retry.
-    let chats: ChatRow[] = [];
-    const MAX_SYNC_ATTEMPTS = 3;
+    // 1. Wait for the orchestrator to be alive. Step 09 bootstrapped
+    // launchd just before this step ran; the orchestrator typically
+    // takes 5-15s to bind /health.
+    ui.note(
+      'Waiting for orchestrator',
+      `Polling ${HEALTH_URL} for up to ${ORCHESTRATOR_WAIT_TIMEOUT_MS / 1000}s.\n` +
+        'On first bootstrap, NanoClaw needs ~5-15s to bind the dashboard\n' +
+        'port and connect WhatsApp. Group registration runs against the\n' +
+        'live orchestrator (no separate Baileys socket).',
+    );
+    const live = await waitForOrchestrator(ui);
+    if (!live.ok) {
+      ui.warn(
+        'Orchestrator did not respond within timeout. The wizard cannot\n' +
+          'register a group without the live orchestrator (the chats table\n' +
+          'is populated by the orchestrator\'s WhatsApp channel).\n\n' +
+          'Inspect with:\n' +
+          '  launchctl print gui/$(id -u)/com.nanoclaw\n' +
+          '  tail -f logs/nanoclaw.log\n\n' +
+          'Re-run the wizard with `npm run claw-setup -- --resume` once it\'s up.',
+      );
+      return {
+        data: { main_group_deferred: true },
+        warning: 'orchestrator not reachable',
+      };
+    }
+    ui.success(`Orchestrator alive (via ${live.via}).`);
 
-    for (let attempt = 1; attempt <= MAX_SYNC_ATTEMPTS; attempt++) {
+    // 2. Read the chats table. If empty, guide the operator to send a
+    // message in the group they want as main, then poll until at least
+    // one row appears.
+    let chats = readGroupChats(dbPath);
+
+    if (chats.length === 0) {
       ui.note(
-        attempt === 1
-          ? 'Syncing WhatsApp groups'
-          : `Syncing WhatsApp groups (attempt ${attempt}/${MAX_SYNC_ATTEMPTS})`,
-        'Briefly connecting to WhatsApp via Baileys to fetch the groups your\n' +
-          'paired account is a member of. Takes 30–120s (TS build + socket\n' +
-          'connect + group fetch).',
+        'Send a message',
+        'No WhatsApp groups have appeared in the orchestrator\'s chats table\n' +
+          'yet. To register your main control group:\n\n' +
+          '  1. On your phone, open the WhatsApp group you want to use\n' +
+          '     (or create a new one — make sure your account is a member).\n' +
+          '  2. Send any message in that group.\n' +
+          '  3. The orchestrator will pick it up within a few seconds.\n\n' +
+          `The wizard will poll every ${GROUP_POLL_INTERVAL_MS / 1000}s for up to ` +
+          `${GROUP_POLL_TIMEOUT_MS / 1000}s and pick up new groups automatically.`,
       );
 
-      const startedSync = Date.now();
-      const heartbeatSync = setInterval(() => {
-        const secs = Math.round((Date.now() - startedSync) / 1000);
-        process.stdout.write(`  · still syncing… (${secs}s elapsed)\n`);
-      }, 20_000);
-
-      let syncResult;
-      try {
-        syncResult = await ui.runCommand('npx', [
-          'tsx',
-          path.join(orchRoot, 'setup', 'index.ts'),
-          '--step',
-          'groups',
-        ]);
-      } finally {
-        clearInterval(heartbeatSync);
-      }
-
-      const syncOk = syncResult.code === 0;
-      const dbPath = path.join(orchRoot, 'store', 'messages.db');
-
-      if (syncOk && fs.existsSync(dbPath)) {
-        const db = new Database(dbPath, { readonly: true });
-        try {
-          chats = db
-            .prepare(
-              "SELECT jid, name FROM chats " +
-                "WHERE jid LIKE '%@g.us' " +
-                "AND jid <> '__group_sync__' " +
-                "AND name IS NOT NULL " +
-                'ORDER BY last_message_time DESC',
-            )
-            .all() as ChatRow[];
-        } finally {
-          db.close();
+      const startedAt = Date.now();
+      let lastReportedCount = 0;
+      while (Date.now() - startedAt < GROUP_POLL_TIMEOUT_MS) {
+        await new Promise((resolve) => setTimeout(resolve, GROUP_POLL_INTERVAL_MS));
+        chats = readGroupChats(dbPath);
+        if (chats.length !== lastReportedCount) {
+          const elapsed = Math.round((Date.now() - startedAt) / 1000);
+          process.stdout.write(`  · chats: ${chats.length} group(s) found (${elapsed}s elapsed)\n`);
+          lastReportedCount = chats.length;
         }
+        if (chats.length > 0) break;
       }
 
-      if (chats.length > 0) {
-        ui.success(`Found ${chats.length} WhatsApp group(s).`);
-        break;
-      }
-
-      // Either sync failed OR sync OK but zero groups. Distinct paths.
-      if (!syncOk) {
+      if (chats.length === 0) {
         ui.warn(
-          `Sync attempt ${attempt}/${MAX_SYNC_ATTEMPTS} failed (exit ${syncResult.code}).\n` +
-            'This is common on fresh WhatsApp pairings — Baileys often needs a\n' +
-            'few minutes for the protocol handshake to settle.\n\n' +
-            'Last 200 chars of stderr (full output in the setup log):\n' +
-            syncResult.stderr.slice(-200),
-        );
-      } else {
-        ui.warn(
-          'Sync succeeded but the paired WhatsApp account is not in any groups\n' +
-            'yet. To register a main control group:\n' +
-            '  1. On your phone, open the WhatsApp group you want to use as\n' +
-            '     your main control group (or create a new one).\n' +
-            '  2. Make sure your account is a member.\n' +
-            '  3. Send any message in that group so it shows up in the\n' +
-            '     paired device\'s recent chats.\n' +
-            '  4. Confirm below — the wizard will retry.',
-        );
-      }
-
-      if (attempt < MAX_SYNC_ATTEMPTS) {
-        const retry = await clack.confirm({
-          message:
-            chats.length === 0 && syncOk
-              ? "I'm in a group / sent a message — retry sync now?"
-              : `Wait 30s and retry the sync? (attempt ${attempt + 1}/${MAX_SYNC_ATTEMPTS})`,
-          initialValue: true,
-        });
-        if (clack.isCancel(retry) || !retry) {
-          // Operator chose not to retry.
-          ui.warn(
-            'Skipping main group registration. Re-run the wizard later with\n' +
-              '  npm run claw-setup -- --resume\n' +
-              'once your WhatsApp account is in a group.',
-          );
-          return {
-            data: { main_group_deferred: true },
-            warning: 'operator declined retry',
-          };
-        }
-
-        // Wait before retrying (only when sync failed — the zero-groups
-        // path doesn't need the wait since the operator just acted).
-        if (!syncOk && attempt < MAX_SYNC_ATTEMPTS) {
-          await new Promise((resolve) => setTimeout(resolve, 30_000));
-        }
-      } else {
-        // All attempts exhausted.
-        ui.warn(
-          'All sync attempts exhausted. Marking step deferred — re-run the\n' +
-            'wizard later when WhatsApp connectivity is more stable:\n' +
+          `No WhatsApp groups appeared within ${GROUP_POLL_TIMEOUT_MS / 1000}s.\n` +
+            'Marking step deferred — re-run the wizard later once a message\n' +
+            'has been sent in the group:\n' +
             '  npm run claw-setup -- --resume',
         );
         return {
           data: { main_group_deferred: true },
-          warning: 'sync attempts exhausted',
+          warning: 'no groups visible to orchestrator within timeout',
         };
       }
     }
 
-    // chats array is populated at this point.
+    ui.success(`Found ${chats.length} WhatsApp group(s).`);
 
-    // 3. Prompt operator to pick a group.
+    // 3. Operator picks one.
     const choice = await clack.select({
       message: 'Which WhatsApp group should be your main control group?',
       options: chats.map((c) => ({
@@ -203,14 +211,10 @@ export const step: Step = {
     const selectedName = chats.find((c) => c.jid === jid)?.name ?? jid;
 
     // 4. Register via the orchestrator's setup --step register primitive.
-    // It writes the proper schema with all NOT NULL columns and calls
-    // initDatabase() for safety.
-    //
-    // --trigger '@Andy' is required (register.ts emits 'missing_required_args'
-    // without it). The default convention for solo profile is @<assistant-name>;
-    // the orchestrator's ASSISTANT_NAME default is 'Andy'. Operators who want
-    // a different trigger word can edit registered_groups.trigger_pattern in
-    // SQLite afterwards or rerun register with a different --trigger.
+    // Uses the persona name from state — `--trigger '@Sarah'` not '@Andy'.
+    // `--assistant-name` is also passed so the registered_groups row's
+    // assistant_name column reflects the persona (used by the agent's
+    // signature line generation).
     const registerResult = await ui.runCommand('npx', [
       'tsx',
       path.join(orchRoot, 'setup', 'index.ts'),
@@ -226,7 +230,9 @@ export const step: Step = {
       '--channel',
       'whatsapp',
       '--trigger',
-      '@Andy',
+      trigger,
+      '--assistant-name',
+      assistantName,
       '--is-main',
     ]);
     if (registerResult.code !== 0) {
@@ -236,7 +242,35 @@ export const step: Step = {
       throw new Error('group registration failed');
     }
 
-    ui.success(`Registered ${selectedName} (${jid}) as the main group`);
+    // 5. Hot-reload the live orchestrator's registered_groups via SIGHUP.
+    // src/index.ts:1084 catches SIGHUP and re-reads from DB. Without this,
+    // the orchestrator wouldn't see the new registration until the next
+    // launchctl restart, and inbound messages to the just-registered
+    // group would be dropped with `registeredJids: [...]` not including
+    // the new JID.
+    const pid = findOrchestratorPid();
+    if (pid !== null) {
+      try {
+        process.kill(pid, 'SIGHUP');
+        ui.success(`Sent SIGHUP to orchestrator (pid ${pid}) to reload registered_groups.`);
+      } catch (err) {
+        ui.warn(
+          `Sent SIGHUP failed: ${(err as Error).message}. The orchestrator will pick up\n` +
+            'the new registration on next restart, but messages to this group\n' +
+            'may be dropped until then. Manual reload:\n' +
+            `  kill -HUP ${pid}`,
+        );
+      }
+    } else {
+      ui.warn(
+        'Could not find orchestrator PID via pgrep — registration written to DB,\n' +
+          'but the live orchestrator may not pick it up until next restart. If\n' +
+          'messages aren\'t reaching the agent, run:\n' +
+          '  launchctl kickstart -k gui/$(id -u)/com.nanoclaw',
+      );
+    }
+
+    ui.success(`Registered ${selectedName} (${jid}) as the main group with trigger ${trigger}`);
     return { data: { main_jid: jid, main_name: selectedName } };
   },
 
@@ -245,7 +279,7 @@ export const step: Step = {
       return { ok: true, details: 'skipped for this profile / dry-run' };
     }
     if (state.data['main_group_deferred'] === true) {
-      return { ok: true, details: 'deferred to manual registration after wizard' };
+      return { ok: true, details: 'deferred — re-run once orchestrator + group are ready' };
     }
     return state.data['main_jid']
       ? { ok: true, details: `main_jid=${state.data['main_jid']}` }

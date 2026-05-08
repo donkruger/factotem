@@ -84,6 +84,22 @@ function inDocumentsRoot(): boolean {
   return /^\/Users\/[^/]+\/Documents\//.test(cwd);
 }
 
+// Step order — W.1 (2026-05-08) reordered the WhatsApp + bootstrap +
+// open-DM steps so that 07 / 08 run AFTER the orchestrator is live.
+//
+// Old order:  06 → 07 → 08 → 09 → 10 → 11
+// New order:  06 → 09 → 07 → 08 → 10 → 11
+//
+// Why: steps 07 (register main group) and 08 (open-DM config) need to
+// query the orchestrator's chats DB and SIGHUP the live process. Both
+// of those require the orchestrator to be running, so launchd bootstrap
+// (step 09) has to come first. This eliminates the brittle two-process
+// Baileys race that the old order used to do "pre-bootstrap" group
+// sync in step 07.
+//
+// Step IDs are unchanged — only the run order moves. State files keep
+// `completedSteps` as an unordered set so resume from any old state
+// still works.
 const STEPS: Step[] = [
   step00,
   step01,
@@ -92,9 +108,9 @@ const STEPS: Step[] = [
   step04,
   step05,
   step06,
+  step09,
   step07,
   step08,
-  step09,
   step10,
   step11,
 ];

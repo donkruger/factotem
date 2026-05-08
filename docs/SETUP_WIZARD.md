@@ -43,6 +43,24 @@ Pass `--profile=<name>` to skip the prompt:
 node cli/claw-setup/dist/index.js --profile=solo
 ```
 
+## Persona (W.1, 2026-05-08)
+
+Step `00-profile-mode` also prompts for the assistant's name (the "persona"):
+
+```
+◇  What name should your assistant respond to?
+│  Sarah
+   (default Andy; alphanumeric, 2-20 chars, must start with a letter)
+```
+
+The chosen name flows into three places:
+
+1. **State** — `state.assistantName` (carried through the rest of the wizard, persisted in `~/.config/nanoclaw/setup-state.json`).
+2. **Orchestrator `.env`** — the wizard appends `ASSISTANT_NAME=<name>` to the orchestrator's `.env` if not already set. `src/config.ts` reads it on every orchestrator startup; side effect: `DEFAULT_TRIGGER` becomes `@<name>` automatically.
+3. **Main-group registration** — step 07 invokes `setup --step register --trigger '@<name>' --assistant-name '<name>'`, so the main group's `trigger_pattern` matches the persona.
+
+The wizard never overwrites an existing `ASSISTANT_NAME` line in `.env` — operators with established `Andy` / `Ben` deployments keep their persona on re-runs. To change the persona of an existing deployment, edit `.env` manually and restart the orchestrator (`launchctl kickstart -k gui/$(id -u)/com.nanoclaw`).
+
 ## Resume semantics
 
 State is persisted to `~/.config/nanoclaw/setup-state.json` (NOT under `~/Documents/`, for the TCC reasons above). The file is written atomically (write-to-tmp + rename) with mode `0600`.
@@ -101,12 +119,28 @@ Wizard step **03 (`configure-onecli`)** invokes `onecli config add` with `--type
 | `03-configure-onecli`    | Register Anthropic credential               | Uses `--type generic` (Q8 fix).                                      |
 | `04-mounts-allowlist`    | Configure mount allowlist                   | Wraps `setup --step mounts`.                                         |
 | `05-build-container`     | Build agent container                       | Invokes `container/build.sh`; surfaces image SHA.                    |
-| `06-pair-whatsapp`       | Pair WhatsApp                               | Refuses over existing creds without `--force`. Live-pairing TODO.    |
-| `07-register-main-group` | Pick main WhatsApp group                    | Direct sqlite write to `registered_groups`.                          |
-| `08-configure-openmode`  | Optional OpenMode budget                    | Off by default.                                                      |
-| `09-install-launchd`     | Install com.nanoclaw plist                  | Generates plist; bootstrap is operator-driven.                       |
+| `06-pair-whatsapp`       | Pair WhatsApp                               | Refuses over existing creds without `--force`. Spawns `src/whatsapp-auth.ts` with stdio inheritance to render the QR. |
+| `09-install-launchd`     | Install com.nanoclaw plist                  | Generates plist + (default-Yes) auto-bootstraps. Reordered before 07 in W.1 so 07/08 run against a live orchestrator. |
+| `07-register-main-group` | Pick main WhatsApp group                    | Polls live orchestrator's chats DB; SIGHUPs after register. Reordered after 09 in W.1. |
+| `08-configure-openmode`  | Enable open-DM mode (auto-onboard DMs)      | Default Yes. Patches main group's `container_config.openMode`; SIGHUPs. Repurposed in W.1 from optional budget gate. |
 | `10-smoke-test`          | Curl `/health` + send test message          | Profile-dependent.                                                   |
 | `11-handoff`             | Print operator cheat-sheet + install Doctor + recovery panel | Reads `~/.config/nanoclaw/machine.json`. Best-effort installs `recovery.html` and the Tauri Doctor (M1.6). |
+
+Note: the table is in **execution order** (W.1 reordering puts 09 before 07/08). `STEPS` in `cli/claw-setup/src/index.ts` is the source of truth. Step IDs are unchanged — only the run order moves, so resuming from existing `~/.config/nanoclaw/setup-state.json` files is unaffected.
+
+## Open-DM mode (W.1, 2026-05-08)
+
+Step `08-configure-openmode` was repurposed from "optional OpenMode budget gate" (default Off) to **"open-DM enabler" (default Yes)**. With open-DM mode on, any direct-message sender to the agent's WhatsApp number is auto-onboarded into a per-sender `open_dm` container with isolated memory; without it, only registered groups receive replies and DMs are dropped silently — including DMs from the operator's own phone.
+
+The step:
+
+1. Reads `registered_groups WHERE is_main = 1` from `store/messages.db` to find the main group.
+2. Default-Yes prompt to enable open-DM mode.
+3. Default-`500` prompt for `dailyBudgetCents` (host-side cost cap).
+4. Patches the main group's `container_config.openMode` JSON with `{ enabled: true, dailyBudgetCents, rateLimit: { tokensPerHour: 30, burstMax: 5 } }`. Existing keys (additionalMounts, agentProfile, model, etc.) are merged in, never replaced.
+5. SIGHUPs the live orchestrator (`pgrep -f 'dist/index.js'` + `kill -HUP`) so the next inbound DM hits the new config — no `launchctl restart` needed.
+
+If no main group is registered (e.g. step 07 deferred), the step is a no-op — operators re-run with `--resume` after registering a main group.
 
 ## Factotem Doctor (Phase 1)
 

@@ -6,6 +6,64 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-08
 
+### Phase 3 / W.1 — WhatsApp end-to-end + persona + open-DM + /health diagnose
+
+After 14 separate papercuts landed across R.7→R.9 and the wizard finally completed end-to-end on Don's external iMac, three substantive issues remained that fell below the "true cold-start" bar:
+
+1. **Persona was hardcoded as `Andy`.** The orchestrator's `ASSISTANT_NAME` defaults to `'Andy'` in `src/config.ts`; the wizard never prompted for a deployment-specific name. Don's iMac is meant to be `Sarah`.
+2. **WhatsApp main-group registration still required manual command-line work.** The old step 07 spun up its own Baileys socket via `setup --step groups` BEFORE the orchestrator was bootstrapped — a brittle two-process race. On Don's iMac all 3 retries failed; he had to manually run `npx tsx setup/index.ts --step register --jid … --trigger '@Andy' --is-main` and `kill -HUP` the orchestrator afterwards.
+3. **DMs were dropped silently.** The orchestrator was receiving DMs from Don's phone but `loadOpenMode(registeredGroups)` returned `undefined` because no main group had `openMode.enabled = true`, so the auto-onboard path never fired.
+
+Plus a related bug: **the orchestrator's HTTP server (port 7842) wasn't binding** on the iMac. PID was alive and processing WhatsApp, but `lsof -iTCP:7842` returned empty — Doctor + dashboard unreachable.
+
+**W.1 fixes all four together.**
+
+**A. Persona configurability (step 00).** `cli/claw-setup/src/steps/00-profile-mode.ts` now prompts `What name should your assistant respond to?` (default `Andy`, validation `/^[A-Za-z][A-Za-z0-9]{1,19}$/`). The chosen name is persisted to (1) `state.assistantName` in `~/.config/nanoclaw/setup-state.json`, (2) `ASSISTANT_NAME=<name>` appended to the orchestrator's `.env` (only if not already set — operators with established `Andy` / `Ben` deployments aren't overwritten), and (3) the `--trigger '@<name>'` + `--assistant-name '<name>'` flags when registering the main group in step 07. Side effect: the orchestrator's `DEFAULT_TRIGGER` becomes `@<name>` automatically since `src/config.ts` derives it from `ASSISTANT_NAME`.
+
+**B. WhatsApp end-to-end without manual commands.** The wizard pipeline reorders `06 → 07 → 08 → 09 → 10 → 11` to `06 → 09 → 07 → 08 → 10 → 11`. Step 09 (launchd bootstrap) now runs BEFORE step 07 so the orchestrator is the live source of truth for the chats table — no separate Baileys socket fighting for the auth state. The new step 07:
+
+1. Polls `http://localhost:7842/health` (or `pgrep -f 'dist/index.js'` as fallback) for up to 30s waiting for the orchestrator.
+2. Reads `chats` table for `@g.us` rows where `name IS NOT NULL`.
+3. If empty: prompts the operator to send a message in the group, polls every 5s for up to 90s, prints a live count.
+4. `clack.select` to pick one.
+5. Runs `setup --step register --trigger '@<assistantName>' --assistant-name '<assistantName>' --is-main`.
+6. **Sends `SIGHUP` to the orchestrator's PID** (`process.kill(pid, 'SIGHUP')`) so the existing handler at `src/index.ts:1084` reloads `registered_groups` from DB without a `launchctl restart`.
+
+The brittle temp-script Baileys path is gone — the wizard reads the orchestrator's state, never opens its own WhatsApp socket.
+
+**C. Open-DM mode (step 08).** `08-configure-openmode` repurposed from "optional OpenMode budget gate, default Off" to "open-DM enabler, default Yes":
+
+1. Reads `registered_groups WHERE is_main = 1` from the LIVE DB (no longer trusts `state.data['main_jid']` which can drift across resumes).
+2. Default-Yes prompt; default-`500` cents budget.
+3. Patches the main group's `container_config.openMode` to `{ enabled: true, dailyBudgetCents, rateLimit: { tokensPerHour: 30, burstMax: 5 } }`. Existing keys merged in.
+4. SIGHUPs the orchestrator. The next inbound DM hits the new config, gets evaluated by `evaluateOpenMode` in `src/open-mode.ts`, and auto-onboards into a per-sender `open_dm` container.
+
+Old step 08 had a latent bug: it was writing to a non-existent column `containerConfig` (camelCase) — the actual SQLite column is `container_config` (snake_case). Fixed.
+
+**D. /health diagnostic logging + binding fallback (`src/http/server.ts`).** Added per-checkpoint `logger.info` calls (`startHttpServer: entered` → `… /health route mounted` → `… /api/* routes mounted` → `… dashboard static export mounted` or `… dashboard/out absent — API-only mode` → `… app.listen() called, waiting for listening event` → `… HTTP server listening`). Wrapped the entire body in a try/catch so a synchronous failure in `mountApi` or route registration is logged at error level rather than swallowed. The dashboard mount was already conditional, but the diagnostic logging now makes "orchestrator alive but /health unreachable" debuggable from `tail -f logs/nanoclaw.log` alone.
+
+**Files changed.**
+
+- `cli/claw-setup/src/state.ts` — `StateSchema` gains `assistantName` (zod `.regex().default('Andy')` so existing state files load with `'Andy'` as fallback). `newState()` seeds `'Andy'`.
+- `cli/claw-setup/src/steps/00-profile-mode.ts` — persona prompt + `ensureAssistantNameInEnv()` helper that appends `ASSISTANT_NAME=<name>\n` to `.env` (or creates it) if no existing line matches `^[\t ]*(?:export[\t ]+)?ASSISTANT_NAME[\t ]*=`.
+- `cli/claw-setup/src/index.ts` — `STEPS` array reordered: `step09` moved before `step07`/`step08`. Step IDs unchanged; `completedSteps` is an unordered set so resume-from-old-state still works.
+- `cli/claw-setup/src/steps/07-register-main-group.ts` — full rewrite: `waitForOrchestrator()` polls /health (with `pgrep` fallback), `readGroupChats()` reads the live DB, polls for new groups when empty, registers via `setup --step register`, SIGHUPs via `findOrchestratorPid()`. No more `setup --step groups` invocation.
+- `cli/claw-setup/src/steps/08-configure-openmode.ts` — full rewrite: `findMainGroup()` reads `is_main = 1`, default-Yes prompt, patches `container_config` (snake_case — fixes latent bug), SIGHUPs.
+- `src/http/server.ts` — diagnostic `logger.info` at every checkpoint; outer try/catch around `startHttpServer` body; "API-only mode" message when `dashboard/out` missing; logs `server.address()` on listening to confirm bind.
+- `docs/SETUP_WIZARD.md` — new "Persona (W.1)" + "Open-DM mode (W.1)" sections; step table reordered to match execution order; row notes updated.
+- `docs/CHANGE_LOG.md` — this entry.
+
+**What W.1 deliberately doesn't do.**
+
+- **No multi-channel persona.** The assistant name is global per deployment in v1; per-channel (Telegram, Slack, Discord) personas land in v1.5 once the federation arrives.
+- **No per-group personas.** Same.
+- **No migration tool for existing `Andy` / `Ben` deployments.** The `.env` write is "skip if `ASSISTANT_NAME` is already present" — operators upgrading the wizard get the new prompt on next clean run, but their existing deployment's persona is preserved. Manual switch: edit `.env`, restart orchestrator.
+- **No dashboard UI for daily-budget / rate-limit edits.** Defaults are sufficient for v1; full UI is dashboard work, not wizard.
+
+**Convention check.** Pure additive on the wizard side — one new state field with serde-default, one new prompt, two reordered steps, one repurposed step. Orchestrator-side change is logging + an outer try/catch in `startHttpServer` (no behaviour change when the listen succeeds, only better diagnostics when it doesn't). Reversal: `git revert <w1 commit>`.
+
+**Recovery tag:** `pre-w1-2026-05-08`.
+
 ### Phase 2 / Release pipeline — R.9 (welcome CTA: drop `gh` requirement, surface real prereqs) → v0.1.6
 
 Don ran R.8's welcome one-liner on his external iMac (a clean machine) and hit `zsh: command not found: gh`. The CTA assumed `gh` CLI was installed; on a fresh Mac it isn't. **Repo also flipped public** in the meantime, which means we don't need `gh` for auth anymore — plain `git clone` over HTTPS works.
