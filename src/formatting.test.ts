@@ -143,8 +143,12 @@ describe('TRIGGER_PATTERN', () => {
     expect(TRIGGER_PATTERN.test(`@${upper} hello`)).toBe(true);
   });
 
-  it('does not match when not at start of message', () => {
-    expect(TRIGGER_PATTERN.test(`hello @${name}`)).toBe(false);
+  it('matches when preceded by whitespace anywhere in the message', () => {
+    expect(TRIGGER_PATTERN.test(`hello @${name}`)).toBe(true);
+  });
+
+  it('does not match when embedded inside a word with no leading whitespace', () => {
+    expect(TRIGGER_PATTERN.test(`foo@${name}`)).toBe(false);
   });
 
   it('does not match partial name like @NameExtra (word boundary)', () => {
