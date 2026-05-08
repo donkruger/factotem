@@ -10,6 +10,7 @@ use tracing_subscriber::EnvFilter;
 
 mod commands;
 mod manifest;
+mod path_resolver;
 mod prereqs;
 mod probe;
 mod pull;
@@ -43,6 +44,17 @@ pub fn run() {
                 .unwrap_or_else(|_| EnvFilter::new("info,factotem_doctor=debug")),
         )
         .init();
+
+    // 2026-05-08-doctor-prereq-gui-path: lift PATH from the operator's
+    // login shell BEFORE Tauri starts spawning background threads.
+    // Without this, the Welcome window's prereq checklist false-flags
+    // /usr/local/bin/node as "not installed" on every macOS install
+    // where `launchctl getenv PATH` is unset (which is the default).
+    // See path_resolver.rs for the full incident write-up + design.
+    // MUST stay above tauri::Builder construction — std::env::set_var
+    // is unsound when called concurrently with other env-reading
+    // threads.
+    path_resolver::lift_path_at_startup();
 
     // Verify recovery manifest parses at startup. If it doesn't, the
     // app still launches but Repair Stack will be unavailable.
