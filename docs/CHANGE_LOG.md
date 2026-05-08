@@ -6,6 +6,29 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-08
 
+### Phase 3 / Doctor v0.1.10 — pre-flight checklist + bootstrap one-liner
+
+Ships R1 + R2 from the 2026-05-08 setup-journey UX audit (`assessments/2026-05-08-setup-journey-ux.md`, kept outside the repo as a workspace artefact). The Welcome window now actively probes git, node, docker, and tailscale before exposing the "Open Terminal" CTA — failures move from "operator stranded in Terminal with `command not found: npm`" to "Welcome window says 'Install Node.js, then click Recheck'". The cold-start one-liner the Doctor stages into Terminal collapses from a 110-character `git clone … && cd … && npm run …` chain to a single `curl -fsSL …/bootstrap.sh | sh` (the same idiom oh-my-zsh, nvm, rustup use). Both changes attack the highest-frequency derailments the audit flagged 🔴 for non-technical operators. Aligned with [`docs/VISION.md`](VISION.md) pillar 5 (every CLI step is product debt) and pillar 4 (wizard → fully housed app wrapper) — every Terminal hop the Doctor absorbs is a step toward the EasyClaw shape pillar 4 names as the long-run target.
+
+**A. Pre-flight prereq checklist (R1).** New module `cli/claw-doctor/src-tauri/src/prereqs.rs` exposes two Tauri commands. `check_all_prereqs()` runs four parallel probes (`git --version`, `node --version`, `docker info`, `tailscale status`), each bounded by a 3s timeout, and returns `Vec<PrereqResult>` with per-row `installed` / `ok` / `detail` / `install_url` / `fix_action`. Node is checked against `major >= 20` to match the wizard's existing prereq probe at `cli/claw-setup/src/steps/01-check-prereqs.ts`. `launch_docker_and_wait()` is the Doctor-side mirror of v0.1.10's wizard-side R3 fix (Docker auto-launch): `open -a "Docker"` then poll `docker info` every 2s for up to 60s. Both commands are wired into `lib.rs::invoke_handler`. The Welcome window renders the four probes as a checklist on mount, gates the "Open Terminal" CTA on `git` and `node` (the only two the wizard can't auto-handle) being green, and shows a one-click "Launch Docker" button when Docker.app is on disk but the daemon is stopped. Recheck button re-runs all four after install. TypeScript wrappers added to `cli/claw-doctor/src/lib/tauri.ts` (`PrereqResult`, `FixAction`, `checkAllPrereqs`, `launchDockerAndWait`).
+
+**B. Curl-bootstrap one-liner (R2).** New `scripts/bootstrap.sh` (executable, 9.4 KB) handles git/node preflight with actionable hints (Xcode CLT auto-prompt for git, nodejs.org link for node), enforces the TCC-safe target dir `$HOME/factotem` (refuses paths under `~/Documents/` per the same guard the wizard's `inDocumentsRoot()` uses at `cli/claw-setup/src/index.ts:81`), supports `FACTOTEM_DIR=…` override, and cleanly `exec`s into `npm run claw-setup`. The Doctor now stages `curl -fsSL https://github.com/RichardBNel/Factotem/releases/latest/download/bootstrap.sh | sh` into Terminal instead of the previous multi-tool chain. Mirrors the public-mirror curl pattern `scripts/install-doctor.sh` already uses for the .dmg fallback (line 168). Updated `cli/claw-doctor/src-tauri/src/commands.rs::open_setup_in_terminal` AppleScript and `cli/claw-doctor/src/views/WelcomeView.tsx::SETUP_COMMAND`.
+
+**Files changed.**
+- `cli/claw-doctor/src-tauri/src/prereqs.rs` (new, 220 lines)
+- `cli/claw-doctor/src-tauri/src/lib.rs` (module declaration + invoke_handler)
+- `cli/claw-doctor/src-tauri/src/commands.rs` (`open_setup_in_terminal` AppleScript)
+- `cli/claw-doctor/src/lib/tauri.ts` (PrereqResult / FixAction types + 2 command wrappers)
+- `cli/claw-doctor/src/views/WelcomeView.tsx` (PrereqChecklist + PrereqRow components, CTA gating, SETUP_COMMAND)
+- `scripts/bootstrap.sh` (new)
+- 5-file version bump to 0.1.10 (`package.json`, `package-lock.json`, `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`)
+
+**Convention check.** Pure additive — no existing Tauri commands removed, no existing event channels changed, no schema migrations. The `PrereqChecklist` component renders only in the NotInstalled state (when `isStackPresent` is false) so existing-deployment operators who reopen the Welcome window see no behaviour change. `open_setup_in_terminal` still uses `do script` (no auto-execute) — the operator still presses Enter in Terminal to run the bootstrap. Reversal path: revert the v0.1.10 commit; the prereqs module + bootstrap script are isolated and removable without touching any other surface.
+
+**Pipeline note.** Until the next mirror release publishes `scripts/bootstrap.sh` to the public mirror at [RichardBNel/Factotem](https://github.com/RichardBNel/Factotem), the curl URL the new Doctor stages will return 404 and operators see the same UX as today (the script is committed in the source tree at `scripts/bootstrap.sh`). CI's release-asset manifest needs to learn to upload `bootstrap.sh` alongside the existing `Factotem-Doctor.dmg` etc. for this to land for operators.
+
+**Recovery tag:** `pre-doctor-0.1.10-2026-05-08` (at `059697d`).
+
 ### Phase 3 / Setup-journey UX — three low-risk landings from the audit
 
 Implements R1, R2, R3 + vestigials F11, F13 from the 2026-05-08 setup-journey UX audit (`assessments/2026-05-08-setup-journey-ux.md` — lives outside the repo as a workspace artefact). The audit walked the journey from "operator downloads `Factotem-Doctor.dmg` from [RichardBNel/Factotem](https://github.com/RichardBNel/Factotem)" through to "agent live on WhatsApp" and identified three derailing friction points (🔴) for non-technical operators: Node.js missing fails Terminal hard, OneCLI dashboard signup is the heaviest cognitive load, and the WhatsApp QR is hard to scan in Terminal. These commits address the cheapest derailment (Node missing) and two enabling improvements; OneCLI bootstrap (R5) and Doctor-rendered QR (R6) are deferred per the audit's medium-risk classification.

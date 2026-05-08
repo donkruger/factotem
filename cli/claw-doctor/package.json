@@ -1,6 +1,6 @@
 {
   "name": "factotem-doctor",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Cold-start helper + multi-instance-aware status icon for Factotem / NanoClaw.",
   "private": true,
   "type": "module",
