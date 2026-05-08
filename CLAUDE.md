@@ -3,6 +3,7 @@
 Personal Claude assistant — operator-facing brand **Factotem**, orchestrator primitive **NanoClaw** (fork: `donkruger/factotem`, originally forked as `donkruger/benclaw`).
 
 - [docs/VISION.md](docs/VISION.md) — **Long-run trajectory**: five pillars (model agnosticism, human-readable UX, multi-machine fleet over Tailscale, wizard-as-app-wrapper, radical simplification) + non-goals. **Read this before proposing any non-trivial change** — does it move us toward the vision or away from it?
+- [docs/DEPLOYMENT_CONVENTIONS.md](docs/DEPLOYMENT_CONVENTIONS.md) — **5-minute deployment briefing**: two-repo setup, five-file version bump, tag namespace, what NOT to do, verification commands. **Read this before cutting a release or designing a change that affects how operators receive updates.**
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Full current-state architecture, message flow, security model
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — Philosophy and design decisions
 - [docs/SPEC.md](docs/SPEC.md) — Detailed specification

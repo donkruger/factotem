@@ -331,6 +331,8 @@ The Doctor menu-bar app ships as a notarised `.dmg` from the public mirror at [g
 
 For the operator update flow, manual download/upgrade paths, and trust model see [`docs/RELEASES.md`](docs/RELEASES.md). For the maintainer rules — versioning, tag namespace, the five-file version bump, CHANGE_LOG format, asset naming, pre-release flagging, and the rollback procedure — see [Release conventions](docs/RELEASES.md#release-conventions).
 
+For a **5-minute deployment briefing** (suitable to paste into a downstream agent's prompt or hand to a new contributor before their first release): [`docs/DEPLOYMENT_CONVENTIONS.md`](docs/DEPLOYMENT_CONVENTIONS.md). It covers the two repos, the five-file version bump, the tag namespace, what NOT to do, the cross-references between every other doc in `docs/`, and the verification commands operators run after a release lands.
+
 See [`docs/RELEASES.md`](docs/RELEASES.md) for the full release model: download paths, auto-update flow, manual downgrade, trust model, and the maintainer tag-and-publish runbook.
 
 The orchestrator + dashboard + claw-setup wizard ship via the fork-and-modify workflow because operators customise them. Three update paths, in order of recommendation: (1) **Doctor → "Pull upstream updates…"** (v0.1.8+, un-customised forks; the Doctor runs preflight then pulls + builds + restarts); (2) **`/update-nanoclaw` skill** (customised forks with local commits; selective cherry-pick); (3) **manual `git pull && npm run build`** (always works). See [`docs/OPERATIONS.md` § Updating the Orchestrator](docs/OPERATIONS.md#updating-the-orchestrator) for the full guidance.

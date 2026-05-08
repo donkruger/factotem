@@ -2,6 +2,8 @@
 
 This document explains how Factotem Doctor releases work — for operators downloading + updating, and for maintainers tagging + publishing.
 
+> **Just need the 5-minute briefing?** See [DEPLOYMENT_CONVENTIONS.md](DEPLOYMENT_CONVENTIONS.md). It's a short evergreen handoff doc covering the same release flow at higher level — suitable for pasting into a downstream agent's prompt or onboarding a new maintainer. This file is the deeper reference: full asset inventory, per-version upgrade paths, manual downgrade procedure, CI secrets, signing-cert handling.
+
 ## Where to download
 
 Releases are published to the **public mirror repo**: **[github.com/RichardBNel/Factotem/releases/latest](https://github.com/RichardBNel/Factotem/releases/latest)**
