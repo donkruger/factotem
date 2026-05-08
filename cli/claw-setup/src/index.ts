@@ -170,6 +170,41 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // 2026-05-08-bootstrap-curl-pipe-stdin: defence-in-depth.
+  // The bootstrap.sh shell script already re-attaches stdin to /dev/tty
+  // when invoked via `curl … | sh`. This guard catches the (rarer) case
+  // where the wizard is invoked some other way without a real TTY —
+  // e.g. `npm run claw-setup` from a CI step, a launchd plist, or an
+  // editor task runner. Without this guard, @clack/prompts would read
+  // EOF on the very first keypress poll and silently cancel-exit;
+  // operators see the prompt render, "press enter", nothing happen,
+  // shell prompt back. With the guard, the failure is loud and
+  // actionable.
+  //
+  // Skipped when --help is passed (already exited above) so non-TTY
+  // help piping (`claw-setup --help | less`) still works.
+  if (!process.stdin.isTTY) {
+    process.stderr.write(
+      '\nclaw-setup requires an interactive terminal — stdin is not a TTY.\n' +
+        '\n' +
+        'You probably got here via one of:\n' +
+        '  • `curl … | sh` from an editor / IDE that does not expose a TTY\n' +
+        '  • `npm run claw-setup` invoked from a CI step or task runner\n' +
+        '  • a launchd plist / cron / systemd unit\n' +
+        '\n' +
+        'The wizard prompts you to pick a profile, type the assistant name,\n' +
+        'scan a WhatsApp QR, etc. None of that works without a real terminal.\n' +
+        '\n' +
+        'Re-run from a regular Terminal session. From a fresh checkout:\n' +
+        '  cd ~/factotem && npm run claw-setup\n' +
+        '\n' +
+        'Or download the bootstrap script first then run it:\n' +
+        '  curl -fsSL https://github.com/RichardBNel/Factotem/releases/latest/download/bootstrap.sh -o /tmp/bootstrap.sh\n' +
+        '  bash /tmp/bootstrap.sh\n',
+    );
+    process.exit(2);
+  }
+
   // Pre-step refuse: existing creds, no --force, not resuming
   if (credsExist() && !args.force && !args.resume) {
     process.stdout.write(
