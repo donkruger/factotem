@@ -94,17 +94,35 @@ export const step: Step = {
     try {
       const installer = path.join(repoRoot, 'scripts', 'install-doctor.sh');
       if (fs.existsSync(installer)) {
-        execSync(`bash "${installer}"`, {
+        // Bumped timeout to 90s — the curl fallback to the public mirror
+        // can take 20-40s on slow connections, plus ditto + xattr + open
+        // on top. 30s wasn't enough headroom.
+        execSync(`bash "${installer}" 2>&1`, {
           stdio: 'pipe',
-          timeout: 30_000,
+          timeout: 90_000,
         });
         doctorInstalled = fs.existsSync(doctorAppPath);
+        if (doctorInstalled) {
+          ui.success(`Factotem Doctor installed at ${doctorAppPath}`);
+        }
       }
     } catch (err) {
+      // Surface the actual installer output, not just "Command failed".
+      // execSync error has stdout/stderr buffers attached when stdio:'pipe'.
+      const e = err as Error & { stdout?: Buffer; stderr?: Buffer };
+      const output = (
+        (e.stdout?.toString() ?? '') + (e.stderr?.toString() ?? '')
+      ).trim();
+      const tail = output ? output.split('\n').slice(-15).join('\n') : e.message;
       ui.warn(
-        `Doctor install skipped: ${(err as Error).message.split('\n')[0]}. ` +
-          `Build it with \`cd cli/claw-doctor && cargo tauri build\`, then run ` +
-          `\`bash scripts/install-doctor.sh\` to install.`,
+        'Doctor install failed. Last 15 lines of installer output:\n' +
+          tail +
+          '\n\nManual install options:\n' +
+          '  1. Re-run the installer (uses curl fallback to the public mirror):\n' +
+          '       bash scripts/install-doctor.sh\n' +
+          '  2. Download the .dmg directly:\n' +
+          '       https://github.com/RichardBNel/Factotem/releases/latest/download/Factotem-Doctor.dmg\n' +
+          '       Then drag the .app to /Applications.',
       );
     }
 
