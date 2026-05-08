@@ -22,6 +22,11 @@ Most "AI assistant" products are SaaS — your agents, your data, and your contr
 
 The medium-term arc is to evolve Factotem from a single-operator tool into a **multi-deployment, multi-tier platform** where a segment admin (e.g. running an instance on a community Mac Mini) can operate independently of the platform aggregator, with permission boundaries enforced as a structural property of the system rather than a config file. v1 ships the single-operator primitive; v2 is multi-deployment federation; v3 is multi-tenant.
 
+For the full long-run trajectory — model agnosticism, multi-machine fleet
+orchestration, wizard-as-app-wrapper, the radical-simplification ethos, and
+the explicit non-goals — see [`docs/VISION.md`](docs/VISION.md). Every change
+to this codebase should be checkable against the five pillars defined there.
+
 This fork is built on the [NanoClaw](https://github.com/qwibitai/nanoclaw) foundation (full credit below) and carries forward its core philosophy — small, container-isolated, skills-over-features — while adding the surfaces an operator needs to actually run this at home or for a small organisation.
 
 ---
@@ -31,7 +36,7 @@ This fork is built on the [NanoClaw](https://github.com/qwibitai/nanoclaw) found
 - **Multi-channel messaging** — WhatsApp, Telegram, Slack, Discord, Gmail. Channels self-register at startup; add one with a `/add-<channel>` skill.
 - **Per-group container isolation** — every chat group runs its agent in its own Linux container with its own mount allowlist, its own `CLAUDE.md` memory, and its own SQLite session record. Bash-in-the-agent is safe because Bash runs inside the container, not on your host.
 - **Scheduled tasks** — recurring jobs that wake an agent and message you back.
-- **Operator dashboard** — local web UI on `:7842` over Tailscale. Server health, activity feed, group management, cost tracking, alerts, audit log.
+- **Operator dashboard** — local web UI on `:7842` over Tailscale. Server health, activity feed, group management, cost tracking, alerts, audit log, persona page (read-only view of the deployment's assistant identity + per-group triggers).
 - **Factotem Doctor** — signed + notarised macOS menu-bar app. Probes Docker / OneCLI / NanoClaw every 5s, surfaces multi-instance state honestly, exposes a typed-confirm `Repair Stack…` action for cold-start recovery.
 - **claw-setup wizard** — twelve-step cold-start that takes a fresh Mac from "nothing" to "agent alive on WhatsApp" without manual config-file editing.
 - **OneCLI gateway** — local credential proxy at `127.0.0.1:10254`; secrets never reach agent containers directly.
@@ -315,6 +320,8 @@ Critical files for anyone (human or agent) modifying behaviour:
 | **Phase 0** — Dashboard, telemetry, recovery panel | ✓ Shipped | Operator HTTP server on :7842, `agent_turns` schema, six dashboard panels, `recovery.html` cold-start surface |
 | **Phase 1** — Tauri Doctor menu-bar app | ✓ Shipped | Multi-instance probe, Repair Stack, Settings + Logs, code-signed + notarised, wizard installs to `/Applications` |
 | **Phase 2** — Release pipeline + auto-updates | ✓ Shipped | GitHub Actions builds signed + notarised .dmg on `v*` tag push; Doctor auto-detects new releases via Tauri updater, operator approves install |
+| **v0.1.7 — Persona page + real /health probes** | ✓ Shipped (2026-05-08) | Dashboard `/persona` route + `GET /api/persona`. `probeOpenDm` reads real `container_config.openMode`. `nanoclaw.version` sourced from package.json. WhatsApp `connect()` resolve fix (latent bug that hung the orchestrator main loop after Baileys close-reopen). |
+| **v0.1.8 — Pull upstream updates from the Doctor** | ✓ Shipped (2026-05-08) | New tray-menu action that runs preflight (working tree clean, on `main`, no diverged commits) → pull → install + build orchestrator + dashboard → restart. Closes the gap between Doctor auto-update and the previously-manual orchestrator/dashboard upgrade. |
 | **Phase 3** — Multi-deployment federation (v2) | Planned | Aggregator app surveys multiple deployments over Tailscale; per-machine tokens; fleet view |
 | **Phase 4** — Multi-tenant boundary (v3) | Planned | Segment admin permission tier; tenant isolation; productisation |
 
@@ -326,7 +333,7 @@ For the operator update flow, manual download/upgrade paths, and trust model see
 
 See [`docs/RELEASES.md`](docs/RELEASES.md) for the full release model: download paths, auto-update flow, manual downgrade, trust model, and the maintainer tag-and-publish runbook.
 
-The orchestrator + dashboard + claw-setup wizard ship via the fork-and-modify workflow (`git pull` + `npm run build`) — they're not auto-updated because operators customise them. Only the Doctor (binary, signed) is auto-updateable.
+The orchestrator + dashboard + claw-setup wizard ship via the fork-and-modify workflow because operators customise them. Three update paths, in order of recommendation: (1) **Doctor → "Pull upstream updates…"** (v0.1.8+, un-customised forks; the Doctor runs preflight then pulls + builds + restarts); (2) **`/update-nanoclaw` skill** (customised forks with local commits; selective cherry-pick); (3) **manual `git pull && npm run build`** (always works). See [`docs/OPERATIONS.md` § Updating the Orchestrator](docs/OPERATIONS.md#updating-the-orchestrator) for the full guidance.
 
 See [`docs/CHANGE_LOG.md`](docs/CHANGE_LOG.md) for the full timestamped history of what shipped when.
 

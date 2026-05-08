@@ -2,6 +2,7 @@
 
 Personal Claude assistant — operator-facing brand **Factotem**, orchestrator primitive **NanoClaw** (fork: `donkruger/factotem`, originally forked as `donkruger/benclaw`).
 
+- [docs/VISION.md](docs/VISION.md) — **Long-run trajectory**: five pillars (model agnosticism, human-readable UX, multi-machine fleet over Tailscale, wizard-as-app-wrapper, radical simplification) + non-goals. **Read this before proposing any non-trivial change** — does it move us toward the vision or away from it?
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Full current-state architecture, message flow, security model
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — Philosophy and design decisions
 - [docs/SPEC.md](docs/SPEC.md) — Detailed specification
@@ -12,6 +13,8 @@ Personal Claude assistant — operator-facing brand **Factotem**, orchestrator p
 ## Quick Context
 
 Single Node.js process with skill-based channel system. Channels (WhatsApp, Telegram, Slack, Discord, Gmail) are skills that self-register at startup. Messages route to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
+
+**Vision-check before non-trivial work:** the project is heading toward LLM model agnosticism, human-readable UX everywhere, multi-machine fleet orchestration over Tailscale, and a single-download app-wrapper installer — all in service of non-technical operators running their own agentic workforce on owned hardware. Every CLI step we add is a future product debt; every error message in raw stderr is a UX failure. See [docs/VISION.md](docs/VISION.md) for the full pillars + non-goals.
 
 ## Key Files
 

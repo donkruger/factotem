@@ -1,6 +1,10 @@
 # NanoClaw Architecture
 
-Current-state architecture documentation. Last updated: 2026-03-25.
+Current-state architecture documentation. Last updated: 2026-05-08.
+
+> This document describes "today". For where the project is going —
+> multi-machine fleet orchestration over Tailscale, LLM model agnosticism,
+> wizard-as-app-wrapper — see [VISION.md](VISION.md).
 
 ---
 
@@ -449,4 +453,82 @@ The Brain mount is configured in two places:
    ```
 
 The `containerPath` is relative — the mount system automatically prefixes it to `/workspace/extra/brain/`. The allowlist must explicitly grant `allowReadWrite: true` for the agent to modify tickets.
+
+---
+
+## v0.1.7 / v0.1.8 additions
+
+The following surfaces landed alongside the dashboard v1 epic and the Doctor
+v0.1.7-v0.1.8 releases. They're additive to everything above — no replacement
+of existing primitives.
+
+### `GET /api/persona` (v0.1.7)
+
+Read-only snapshot of the deployment's assistant identity. Surfaces the global
+`ASSISTANT_NAME` (read from `.env` via `src/config.ts`) and per-group
+`trigger_pattern` (read from the live `registeredGroups` map). Mutations stay
+on the existing `PATCH /api/groups/:jid` (per-group trigger) and operator-side
+`.env` edit (global name) — there is no mutating persona endpoint in v1.
+
+Response shape:
+
+```json
+{
+  "assistant_name": "Sarah",
+  "default_trigger": "@Sarah",
+  "groups": [
+    { "jid": "120363…@g.us", "name": "Mason Web Dev", "folder": "main",
+      "trigger": "@Sarah", "is_main": true }
+  ]
+}
+```
+
+Implementation: [`src/http/api.ts`](../src/http/api.ts) `app.get('/api/persona', …)`.
+
+### `/persona` dashboard route (v0.1.7)
+
+Polls `/api/persona` every 10s. Renders global persona + per-group trigger
+table + copy-pasteable change instructions (`.env` line + `setup --step
+register` command). No mutating UI in v1 — operators edit `.env` and
+re-register on the host. Source: [`dashboard/src/app/persona/`](../dashboard/src/app/persona/).
+
+### `/health` probe upgrades (v0.1.7)
+
+- `nanoclaw.version` is now read from `package.json` at module load
+  (previously a never-set env var; always `"unknown"`). Override via
+  `NANOCLAW_VERSION` for CI use.
+- `probeOpenDm` actually probes the main group's `container_config.openMode`
+  via the existing readonly SQLite connection — replaces the v1 stub that
+  returned hard-coded `enabled: false`. Joins with `open_spend_log` for
+  today's UTC-date spend total. Fail-soft: every error path degrades to the
+  original placeholder shape, harmless for the dashboard.
+
+### Doctor "Pull upstream updates…" (v0.1.8)
+
+New tray-menu action between **Repair Stack…** and **Show diagnostic
+details**. Opens a window at `?view=pull` rendering an 11-step manifest:
+4 preflight (working tree clean, on `main`, fetched, no local-only commits
+ahead of `origin/main`) + 7 mutating (pull, install + build orchestrator,
+install + build dashboard, `launchctl kickstart`, verify `/health`).
+
+Customised forks stay safe: any preflight failure stops the chain before any
+mutation, with the human-readable reason rendered in the step's detail card.
+
+Architecturally: shares the `repair.rs` step-chain runner. The `run_repair`
+function is now a thin wrapper around `run_steps_chain(app, manifest,
+event_channel)`; Repair uses the `repair-progress` channel and Pull uses
+`pull-progress`. Source: [`cli/claw-doctor/src-tauri/src/pull.rs`](../cli/claw-doctor/src-tauri/src/pull.rs)
+and [`cli/claw-doctor/src/views/PullView.tsx`](../cli/claw-doctor/src/views/PullView.tsx).
+
+### WhatsApp `connect()` resolve fix (`bb632ed`)
+
+Latent reliability bug fixed: `scheduleReconnect()` previously didn't forward
+the `onFirstOpen` callback to retry attempts, so when Baileys closed-then-
+reopened during signal-session resync (which happens routinely after a
+SIGKILL restart), the original `connect()` Promise never resolved. `main()`
+hung at `await channel.connect()`, never reached `queue.setProcessMessagesFn`
+or `startHttpServer`. The fix threads `onFirstOpen` through the retry path so
+any successful 'open' event resolves the Promise, regardless of which attempt
+fires it. Full operator-side incident write-up lives in Don's `ben-log/`
+journal (outside this repo) under `2026-05-08-whatsapp-onfirstopen-lost-on-reconnect.md`.
 

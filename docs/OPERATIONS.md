@@ -190,6 +190,57 @@ for dir in data/sessions/*/agent-runner-src; do
 done
 ```
 
+## Updating the Orchestrator
+
+The Doctor binary auto-updates via the Tauri updater (`latest.json` polled
+every 4 hours). The orchestrator + dashboard + claw-setup wizard do **not**
+auto-update — operators customise these via skills, `.env`, and per-group
+`CLAUDE.md`, so an unconditional auto-overwrite would clobber that work.
+
+There are three paths to bring an installed deployment up to the latest
+upstream code, in order of recommendation:
+
+### Path 1 — Doctor "Pull upstream updates…" (v0.1.8+, un-customised forks)
+
+Click the Factotem Doctor in the menu bar → **Pull upstream updates…** → type
+`PULL UPDATES` to confirm → **Run Pull**.
+
+The Doctor runs an 11-step chain: 4 preflight checks (working tree clean,
+on `main`, `git fetch`, no local-only commits ahead of `origin/main`), then
+7 mutating steps (`git pull --ff-only`, install + build orchestrator,
+install + build dashboard, `launchctl kickstart -k`, verify `/health`).
+
+Customised forks stay safe — any preflight failure stops the chain *before*
+any mutation, with a human-readable reason in the step's detail card. If
+your iMac sees "3 local-only commit(s) ahead of origin/main — pull would
+clobber them", you have either an experimental change you forgot or a fork
+divergence to resolve before the Doctor will run Pull.
+
+### Path 2 — `/update-nanoclaw` skill (customised forks)
+
+If your fork has local commits you want to keep — applied skills, edits to
+`src/`, custom channels — use the `/update-nanoclaw` Claude Code skill
+instead. It cherry-picks upstream changes selectively, preserves your local
+work, and runs the same build + restart sequence. See [`.claude/skills/update-nanoclaw/SKILL.md`](../.claude/skills/update-nanoclaw/SKILL.md).
+
+### Path 3 — Manual (always works)
+
+The fallback for any deployment in any state:
+
+```bash
+cd ~/factotem  # or wherever your install lives
+git pull origin main
+npm install && npm run build
+npm --prefix dashboard install && npm --prefix dashboard run build
+launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+sleep 10 && curl -s http://localhost:7842/health | jq .
+```
+
+Use this when Paths 1 and 2 don't fit (e.g., orchestrator is offline so the
+Doctor's tray is yellow, or you want to verify each step manually).
+
+---
+
 ## Deployment After Code Changes
 
 After modifying NanoClaw source code:

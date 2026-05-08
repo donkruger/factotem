@@ -72,6 +72,12 @@ A personal Claude assistant accessible via messaging, with minimal custom code.
 - Minimal glue code
 - File-based systems where possible (CLAUDE.md for memory, folders for groups)
 
+> The above is the v1 "what we ship today" picture. For the medium-to-long-term
+> trajectory — multi-deployment federation (v2), multi-tenant boundary (v3),
+> LLM model agnosticism, and the wizard → app-wrapper packaging arc — see
+> [VISION.md](VISION.md). Every change to this codebase should be checkable
+> against the five pillars defined there.
+
 ---
 
 ## Architecture Decisions

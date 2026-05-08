@@ -65,9 +65,11 @@ In the Settings window, click **Check now** to force an immediate poll. Useful w
 | v0.1.3 (R.5 + R.6 build, public mirror) | v0.1.4 or later | **Auto:** notification + Settings banner + click Install. The v0.1.4 install also brings the welcome window + state-aware tray (R.7). |
 | v0.1.4 (R.7 build, welcome window with `npx claw-setup` CTA) | v0.1.5 or later | **Auto.** v0.1.4's welcome CTA pointed at an unpublished npm package — fixed in v0.1.5 to use the source-repo `npm run claw-setup` flow. |
 | v0.1.5 (R.8 build, welcome CTA with `gh repo clone …`) | v0.1.6 or later | **Auto.** v0.1.5 assumed the `gh` CLI was installed — it isn't on a fresh Mac. v0.1.6 switches to plain `git clone` over HTTPS (repo is now public, no auth needed). |
-| **v0.1.6 or later** | Any newer release | **Auto.** Welcome CTA: `git clone https://github.com/donkruger/factotem.git && cd factotem && npm run claw-setup`. Surfaces real prereqs (git + Node 20+). |
+| v0.1.6 (R.9 build, plain git-over-HTTPS welcome CTA) | v0.1.7 or later | **Auto.** v0.1.6 is the first version with a working welcome flow on a clean Mac. Bundles the W.1 orchestrator wins (persona configurability, open-DM mode, WhatsApp end-to-end via wizard) on the source side via `git pull`. |
+| v0.1.7 (persona page + real /health probes + WhatsApp connect-resolve fix) | v0.1.8 or later | **Auto.** Doctor binary itself unchanged from v0.1.6 (version ratchet); orchestrator-side improvements ship via `git pull && npm run build`. |
+| **v0.1.8 or later** | Any newer release | **Auto.** Adds the Doctor's "Pull upstream updates…" tray action — un-customised forks now upgrade orchestrator + dashboard via the Doctor itself, not Terminal. Customised forks continue to use `/update-nanoclaw` for selective cherry-pick. |
 
-The first version with end-to-end auto-update against the public mirror is **v0.1.3**. The first version with a working first-run welcome flow on a clean Mac (no `gh` CLI assumed, real prereqs surfaced) is **v0.1.6**. v0.1.0 → v0.1.6 needs one manual install; from v0.1.3 onwards the operator never has to touch the .dmg again.
+The first version with end-to-end auto-update against the public mirror is **v0.1.3**. The first version with a working first-run welcome flow on a clean Mac (no `gh` CLI assumed, real prereqs surfaced) is **v0.1.6**. The first version where un-customised orchestrator + dashboard updates land without any Terminal interaction (via the Doctor's tray) is **v0.1.8**. v0.1.0 → v0.1.6 needs one manual install; from v0.1.3 onwards the operator never has to touch the .dmg again.
 
 ## How to manually downgrade
 
