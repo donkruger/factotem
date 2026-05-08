@@ -157,6 +157,23 @@ jobs:
           cp "$SIG_SRC" "$SIG_DST"
           cp "$DMG_SRC" "$DMG_LATEST"
 
+          # R2 from the 2026-05-08 setup-journey UX audit: the Doctor's
+          # Welcome window stages
+          #   curl -fsSL .../releases/latest/download/bootstrap.sh | sh
+          # into Terminal as the cold-start one-liner. That URL only
+          # resolves if bootstrap.sh ships as a release asset on the
+          # public mirror. Same /latest/download/<filename> redirect
+          # contract as the .dmg — filename must be constant across
+          # releases, so we keep the bare name.
+          BOOTSTRAP_SRC="scripts/bootstrap.sh"
+          BOOTSTRAP_DST="$RELEASE_DIR/bootstrap.sh"
+          if [[ -f "$BOOTSTRAP_SRC" ]]; then
+            cp "$BOOTSTRAP_SRC" "$BOOTSTRAP_DST"
+            chmod +x "$BOOTSTRAP_DST"
+          else
+            echo "::warning::scripts/bootstrap.sh missing — Doctor's curl one-liner will 404 for this release"
+          fi
+
           # Record outputs for later steps.
           echo "version=$VERSION"            >> "$GITHUB_OUTPUT"
           echo "release_dir=$RELEASE_DIR"    >> "$GITHUB_OUTPUT"
