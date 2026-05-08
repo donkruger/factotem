@@ -205,6 +205,12 @@ export const step: Step = {
     // 4. Register via the orchestrator's setup --step register primitive.
     // It writes the proper schema with all NOT NULL columns and calls
     // initDatabase() for safety.
+    //
+    // --trigger '@Andy' is required (register.ts emits 'missing_required_args'
+    // without it). The default convention for solo profile is @<assistant-name>;
+    // the orchestrator's ASSISTANT_NAME default is 'Andy'. Operators who want
+    // a different trigger word can edit registered_groups.trigger_pattern in
+    // SQLite afterwards or rerun register with a different --trigger.
     const registerResult = await ui.runCommand('npx', [
       'tsx',
       path.join(orchRoot, 'setup', 'index.ts'),
@@ -219,6 +225,8 @@ export const step: Step = {
       'main',
       '--channel',
       'whatsapp',
+      '--trigger',
+      '@Andy',
       '--is-main',
     ]);
     if (registerResult.code !== 0) {
