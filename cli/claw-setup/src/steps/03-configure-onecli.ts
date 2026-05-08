@@ -33,17 +33,26 @@ export const step: Step = {
         // pre-staged with the install command so the operator just
         // presses Enter in the new window. We never auto-execute —
         // the operator confirms the run by hitting Enter themselves.
+        //
+        // Install commands per docs/.../setup/SKILL.md. OneCLI ships
+        // as a Go binary from onecli.sh, NOT an npm package — chain
+        // both `install` (the gateway daemon) and `cli/install` (the
+        // CLI client) so a single Enter press completes both.
         ui.note(
           'Install OneCLI',
           'OneCLI is the credential gateway that injects API keys into agent containers.\n' +
-            'A new Terminal window will open with the installer command pre-staged.\n' +
-            'Press Enter in that Terminal to run it, follow the prompts, then come back here.',
+            'A new Terminal window will open with the installer commands pre-staged.\n' +
+            'Press Enter in that Terminal to run them, follow any prompts, then come back here.',
         );
 
         if (process.platform === 'darwin') {
+          // Two-step install per the setup skill: daemon then CLI.
+          // Combined with `&&` so a single Enter runs both.
+          const installCmd =
+            'curl -fsSL onecli.sh/install | sh && curl -fsSL onecli.sh/cli/install | sh';
           const script =
             'tell application "Terminal" to activate\n' +
-            'tell application "Terminal" to do script "npx -y @anthropic-ai/onecli install"';
+            'tell application "Terminal" to do script "' + installCmd + '"';
           await ui.runCommand('osascript', ['-e', script]);
         }
 
