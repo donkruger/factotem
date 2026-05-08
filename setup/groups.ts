@@ -185,7 +185,11 @@ sock.ev.on('connection.update', async (update) => {
       const output = execSync(`node ${tmpScript}`, {
         cwd: projectRoot,
         encoding: 'utf-8',
-        timeout: 45000,
+        // Fresh Baileys pairings need more than 45s — operators on
+        // clean machines hit the timeout before the protocol
+        // handshake completed. 120s gives a genuinely fresh pair
+        // enough room without being open-ended.
+        timeout: 120_000,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       syncOk = output.includes('SYNCED:');

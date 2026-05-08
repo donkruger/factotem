@@ -1,3 +1,4 @@
+import * as clack from '@clack/prompts';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -84,27 +85,70 @@ export const step: Step = {
       return { data: { plist_path: plistPath, plist_dry_run: true } };
     }
 
-    // For the smoke-test posture: validate generation only, do NOT bootstrap.
-    // The actual bootstrap is the operator's call (it's destructive against a
-    // possibly-running launchd job). We still write the plist so they can run
-    // bootstrap themselves, OR skip writing if they already have a plist.
+    // Write or preserve the plist.
+    let plistWritten = false;
     if (fs.existsSync(plistPath)) {
       ui.warn(
-        `${plistPath} already exists. Skipping write to avoid clobbering an active service. Diff manually if you want the wizard's version.`,
+        `${plistPath} already exists. Preserving — diff manually if you want the wizard's version.`,
       );
-      return { data: { plist_path: plistPath, plist_skipped: true } };
+    } else {
+      await fs.promises.mkdir(path.dirname(plistPath), { recursive: true });
+      await fs.promises.writeFile(plistPath, plist, { mode: 0o644 });
+      ui.success(`Wrote ${plistPath}`);
+      plistWritten = true;
     }
 
-    await fs.promises.mkdir(path.dirname(plistPath), { recursive: true });
-    await fs.promises.writeFile(plistPath, plist, { mode: 0o644 });
-    ui.success(`Wrote ${plistPath}`);
+    // Auto-bootstrap with operator confirmation. Default Yes — the
+    // wizard's premise is end-to-end provisioning. Operators who want
+    // to delay bootstrap can answer No and run the launchctl command
+    // themselves later.
+    const uid = process.getuid?.() ?? 501;
+    const target = `gui/${uid}`;
 
-    ui.note(
-      'Bootstrap (manual)',
-      `Run when ready:\n  launchctl bootstrap gui/$(id -u) ${plistPath}\nThe wizard does NOT bootstrap automatically — that is operator-controlled.`,
-    );
+    // First check if the service is already loaded.
+    const listResult = await ui.runCommand('launchctl', ['print', `${target}/${PLIST_LABEL}`]);
+    const alreadyLoaded = listResult.code === 0;
+    if (alreadyLoaded) {
+      ui.success(`launchd service ${PLIST_LABEL} already loaded — skipping bootstrap.`);
+      return { data: { plist_path: plistPath, bootstrapped: true } };
+    }
 
-    return { data: { plist_path: plistPath } };
+    const bootstrap = await clack.confirm({
+      message:
+        'Start NanoClaw now via launchd? (Default Yes. Bootstrapping starts the\n' +
+        '  orchestrator + WhatsApp ingestion + container spawning. You can stop\n' +
+        '  it later with `launchctl bootout`.)',
+      initialValue: true,
+    });
+    if (clack.isCancel(bootstrap) || !bootstrap) {
+      ui.note(
+        'Manual bootstrap',
+        'Wizard skipped automatic bootstrap. Run when ready:\n' +
+          `  launchctl bootstrap ${target} ${plistPath}`,
+      );
+      return { data: { plist_path: plistPath, bootstrapped: false } };
+    }
+
+    const bootstrapResult = await ui.runCommand('launchctl', [
+      'bootstrap',
+      target,
+      plistPath,
+    ]);
+    if (bootstrapResult.code !== 0) {
+      ui.error(
+        `launchctl bootstrap failed (exit ${bootstrapResult.code}).\n` +
+          'stderr: ' + bootstrapResult.stderr.slice(-400) + '\n' +
+          'You can retry with:\n' +
+          `  launchctl bootstrap ${target} ${plistPath}`,
+      );
+      return {
+        data: { plist_path: plistPath, bootstrapped: false },
+        warning: 'launchctl bootstrap failed',
+      };
+    }
+
+    ui.success(`Bootstrapped ${PLIST_LABEL}. Orchestrator starting…`);
+    return { data: { plist_path: plistPath, bootstrapped: true, plist_written: plistWritten } };
   },
 
   async verify(state) {

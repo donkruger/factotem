@@ -57,96 +57,135 @@ export const step: Step = {
     const orchRoot = process.cwd();
 
     // 1. Sync WhatsApp groups via Baileys. The orchestrator's
-    // setup --step groups command builds TS first (~30-60s) then
-    // briefly spins up a Baileys socket to call groupFetchAllParticipating
-    // and writes results to chats. Side-effect: messages.db is
-    // created if absent (initDatabase is called).
-    ui.note(
-      'Syncing WhatsApp groups',
-      'Briefly connecting to WhatsApp via Baileys to fetch the groups your\n' +
-        'paired account is a member of. Takes ~30–60s (TS build + socket\n' +
-        'connect + group fetch).',
-    );
+    // setup --step groups command builds TS, spins up a Baileys
+    // socket (using the auth state from step 06), calls
+    // groupFetchAllParticipating, writes to chats. Calls
+    // initDatabase() so messages.db is created if absent.
+    //
+    // Fresh Baileys pairings sometimes need a few minutes to
+    // settle before group sync returns reliably — we retry up to
+    // three times with 30-second pauses. If the sync succeeds but
+    // returns zero groups (operator's account isn't in any
+    // WhatsApp groups yet), we guide them to join one and retry.
+    let chats: ChatRow[] = [];
+    const MAX_SYNC_ATTEMPTS = 3;
 
-    const startedSync = Date.now();
-    const heartbeatSync = setInterval(() => {
-      const secs = Math.round((Date.now() - startedSync) / 1000);
-      process.stdout.write(`  · still syncing… (${secs}s elapsed)\n`);
-    }, 15_000);
-
-    let syncResult;
-    try {
-      syncResult = await ui.runCommand('npx', [
-        'tsx',
-        path.join(orchRoot, 'setup', 'index.ts'),
-        '--step',
-        'groups',
-      ]);
-    } finally {
-      clearInterval(heartbeatSync);
-    }
-    if (syncResult.code !== 0) {
-      // Sync can fail for legitimate reasons (Baileys session not yet
-      // settled after fresh pairing, WhatsApp groups haven't propagated,
-      // network blip during the temp node script's 45s timeout). Don't
-      // blow up the wizard — give the operator a graceful escape.
-      ui.warn(
-        `setup --step groups failed (exit ${syncResult.code}). This usually resolves\n` +
-          'on a retry — but you can also skip this step and register the main group\n' +
-          'manually after the wizard finishes:\n\n' +
-          '  npx tsx setup/index.ts --step groups\n' +
-          '  npx tsx setup/index.ts --step register --jid <jid> --name <name> \\\n' +
-          "      --folder main --channel whatsapp --is-main\n\n" +
-          'Last 400 chars of stderr (full output in the setup log):\n' +
-          syncResult.stderr.slice(-400),
+    for (let attempt = 1; attempt <= MAX_SYNC_ATTEMPTS; attempt++) {
+      ui.note(
+        attempt === 1
+          ? 'Syncing WhatsApp groups'
+          : `Syncing WhatsApp groups (attempt ${attempt}/${MAX_SYNC_ATTEMPTS})`,
+        'Briefly connecting to WhatsApp via Baileys to fetch the groups your\n' +
+          'paired account is a member of. Takes 30–120s (TS build + socket\n' +
+          'connect + group fetch).',
       );
 
-      const skip = await clack.confirm({
-        message: 'Skip group registration and finish the wizard? (You can register manually later.)',
-        initialValue: true,
-      });
-      if (clack.isCancel(skip) || !skip) {
-        throw new Error('group sync failed; operator declined skip');
+      const startedSync = Date.now();
+      const heartbeatSync = setInterval(() => {
+        const secs = Math.round((Date.now() - startedSync) / 1000);
+        process.stdout.write(`  · still syncing… (${secs}s elapsed)\n`);
+      }, 20_000);
+
+      let syncResult;
+      try {
+        syncResult = await ui.runCommand('npx', [
+          'tsx',
+          path.join(orchRoot, 'setup', 'index.ts'),
+          '--step',
+          'groups',
+        ]);
+      } finally {
+        clearInterval(heartbeatSync);
       }
-      ui.warn('Skipping step 07 — register your main group manually via the commands above after the wizard exits.');
-      return {
-        data: { main_group_deferred: true },
-        warning: 'group sync failed; deferred to manual registration',
-      };
+
+      const syncOk = syncResult.code === 0;
+      const dbPath = path.join(orchRoot, 'store', 'messages.db');
+
+      if (syncOk && fs.existsSync(dbPath)) {
+        const db = new Database(dbPath, { readonly: true });
+        try {
+          chats = db
+            .prepare(
+              "SELECT jid, name FROM chats " +
+                "WHERE jid LIKE '%@g.us' " +
+                "AND jid <> '__group_sync__' " +
+                "AND name IS NOT NULL " +
+                'ORDER BY last_message_time DESC',
+            )
+            .all() as ChatRow[];
+        } finally {
+          db.close();
+        }
+      }
+
+      if (chats.length > 0) {
+        ui.success(`Found ${chats.length} WhatsApp group(s).`);
+        break;
+      }
+
+      // Either sync failed OR sync OK but zero groups. Distinct paths.
+      if (!syncOk) {
+        ui.warn(
+          `Sync attempt ${attempt}/${MAX_SYNC_ATTEMPTS} failed (exit ${syncResult.code}).\n` +
+            'This is common on fresh WhatsApp pairings — Baileys often needs a\n' +
+            'few minutes for the protocol handshake to settle.\n\n' +
+            'Last 200 chars of stderr (full output in the setup log):\n' +
+            syncResult.stderr.slice(-200),
+        );
+      } else {
+        ui.warn(
+          'Sync succeeded but the paired WhatsApp account is not in any groups\n' +
+            'yet. To register a main control group:\n' +
+            '  1. On your phone, open the WhatsApp group you want to use as\n' +
+            '     your main control group (or create a new one).\n' +
+            '  2. Make sure your account is a member.\n' +
+            '  3. Send any message in that group so it shows up in the\n' +
+            '     paired device\'s recent chats.\n' +
+            '  4. Confirm below — the wizard will retry.',
+        );
+      }
+
+      if (attempt < MAX_SYNC_ATTEMPTS) {
+        const retry = await clack.confirm({
+          message:
+            chats.length === 0 && syncOk
+              ? "I'm in a group / sent a message — retry sync now?"
+              : `Wait 30s and retry the sync? (attempt ${attempt + 1}/${MAX_SYNC_ATTEMPTS})`,
+          initialValue: true,
+        });
+        if (clack.isCancel(retry) || !retry) {
+          // Operator chose not to retry.
+          ui.warn(
+            'Skipping main group registration. Re-run the wizard later with\n' +
+              '  npm run claw-setup -- --resume\n' +
+              'once your WhatsApp account is in a group.',
+          );
+          return {
+            data: { main_group_deferred: true },
+            warning: 'operator declined retry',
+          };
+        }
+
+        // Wait before retrying (only when sync failed — the zero-groups
+        // path doesn't need the wait since the operator just acted).
+        if (!syncOk && attempt < MAX_SYNC_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, 30_000));
+        }
+      } else {
+        // All attempts exhausted.
+        ui.warn(
+          'All sync attempts exhausted. Marking step deferred — re-run the\n' +
+            'wizard later when WhatsApp connectivity is more stable:\n' +
+            '  npm run claw-setup -- --resume',
+        );
+        return {
+          data: { main_group_deferred: true },
+          warning: 'sync attempts exhausted',
+        };
+      }
     }
 
-    // 2. Read synced groups directly from the DB.
-    const dbPath = path.join(orchRoot, 'store', 'messages.db');
-    if (!fs.existsSync(dbPath)) {
-      ui.error(`messages.db still not found at ${dbPath} after sync.`);
-      throw new Error('messages.db missing after sync');
-    }
-
-    const db = new Database(dbPath, { readonly: true });
-    let chats: ChatRow[];
-    try {
-      chats = db
-        .prepare(
-          "SELECT jid, name FROM chats " +
-            "WHERE jid LIKE '%@g.us' " +
-            "AND jid <> '__group_sync__' " +
-            "AND name IS NOT NULL " +
-            'ORDER BY last_message_time DESC',
-        )
-        .all() as ChatRow[];
-    } finally {
-      db.close();
-    }
-
-    if (chats.length === 0) {
-      ui.warn(
-        'WhatsApp group sync returned zero groups. Either you\'re not in any\n' +
-          'groups on the paired account, or the sync didn\'t pick them up.\n' +
-          'Add the paired number to your intended main group on WhatsApp,\n' +
-          'then resume the wizard.',
-      );
-      return { warning: 'no groups available yet — resume after adding to a group' };
-    }
+    // chats array is populated at this point.
 
     // 3. Prompt operator to pick a group.
     const choice = await clack.select({
