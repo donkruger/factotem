@@ -6,6 +6,30 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-08
 
+### Phase 3 / Doctor v0.1.8 — Pull upstream updates from the Doctor
+
+Closes the productisation gap surfaced while shipping v0.1.7: the Doctor auto-updates its own binary, but the orchestrator + dashboard + claw-setup wizard explicitly *don't* auto-update — per the [README](../README.md), they "ship via the fork-and-modify workflow (`git pull` + `npm run build`) — they're not auto-updated because operators customise them." That's correct for customised forks like Ben's dev box (months of local commits, applied skills, edited `.env`), but it leaves un-customised deployments like Lexical Lighthouse manually running `git pull && npm install && npm run build` after every release.
+
+v0.1.8 adds a one-click **Pull upstream updates…** action to the tray menu. The frontend, backend, and step-runner mirror the existing Repair Stack pattern; the new piece is a four-step preflight gate that refuses to mutate a customised fork.
+
+**A. Tray-menu action + window (`cli/claw-doctor/src-tauri/src/{tray,commands}.rs`).** New `PULL_UPDATES` menu id slotted between "Repair Stack…" and "Show diagnostic details". Disabled in `NotInstalled` state with a "(NanoClaw not installed)" suffix, mirroring the existing dashboard/logs disabled treatment. Click opens window labelled `pull` with `?view=pull`.
+
+**B. `pull.rs` — orchestrator-aware preflight + step builder (new module).**
+
+- `resolve_orchestrator_root()` resolves the source tree by reading `WorkingDirectory` from `~/Library/LaunchAgents/com.nanoclaw.plist` via `plutil -extract`, then falling back to `~/factotem` (the documented installer path) and `~/Documents/NanoClaw/nanoclaw` (Don's dev path). Each candidate is gated on being a git repo (`.git/` present) so we never `git pull` something that just shares a path.
+- `build_pull_manifest(&root)` returns a `RecoveryManifest` with eleven steps. Four are preflight: working tree clean, on `main`, fetched cleanly, and zero local-only commits ahead of `origin/main`. Each preflight failure prints a human-readable reason to stderr (e.g. "3 local-only commit(s) ahead of origin/main — pull would clobber them") so the run-failed detail card explains exactly what to do, not just "exit 1". The remaining seven do the actual work: pull, install + build orchestrator, install + build dashboard, `launchctl kickstart -k`, then a `curl /health` verify-with-polling block (same as the existing recovery manifest's verify step).
+- Customised forks stay untouched: every preflight aborts the chain before any mutation. Any uncommitted edits or local commits cause the chain to stop with the error visible in the step row, with a footer reminding the operator that nothing was modified.
+
+**C. Generic step-chain runner (`repair.rs`).** Refactored `run_repair` to delegate to a new `run_steps_chain(app, manifest, event_channel)`. Repair Stack continues to use the `repair-progress` channel; Pull uses `pull-progress`. Behaviour preserved exactly — the existing `run_repair(app, manifest)` signature is unchanged from RepairView's perspective. Three pure-function unit tests added for the bash-escaping helper that interpolates the orchestrator root path into each step's command (covers no-special, embedded-quote, and spaces-in-path cases) plus one shape test for the manifest builder.
+
+**D. Tauri command wiring + frontend (`cli/claw-doctor/src/{lib/tauri.ts,views/PullView.tsx,main.tsx}`).** New `get_pull_manifest` + `start_pull` Tauri commands registered in the `invoke_handler!` array. Confirm phrase is `"PULL UPDATES"` (vs `"RESTART STACK"` for Repair) — server-side defence-in-depth gates `start_pull` on the typed-confirm match before any preflight runs. New `PullView.tsx` component mirrors RepairView (manifest load, typed-confirm gate, per-step state subscription, success/failure footers) but with copy that explains the preflight model and a less-alarming run button (accent colour rather than error red, since Pull isn't destructive — preflight protects you). The success footer notes that the tray icon should flip green within ~5s; the failure footer special-cases preflight failures to explain that nothing was modified.
+
+**E. Doctor → 0.1.8.** Five files: `cli/claw-doctor/{package,package-lock}.json`, `cli/claw-doctor/src-tauri/{Cargo.toml,Cargo.lock,tauri.conf.json}`. Lockfiles regenerated via `npm install --package-lock-only` and `cargo check --offline`. Existing v0.1.7 binary's behaviour preserved — Pull is purely additive.
+
+**Verification target.** Lexical Lighthouse — Don's iMac. After v0.1.8 lands via auto-update, the operator clicks the Doctor's tray icon, picks "Pull upstream updates…", types `PULL UPDATES`, clicks Run Pull. The chain runs preflight (all four green), pulls, builds, restarts. Tray icon flips green. Subsequent v0.1.9 / v0.1.10 / etc. orchestrator improvements ship via the same path — no more manual `git pull && npm run build` for un-customised deployments. Customised forks (Ben's dev box) see preflight refuse to run; the operator continues using `/update-nanoclaw` for selective cherry-pick.
+
+**Recovery tag.** `pre-doctor-0.1.8-2026-05-08` (at `9db7f17`).
+
 ### Phase 3 / Doctor v0.1.7 — persona page + health probe wiring + reconnect-resolve fix
 
 Tag-and-publish that bundles the orchestrator wins accumulated since v0.1.6 plus three small follow-ups surfaced while verifying Sarah on the iMac. The Doctor binary itself has zero code changes — the version bump is the ratchet that signals "the deployment behind me has these orchestrator improvements" and keeps the auto-updater pipeline exercised.

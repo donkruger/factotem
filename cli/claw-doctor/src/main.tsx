@@ -4,6 +4,7 @@ import ReactDOM from 'react-dom/client';
 import './styles/tokens.css';
 import './styles/global.css';
 import { LogsView } from './views/LogsView';
+import { PullView } from './views/PullView';
 import { RepairView } from './views/RepairView';
 import { SettingsView } from './views/SettingsView';
 import { WelcomeView } from './views/WelcomeView';
@@ -17,6 +18,7 @@ function App() {
   const view = params.get('view');
 
   if (view === 'repair') return <RepairView />;
+  if (view === 'pull') return <PullView />;
   if (view === 'settings') return <SettingsView />;
   if (view === 'logs') return <LogsView />;
   if (view === 'welcome') return <WelcomeView />;

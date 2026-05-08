@@ -24,6 +24,9 @@ use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 use crate::manifest::{load_manifest, RecoveryManifest};
 use crate::probe::{probe_stack, StackStatus};
+use crate::pull::{
+    build_pull_manifest, resolve_orchestrator_root, run_pull, PULL_CONFIRM_PHRASE,
+};
 use crate::repair::{run_repair, RepairResult};
 use crate::settings::{self, Settings};
 
@@ -73,6 +76,35 @@ pub async fn start_repair(app: AppHandle, confirm: String) -> Result<RepairResul
     let manifest = load_manifest()?;
     let result = run_repair(app, manifest).await;
     Ok(result)
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// v0.1.8 — Pull upstream updates.
+//
+// Bridges the gap between the auto-updateable Doctor binary and the
+// fork-and-modify orchestrator source tree. The frontend renders the
+// step list from `get_pull_manifest()` before invoking `start_pull()`,
+// same shape as Repair Stack.
+// ──────────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_pull_manifest() -> Result<RecoveryManifest, String> {
+    let root = resolve_orchestrator_root().ok_or_else(|| {
+        "Could not locate the orchestrator source tree. Tried com.nanoclaw.plist's WorkingDirectory, ~/factotem, and ~/Documents/NanoClaw/nanoclaw."
+            .to_string()
+    })?;
+    Ok(build_pull_manifest(&root))
+}
+
+#[tauri::command]
+pub async fn start_pull(app: AppHandle, confirm: String) -> Result<RepairResult, String> {
+    if confirm != PULL_CONFIRM_PHRASE {
+        return Err(format!(
+            "confirmation phrase must be exactly \"{}\"",
+            PULL_CONFIRM_PHRASE
+        ));
+    }
+    run_pull(app).await
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -303,6 +335,16 @@ pub fn handle_menu_event(app: &AppHandle, event_id: &str) {
         }
         ids::REPAIR_STACK => {
             open_or_focus_window(app, "repair", "?view=repair", "Repair Stack", 480.0, 720.0);
+        }
+        ids::PULL_UPDATES => {
+            open_or_focus_window(
+                app,
+                "pull",
+                "?view=pull",
+                "Pull upstream updates",
+                480.0,
+                720.0,
+            );
         }
         ids::SHOW_DETAILS => {
             open_or_focus_window(

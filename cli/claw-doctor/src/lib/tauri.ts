@@ -135,6 +135,29 @@ export async function startRepair(confirm: string): Promise<RepairResult> {
   return await invoke<RepairResult>('start_repair', { confirm });
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// v0.1.8 — Pull upstream updates.
+//
+// The manifest + result + per-step event shapes are the SAME as Repair
+// Stack — both flows are sequential step chains. The Tauri event channel
+// differs (`pull-progress` vs `repair-progress`) so the two UIs can
+// listen independently without bleed-through.
+// ──────────────────────────────────────────────────────────────────────
+
+export async function getPullManifest(): Promise<RecoveryManifest> {
+  return await invoke<RecoveryManifest>('get_pull_manifest');
+}
+
+export async function startPull(confirm: string): Promise<RepairResult> {
+  return await invoke<RepairResult>('start_pull', { confirm });
+}
+
+export async function onPullProgress(
+  cb: (event: RepairEvent) => void,
+): Promise<UnlistenFn> {
+  return await listen<RepairEvent>('pull-progress', (e) => cb(e.payload));
+}
+
 export async function getSettings(): Promise<Settings> {
   return await invoke<Settings>('get_settings');
 }

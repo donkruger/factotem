@@ -250,9 +250,7 @@ async function probeOpenDm(): Promise<HealthSnapshot['open_dm']> {
     let todaySpentCents = 0;
     try {
       const spend = getProbeDb()
-        .prepare(
-          'SELECT est_cost_cents FROM open_spend_log WHERE date = ?',
-        )
+        .prepare('SELECT est_cost_cents FROM open_spend_log WHERE date = ?')
         .get(today) as { est_cost_cents?: number } | undefined;
       todaySpentCents = spend?.est_cost_cents ?? 0;
     } catch {

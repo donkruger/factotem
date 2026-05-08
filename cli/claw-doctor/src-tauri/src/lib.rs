@@ -11,15 +11,16 @@ use tracing_subscriber::EnvFilter;
 mod commands;
 mod manifest;
 mod probe;
+mod pull;
 mod repair;
 mod settings;
 mod tray;
 
 use commands::{
     check_for_updates, dismiss_welcome, get_current_version, get_last_status, get_log_path,
-    get_recovery_manifest, get_settings, install_update_and_restart, is_first_run,
-    open_setup_in_terminal, open_welcome_window, probe_stack_now, save_settings, start_repair,
-    tail_log, LastStatus, SettingsState,
+    get_pull_manifest, get_recovery_manifest, get_settings, install_update_and_restart,
+    is_first_run, open_setup_in_terminal, open_welcome_window, probe_stack_now, save_settings,
+    start_pull, start_repair, tail_log, LastStatus, SettingsState,
 };
 use tauri::Manager;
 use probe::{probe_stack, OverallStatus};
@@ -172,6 +173,8 @@ pub fn run() {
             get_last_status,
             get_recovery_manifest,
             start_repair,
+            get_pull_manifest,
+            start_pull,
             get_settings,
             save_settings,
             get_log_path,

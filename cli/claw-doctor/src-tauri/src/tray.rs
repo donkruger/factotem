@@ -13,6 +13,7 @@ pub mod ids {
     pub const OPEN_DASHBOARD: &str = "open_dashboard";
     pub const OPEN_RECOVERY: &str = "open_recovery";
     pub const REPAIR_STACK: &str = "repair_stack";
+    pub const PULL_UPDATES: &str = "pull_updates"; // v0.1.8 — pull + build + restart upstream changes
     pub const SETUP_NANOCLAW: &str = "setup_nanoclaw"; // R.7 — replaces REPAIR_STACK in NotInstalled state
     pub const SHOW_DETAILS: &str = "show_details";
     pub const OPEN_SETTINGS: &str = "open_settings";
@@ -223,6 +224,22 @@ fn build_status_menu(app: &AppHandle, status: &StackStatus) -> tauri::Result<Men
         )?
     };
 
+    // v0.1.8 — Pull upstream updates. Disabled when the orchestrator
+    // isn't installed yet (no source tree to pull); the action itself
+    // does its own preflight (working tree clean, no diverged commits)
+    // before mutating anything.
+    let pull_updates = MenuItem::with_id(
+        app,
+        ids::PULL_UPDATES,
+        if is_not_installed {
+            "Pull upstream updates (NanoClaw not installed)"
+        } else {
+            "Pull upstream updates…"
+        },
+        !is_not_installed,
+        None::<&str>,
+    )?;
+
     // "Show details" surfaces multi-instance / foreign-port-owner /
     // per-probe-detail in a small read-only window. Implemented as
     // M1.3-stub here; the window UI lands later in M1.3 if budget allows.
@@ -276,6 +293,7 @@ fn build_status_menu(app: &AppHandle, status: &StackStatus) -> tauri::Result<Men
     let sep_actions = PredefinedMenuItem::separator(app)?;
     items.push(&sep_actions);
     items.push(&repair_stack);
+    items.push(&pull_updates);
     items.push(&show_details);
     items.push(&open_logs);
     let sep_settings = PredefinedMenuItem::separator(app)?;

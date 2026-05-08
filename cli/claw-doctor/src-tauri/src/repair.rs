@@ -97,6 +97,20 @@ const REPAIR_EVENT: &str = "repair-progress";
 /// events at every state transition. Returns the final state synchronously
 /// so the caller can also observe completion via the command return value.
 pub async fn run_repair(app: AppHandle, manifest: RecoveryManifest) -> RepairResult {
+    run_steps_chain(app, manifest, REPAIR_EVENT).await
+}
+
+/// Generic sequential step runner reused by Repair Stack and Pull Updates.
+/// `event_channel` is the Tauri event name used for progress emissions —
+/// each consumer subscribes to its own channel so two chains don't bleed
+/// into each other's UI. The step state machine is identical: per-step
+/// pending → running → (done|failed|skipped); chain stops at the first
+/// failed-and-required step.
+pub(crate) async fn run_steps_chain(
+    app: AppHandle,
+    manifest: RecoveryManifest,
+    event_channel: &str,
+) -> RepairResult {
     let started = Instant::now();
     let started_at = chrono::Utc::now();
 
@@ -111,21 +125,17 @@ pub async fn run_repair(app: AppHandle, manifest: RecoveryManifest) -> RepairRes
         })
         .collect();
 
-    let _ = app.emit(REPAIR_EVENT, RepairEvent::Started);
+    let _ = app.emit(event_channel, RepairEvent::Started);
 
     for (i, step) in manifest.steps.iter().enumerate() {
-        run_step(&app, &mut steps, i, step).await;
+        run_step(&app, &mut steps, i, step, event_channel).await;
 
         // If the step failed and was required, stop the chain.
         if matches!(steps[i].state, StepState::Failed { .. }) && step.required {
-            // Total elapsed isn't carried in the failure result shape (the
-            // failed_step_id + per-step duration_ms is sufficient for the
-            // UI). Discard but keep the comment so M1.4 can wire a header
-            // total-duration display if ever wanted.
             let _ = started.elapsed();
             let failed_id = step.id.clone();
             let _ = app.emit(
-                REPAIR_EVENT,
+                event_channel,
                 RepairEvent::Failed {
                     failed_step_id: failed_id.clone(),
                 },
@@ -143,7 +153,7 @@ pub async fn run_repair(app: AppHandle, manifest: RecoveryManifest) -> RepairRes
 
     let total_ms = started.elapsed().as_millis() as u64;
     let _ = app.emit(
-        REPAIR_EVENT,
+        event_channel,
         RepairEvent::Completed {
             duration_ms: total_ms,
         },
@@ -163,11 +173,12 @@ async fn run_step(
     progress: &mut [StepProgress],
     i: usize,
     step: &RecoveryStep,
+    event_channel: &str,
 ) {
     let started = Instant::now();
     progress[i].state = StepState::Running;
     let _ = app.emit(
-        REPAIR_EVENT,
+        event_channel,
         RepairEvent::StepStarted {
             step_id: step.id.clone(),
         },
@@ -182,7 +193,7 @@ async fn run_step(
                 duration_ms,
             };
             let _ = app.emit(
-                REPAIR_EVENT,
+                event_channel,
                 RepairEvent::StepFailed {
                     step_id: step.id.clone(),
                     detail: e,
@@ -192,7 +203,7 @@ async fn run_step(
         } else {
             progress[i].state = StepState::Skipped { detail: e.clone() };
             let _ = app.emit(
-                REPAIR_EVENT,
+                event_channel,
                 RepairEvent::StepSkipped {
                     step_id: step.id.clone(),
                     detail: e,
@@ -212,7 +223,7 @@ async fn run_step(
                     duration_ms,
                 };
                 let _ = app.emit(
-                    REPAIR_EVENT,
+                    event_channel,
                     RepairEvent::StepFailed {
                         step_id: step.id.clone(),
                         detail: e,
@@ -222,7 +233,7 @@ async fn run_step(
             } else {
                 progress[i].state = StepState::Skipped { detail: e.clone() };
                 let _ = app.emit(
-                    REPAIR_EVENT,
+                    event_channel,
                     RepairEvent::StepSkipped {
                         step_id: step.id.clone(),
                         detail: e,
@@ -237,7 +248,7 @@ async fn run_step(
     let duration_ms = started.elapsed().as_millis() as u64;
     progress[i].state = StepState::Done { duration_ms };
     let _ = app.emit(
-        REPAIR_EVENT,
+        event_channel,
         RepairEvent::StepDone {
             step_id: step.id.clone(),
             duration_ms,
