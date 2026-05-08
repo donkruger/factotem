@@ -175,6 +175,43 @@ export async function tailLog(lines: number): Promise<string> {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// R1 — Pre-flight prereq probes for the Welcome window.
+// (audit: assessments/2026-05-08-setup-journey-ux.md)
+// ──────────────────────────────────────────────────────────────────────
+
+/** One-click action a probe can suggest the Doctor perform. */
+export type FixAction = { kind: 'launch_docker_app' };
+
+export interface PrereqResult {
+  /** Stable identifier — "git" | "node" | "docker" | "tailscale". */
+  name: string;
+  /** True iff the binary / app is present on disk. */
+  installed: boolean;
+  /** True iff `installed` AND meets the wizard's requirement
+   *  (e.g. node ≥ 20, docker daemon reachable). The Welcome CTA is
+   *  gated on every result having ok = true. */
+  ok: boolean;
+  /** Human-readable single-line status to render next to the row. */
+  detail: string;
+  /** Where to send the operator if they need to install. */
+  install_url: string;
+  /** Optional one-click fix the Doctor can perform. */
+  fix_action: FixAction | null;
+}
+
+/** Run all four probes in parallel. Called on Welcome window mount,
+ *  on Recheck, and after launch_docker_and_wait completes. */
+export async function checkAllPrereqs(): Promise<PrereqResult[]> {
+  return await invoke<PrereqResult[]>('check_all_prereqs');
+}
+
+/** Open Docker Desktop and poll for daemon readiness for up to 60s.
+ *  Returns the final docker probe result. */
+export async function launchDockerAndWait(): Promise<PrereqResult> {
+  return await invoke<PrereqResult>('launch_docker_and_wait');
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // R.7 — Welcome window commands.
 // ──────────────────────────────────────────────────────────────────────
 

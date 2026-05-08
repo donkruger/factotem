@@ -516,15 +516,25 @@ pub fn dismiss_welcome(state: State<'_, SettingsState>) -> Result<(), String> {
 /// we don't auto-execute, since that would surprise an operator who
 /// hasn't approved the wizard's mutations.
 ///
-/// The staged command clones the (now-public) source repo via plain
-/// git over HTTPS — no `gh` CLI required — then invokes the
-/// orchestrator's top-level `npm run claw-setup` script which builds
-/// + runs the wizard.
+/// R2 from the 2026-05-08 setup-journey UX audit
+/// (assessments/2026-05-08-setup-journey-ux.md): the staged command is
+/// a single curl-bootstrap idiom (the same shape oh-my-zsh, nvm,
+/// rustup use), not the previous multi-line `git clone && cd && npm`
+/// chain. The bootstrap.sh fetched here lives in nanoclaw/scripts/ and
+/// is published to the public release mirror as a release asset by the
+/// CI pipeline. Until the next mirror release ships bootstrap.sh, the
+/// curl call will 404 — the WelcomeView falls back to copy-the-command
+/// in that case (operator can also point at a local checkout via
+/// FACTOTEM_DIR=...).
 ///
-/// Real prerequisites on a fresh macOS:
-///   - `git` (Xcode Command Line Tools — auto-prompts to install on
-///     first invocation; macOS handles this transparently)
-///   - Node.js 20+ (operator installs from nodejs.org)
+/// The bootstrap script handles:
+///   - git presence check (with Xcode CLT auto-install hint)
+///   - node ≥ 20 check (with nodejs.org install hint)
+///   - clone or fast-forward into $HOME/factotem (NOT ~/Documents/ —
+///     macOS TCC silently kills writes there from launchd-spawned
+///     services; see docs/SETUP_WIZARD.md § macOS TCC hard-stop)
+///   - npm install
+///   - exec npm run claw-setup
 ///
 /// AppleScript is used because Tauri's shell plugin doesn't expose
 /// a clean "open Terminal with a pre-staged command" API.
@@ -535,7 +545,7 @@ pub fn open_setup_in_terminal() -> Result<(), String> {
     // newline injected by `do script`). Escape literal quotes
     // carefully — osascript -e is sensitive to nested quoting.
     let script = r#"tell application "Terminal" to activate
-tell application "Terminal" to do script "git clone https://github.com/donkruger/factotem.git && cd factotem && npm run claw-setup""#;
+tell application "Terminal" to do script "curl -fsSL https://github.com/RichardBNel/Factotem/releases/latest/download/bootstrap.sh | sh""#;
     let output = std::process::Command::new("/usr/bin/osascript")
         .args(["-e", script])
         .output()
@@ -547,6 +557,6 @@ tell application "Terminal" to do script "git clone https://github.com/donkruger
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    tracing::info!("opened Terminal.app with claw-setup one-liner pre-staged");
+    tracing::info!("opened Terminal.app with bootstrap.sh one-liner pre-staged");
     Ok(())
 }

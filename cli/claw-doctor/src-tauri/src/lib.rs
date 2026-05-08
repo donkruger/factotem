@@ -10,6 +10,7 @@ use tracing_subscriber::EnvFilter;
 
 mod commands;
 mod manifest;
+mod prereqs;
 mod probe;
 mod pull;
 mod repair;
@@ -22,6 +23,7 @@ use commands::{
     is_first_run, open_setup_in_terminal, open_welcome_window, probe_stack_now, save_settings,
     start_pull, start_repair, tail_log, LastStatus, SettingsState,
 };
+use prereqs::{check_all_prereqs, launch_docker_and_wait};
 use tauri::Manager;
 use probe::{probe_stack, OverallStatus};
 use tray::{build_tray, update_tray};
@@ -185,6 +187,9 @@ pub fn run() {
             is_first_run,
             dismiss_welcome,
             open_setup_in_terminal,
+            // R1 — pre-flight prereq probes for the Welcome window.
+            check_all_prereqs,
+            launch_docker_and_wait,
         ])
         // No windows at startup — this is a tray-only app. Windows open
         // on demand via the menu actions.
