@@ -231,7 +231,7 @@ async function main(): Promise<void> {
     }
     ui.note(
       'Resume',
-      `Run \`claw-setup --resume\` to continue from step ${state.currentStep ?? '<unknown>'}.`,
+      `Run \`npm run claw-setup -- --resume\` (from the factotem repo root) to continue from step ${state.currentStep ?? '<unknown>'}.`,
     );
     process.exit(1);
   }

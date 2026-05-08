@@ -30,7 +30,7 @@ export const step: Step = {
       if (clack.isCancel(installed) || !installed) {
         ui.note(
           'Install OneCLI',
-          'Run this in another terminal (interactive installer):\n  npx -y @anthropic-ai/onecli install\nThen rerun: claw-setup --resume',
+          'Run this in another terminal (interactive installer):\n  npx -y @anthropic-ai/onecli install\nThen, from the factotem repo root, rerun:\n  npm run claw-setup -- --resume',
         );
         return { warning: 'OneCLI not installed; resume after install' };
       }

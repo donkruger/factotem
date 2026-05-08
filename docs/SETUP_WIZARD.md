@@ -72,9 +72,9 @@ node cli/claw-setup/dist/index.js --force
 
 | Situation                                                  | Action                                                                                                  |
 |------------------------------------------------------------|---------------------------------------------------------------------------------------------------------|
-| A step failed mid-way                                      | State is preserved. Run `claw-setup --resume`.                                                          |
+| A step failed mid-way                                      | State is preserved. From the factotem repo root, run `npm run claw-setup -- --resume`.                  |
 | Total reset (start over from profile selection)            | `rm ~/.config/nanoclaw/setup-state.json` and rerun.                                                     |
-| Existing WhatsApp pairing should be discarded              | `claw-setup --force` (destructive — see above).                                                         |
+| Existing WhatsApp pairing should be discarded              | `npm run claw-setup -- --force` (destructive — see above).                                              |
 | Wizard misdetects the cwd                                  | Move the repo out of `~/Documents/` to e.g. `~/NanoClaw/`. The wizard refuses any path under `Documents`. |
 
 ## Logs
