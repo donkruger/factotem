@@ -37,7 +37,8 @@
 #   0  — wizard launched successfully (or operator chose to defer it)
 #   2  — prerequisite missing (git or node) — printed actionable hint
 #   3  — clone / install / build failed — printed last 20 lines of output
-#   4  — operator aborted
+#   4  — non-interactive context (stdin not a TTY and /dev/tty unavailable);
+#        wizard requires interactive input and refuses to start blind
 
 set -euo pipefail
 
@@ -164,6 +165,44 @@ if ! npm install --silent 2>&1 | tail -20; then
   exit 3
 fi
 ok "Dependencies installed."
+
+# ──────────────────────────────────────────────────────────────────────────
+# stdin re-attach for `curl … | sh` invocation.
+#
+# When the operator runs the documented one-liner
+#   curl -fsSL https://github.com/RichardBNel/Factotem/releases/latest/download/bootstrap.sh | sh
+# this script's stdin is the curl pipe — which is at EOF the moment curl
+# finishes downloading us. The wizard (cli/claw-setup, @clack/prompts) then
+# reads stdin to capture keypresses for its select / text prompts; the very
+# first read returns EOF, clack interprets it as a cancel, and the wizard
+# exits silently without any operator input ever being possible.
+#
+# Canonical incident: ben-log/2026-05-08-bootstrap-curl-pipe-stdin.md.
+# Operator on `fctm-1@iPhone` reported pressing Enter on the "solo machine"
+# select did nothing — the wizard had already cancel-exited from EOF.
+#
+# Fix: same pattern oh-my-zsh, nvm, rustup all use — if stdin is not a TTY
+# but /dev/tty is available, redirect stdin to /dev/tty so the wizard sees
+# real keystrokes from the operator's actual terminal. If /dev/tty is also
+# unavailable (CI, cron, container with no controlling terminal) fail loudly
+# with actionable copy rather than silently passing EOF down to clack.
+if [[ ! -t 0 ]]; then
+  if [[ -e /dev/tty ]]; then
+    exec < /dev/tty
+  else
+    fail "stdin is not a terminal and /dev/tty is unavailable."
+    warn "The wizard needs interactive input (select profile, type persona name,"
+    warn "scan WhatsApp QR). Re-run this from a real Terminal session, not from"
+    warn "CI / cron / a non-TTY context."
+    warn ""
+    warn "If you got here via \`curl … | sh\` from an editor or IDE that doesn't"
+    warn "expose a TTY, run from your real Terminal app instead, or do the"
+    warn "two-step:"
+    warn "  curl -fsSL https://github.com/RichardBNel/Factotem/releases/latest/download/bootstrap.sh -o /tmp/bootstrap.sh"
+    warn "  bash /tmp/bootstrap.sh"
+    exit 4
+  fi
+fi
 
 step "Launching the cold-start wizard"
 printf "\n%sThe wizard will guide you through:%s\n" "$C_DIM" "$C_RESET"
