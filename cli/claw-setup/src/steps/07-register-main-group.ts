@@ -86,10 +86,33 @@ export const step: Step = {
       clearInterval(heartbeatSync);
     }
     if (syncResult.code !== 0) {
-      ui.error(
-        `setup --step groups failed (exit ${syncResult.code}). stderr: ${syncResult.stderr.slice(-400)}`,
+      // Sync can fail for legitimate reasons (Baileys session not yet
+      // settled after fresh pairing, WhatsApp groups haven't propagated,
+      // network blip during the temp node script's 45s timeout). Don't
+      // blow up the wizard — give the operator a graceful escape.
+      ui.warn(
+        `setup --step groups failed (exit ${syncResult.code}). This usually resolves\n` +
+          'on a retry — but you can also skip this step and register the main group\n' +
+          'manually after the wizard finishes:\n\n' +
+          '  npx tsx setup/index.ts --step groups\n' +
+          '  npx tsx setup/index.ts --step register --jid <jid> --name <name> \\\n' +
+          "      --folder main --channel whatsapp --is-main\n\n" +
+          'Last 400 chars of stderr (full output in the setup log):\n' +
+          syncResult.stderr.slice(-400),
       );
-      throw new Error('group sync failed');
+
+      const skip = await clack.confirm({
+        message: 'Skip group registration and finish the wizard? (You can register manually later.)',
+        initialValue: true,
+      });
+      if (clack.isCancel(skip) || !skip) {
+        throw new Error('group sync failed; operator declined skip');
+      }
+      ui.warn('Skipping step 07 — register your main group manually via the commands above after the wizard exits.');
+      return {
+        data: { main_group_deferred: true },
+        warning: 'group sync failed; deferred to manual registration',
+      };
     }
 
     // 2. Read synced groups directly from the DB.
@@ -173,6 +196,9 @@ export const step: Step = {
   async verify(state) {
     if (state.profile === 'hobbyist' || state.data['__dry_run'] === true) {
       return { ok: true, details: 'skipped for this profile / dry-run' };
+    }
+    if (state.data['main_group_deferred'] === true) {
+      return { ok: true, details: 'deferred to manual registration after wizard' };
     }
     return state.data['main_jid']
       ? { ok: true, details: `main_jid=${state.data['main_jid']}` }
