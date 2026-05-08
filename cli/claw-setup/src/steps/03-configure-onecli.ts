@@ -144,13 +144,113 @@ export const step: Step = {
 
     ui.success(`OneCLI reachable at ${ONECLI_URL}`);
 
-    // 2. Anthropic API key
+    // 2. Anthropic API key registration via OneCLI v1.7+ CLI.
+    // The flow is now three concrete substeps because OneCLI's CLI
+    // surface changed since the wizard was originally written:
+    //
+    //   2a. Point CLI at the local gateway (config set api-host).
+    //   2b. Authenticate the CLI with an oc_* API key (auth login).
+    //       Operator obtains the key from the OneCLI dashboard,
+    //       which we auto-open in the browser to match step 02's
+    //       UX pattern.
+    //   2c. Create the Anthropic secret (secrets create) — the new
+    //       command replaces the old `config add ...` shape.
+    //
+    // The wizard checks each substep's "already-done" state and
+    // skips it idempotently — re-running on a partially-configured
+    // host doesn't double-create or break.
     const dryRun = state.data['__dry_run'] === true;
     if (dryRun) {
       ui.warn('--dry-run set: skipping Anthropic credential registration.');
       return { data: { onecli_configured: true } };
     }
 
+    const onecliCmd = await resolveOnecliCmd(ui);
+
+    // 2a. Point CLI at local gateway. Idempotent — `config set` always
+    // succeeds whether or not the value's already set.
+    await ui.runCommand(onecliCmd, ['config', 'set', 'api-host', ONECLI_URL]);
+
+    // 2b. Authenticate the CLI. Skip if already authenticated.
+    let alreadyAuthed = false;
+    const authStatus = await ui.runCommand(onecliCmd, ['auth', 'status']);
+    if (authStatus.code === 0) {
+      try {
+        const parsed = JSON.parse(authStatus.stdout);
+        alreadyAuthed = parsed.authenticated === true;
+      } catch {
+        // best-effort
+      }
+    }
+    if (alreadyAuthed) {
+      ui.success('OneCLI CLI already authenticated; skipping login.');
+    } else {
+      ui.note(
+        'OneCLI CLI authentication',
+        'OneCLI requires an `oc_*` API key for the CLI to talk to the local gateway.\n' +
+          '1. The dashboard will open in your browser at ' + ONECLI_URL + '\n' +
+          '2. Sign up / create the admin account if this is your first time.\n' +
+          '3. Generate an API key from Settings → API Keys.\n' +
+          '4. Paste it into the next prompt.',
+      );
+      if (process.platform === 'darwin') {
+        await ui.runCommand('open', [ONECLI_URL]);
+      }
+      const ocKey = await clack.password({
+        message: 'Paste your OneCLI API key (oc_...):',
+        mask: '•',
+        validate: (v) => {
+          if (!v) return 'Required.';
+          if (!v.startsWith('oc_')) return 'Should start with oc_ — that\'s the OneCLI key, not your Anthropic key';
+          return undefined;
+        },
+      });
+      if (clack.isCancel(ocKey)) {
+        throw new Error('OneCLI API key entry cancelled');
+      }
+      const login = await ui.runCommand(onecliCmd, [
+        'auth',
+        'login',
+        '--api-key',
+        ocKey as string,
+      ]);
+      if (login.code !== 0) {
+        ui.error(
+          `onecli auth login failed (exit ${login.code}). stderr: ${login.stderr.slice(0, 400)}`,
+        );
+        throw new Error('onecli auth login failed');
+      }
+      ui.success('OneCLI CLI authenticated.');
+    }
+
+    // 2c. Check whether an Anthropic secret already exists. Skip if so.
+    let alreadyHasAnthropic = false;
+    const secretsList = await ui.runCommand(onecliCmd, ['secrets', 'list']);
+    if (secretsList.code === 0) {
+      try {
+        const secrets = JSON.parse(secretsList.stdout) as Array<{
+          name?: string;
+          hostPattern?: string;
+        }>;
+        if (
+          Array.isArray(secrets) &&
+          secrets.some(
+            (s) => s.name === 'Anthropic' && s.hostPattern === 'api.anthropic.com',
+          )
+        ) {
+          alreadyHasAnthropic = true;
+        }
+      } catch {
+        // best-effort
+      }
+    }
+
+    if (alreadyHasAnthropic) {
+      ui.success('Anthropic secret already registered with OneCLI; skipping create.');
+      return { data: { onecli_configured: true } };
+    }
+
+    // Prompt for Anthropic API key.
     const apiKey = await clack.password({
       message: 'Paste your Anthropic API key (sk-ant-...):',
       mask: '•',
@@ -161,38 +261,33 @@ export const step: Step = {
       },
     });
     if (clack.isCancel(apiKey)) {
-      ui.error('Cancelled.');
       throw new Error('Anthropic API key entry cancelled');
     }
 
-    // 3. Register via onecli config (R3 friction 1: --type generic, NOT anthropic).
-    // OneCLI is a Go binary, NOT an npm package — call it directly,
-    // not via `npx`. The previous version used `npx onecli ...` which
-    // 404s on the npm registry every time. resolveOnecliCmd() handles
-    // PATH lookup with a fallback to the canonical ~/.local/bin
-    // install location.
-    const onecliCmd = await resolveOnecliCmd(ui);
-    const args = [
-      'config',
-      'add',
-      'anthropic',
+    // 2d. Create the Anthropic secret. The new `secrets create` API
+    // replaces the v1.0-era `config add` shape. `--type generic` with
+    // `--host-pattern api.anthropic.com` produces the same injection
+    // config Don's main machine has (verified: pathPattern '/*',
+    // headerName 'x-api-key', valueFormat '{value}').
+    const reg = await ui.runCommand(onecliCmd, [
+      'secrets',
+      'create',
+      '--name',
+      'Anthropic',
       '--type',
       'generic',
-      '--header-name',
-      'x-api-key',
-      '--header-value',
-      '{value}',
-      '--path',
-      '/*',
-      '--secret',
+      '--value',
       apiKey as string,
-    ];
-    const reg = await ui.runCommand(onecliCmd, args);
+      '--host-pattern',
+      'api.anthropic.com',
+    ]);
     if (reg.code !== 0) {
-      ui.error(`onecli config add failed (exit ${reg.code}). stderr: ${reg.stderr.slice(0, 400)}`);
-      throw new Error('onecli config add failed');
+      ui.error(
+        `onecli secrets create failed (exit ${reg.code}). stderr: ${reg.stderr.slice(0, 400)}`,
+      );
+      throw new Error('onecli secrets create failed');
     }
-    ui.success('Anthropic credential registered with OneCLI (--type generic)');
+    ui.success('Anthropic credential registered with OneCLI.');
 
     return { data: { onecli_configured: true } };
   },
