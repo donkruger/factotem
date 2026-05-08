@@ -161,41 +161,35 @@ if ! is_macos; then
 fi
 
 if [[ ! -d "$SOURCE_APP" ]]; then
-  # R.4 fallback: try the latest GitHub Release. Useful for operators
-  # who cloned the repo without running `cargo tauri build` (e.g. they
-  # only want the Doctor, not the orchestrator). Requires `gh` CLI.
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    echo "ℹ Source bundle missing; trying GitHub Release fallback…"
-    TMP_DIR=$(mktemp -d)
-    # Releases live on the PUBLIC mirror repo so unauthenticated
-    # operators can fetch them (the source repo donkruger/factotem
-    # is private). `gh release download` works with or without a
-    # token here because the mirror is public.
-    if gh release download --repo RichardBNel/Factotem \
-        --pattern "*aarch64.dmg" \
-        --dir "$TMP_DIR" 2>/dev/null; then
-      DMG=$(find "$TMP_DIR" -name "*.dmg" | head -1)
-      if [[ -n "$DMG" && -f "$DMG" ]]; then
-        echo "  Mounting $(basename "$DMG")…"
-        MOUNT_POINT=$(hdiutil attach "$DMG" -nobrowse -noverify | tail -1 | awk '{print $3}')
-        DMG_APP=$(find "$MOUNT_POINT" -name "*.app" -maxdepth 2 | head -1)
-        if [[ -n "$DMG_APP" && -d "$DMG_APP" ]]; then
-          # Stage to a writable location so we can ditto + cleanup the mount.
-          STAGED_APP="$TMP_DIR/$(basename "$DMG_APP")"
-          /usr/bin/ditto "$DMG_APP" "$STAGED_APP"
-          hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true
-          SOURCE_APP="$STAGED_APP"
-          echo "  Installing from GitHub Release ($(bundle_version_of "$SOURCE_APP"))…"
-        else
-          hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true
-          rm -rf "$TMP_DIR"
-        fi
-      else
-        rm -rf "$TMP_DIR"
-      fi
+  # Fallback: download the latest .dmg from the public mirror. The mirror
+  # repo (RichardBNel/Factotem) is public, so plain curl works — no `gh`
+  # CLI or auth required. The stable URL always redirects to the latest
+  # release's Factotem-Doctor.dmg (the versionless asset shipped since R.6).
+  STABLE_URL="https://github.com/RichardBNel/Factotem/releases/latest/download/Factotem-Doctor.dmg"
+  echo "ℹ Source bundle missing; downloading latest Doctor from the public mirror…"
+  echo "  $STABLE_URL"
+
+  TMP_DIR=$(mktemp -d)
+  TMP_DMG="$TMP_DIR/Factotem-Doctor.dmg"
+
+  if /usr/bin/curl -fsSL "$STABLE_URL" -o "$TMP_DMG" && [[ -f "$TMP_DMG" ]]; then
+    echo "  Mounting $(basename "$TMP_DMG")…"
+    MOUNT_POINT=$(hdiutil attach "$TMP_DMG" -nobrowse -noverify | tail -1 | awk '{print $3}')
+    DMG_APP=$(find "$MOUNT_POINT" -name "*.app" -maxdepth 2 | head -1)
+    if [[ -n "$DMG_APP" && -d "$DMG_APP" ]]; then
+      # Stage to a writable location so we can ditto + cleanup the mount.
+      STAGED_APP="$TMP_DIR/$(basename "$DMG_APP")"
+      /usr/bin/ditto "$DMG_APP" "$STAGED_APP"
+      hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true
+      SOURCE_APP="$STAGED_APP"
+      echo "  Installing from public mirror ($(bundle_version_of "$SOURCE_APP"))…"
     else
+      hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true
       rm -rf "$TMP_DIR"
     fi
+  else
+    rm -rf "$TMP_DIR"
+    echo "  Download failed — check internet connection or run \`curl -fsSL $STABLE_URL\` manually." >&2
   fi
 fi
 
@@ -203,12 +197,14 @@ if [[ ! -d "$SOURCE_APP" ]]; then
   echo "✗ Doctor .app not found at:" >&2
   echo "    $SOURCE_APP" >&2
   echo >&2
-  echo "  Either build from source:" >&2
+  echo "  The public-mirror download failed. Manual options:" >&2
+  echo >&2
+  echo "  1. Build from source:" >&2
   echo "    cd cli/claw-doctor && cargo tauri build" >&2
   echo >&2
-  echo "  Or install gh + authenticate, then re-run (uses GitHub Release):" >&2
-  echo "    brew install gh && gh auth login" >&2
-  echo "    bash scripts/install-doctor.sh" >&2
+  echo "  2. Manually download the .dmg in your browser:" >&2
+  echo "    https://github.com/RichardBNel/Factotem/releases/latest/download/Factotem-Doctor.dmg" >&2
+  echo "    Then drag the .app to /Applications." >&2
   exit 1
 fi
 
