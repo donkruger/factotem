@@ -62,18 +62,18 @@ export const step: Step = {
       options: [
         {
           value: 'solo',
-          label: 'solo',
-          hint: 'Single operator on one machine — the standard NanoClaw layout',
+          label: 'Just me on my own machine',
+          hint: 'solo — single operator, real WhatsApp, the standard layout',
         },
         {
           value: 'hobbyist',
-          label: 'hobbyist',
-          hint: 'Local-only experiment — no public exposure, no real WhatsApp',
+          label: 'Local experiment (no real WhatsApp)',
+          hint: 'hobbyist — try the framework offline before committing your phone',
         },
         {
           value: 'collaborator-invite',
-          label: 'collaborator-invite',
-          hint: 'Joining someone else\'s deployment as a collaborator',
+          label: "Joining someone else's deployment",
+          hint: 'collaborator-invite — exits with instructions to find the existing deployment',
         },
       ],
       initialValue: state.profile,
@@ -89,9 +89,11 @@ export const step: Step = {
     if (profile === 'collaborator-invite') {
       ui.note(
         'Collaborator path',
-        'This wizard sets up new deployments. To join an existing deployment as a collaborator, ask the operator for their dashboard URL and visit `/onboarding/accept-invite`. Exiting.',
+        "This wizard sets up new deployments. To join an existing one, ask the\n" +
+          "operator for their dashboard URL and visit `/onboarding/accept-invite`.\n\n" +
+          "Nothing has been changed on this machine.",
       );
-      ui.outro('No new deployment created.');
+      ui.outro("Catch you when you're ready to spin up your own — see you then.");
       process.exit(0);
     }
 

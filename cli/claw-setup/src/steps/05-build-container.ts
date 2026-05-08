@@ -1,6 +1,27 @@
 import fs from 'fs';
 import path from 'path';
+import { getLogFilePath } from '../ui.js';
 import type { Step } from '../types.js';
+
+// Pull the most recent meaningful line from the wizard's session log so
+// the heartbeat can show "what's the build doing right now?" rather than
+// just "still going". Filters to [STDOUT]/[STDERR] lines (the actual
+// build output), skips empty lines, and truncates to fit one terminal row.
+function getLastBuildActivity(): string | null {
+  try {
+    const content = fs.readFileSync(getLogFilePath(), 'utf-8');
+    const lines = content
+      .split('\n')
+      .filter((l) => l.startsWith('[STDOUT]') || l.startsWith('[STDERR]'))
+      .map((l) => l.replace(/^\[STDOUT\]\s*|^\[STDERR\]\s*/, '').trim())
+      .filter((l) => l.length >= 3);
+    if (lines.length === 0) return null;
+    const last = lines[lines.length - 1];
+    return last.length > 70 ? last.slice(0, 67) + '…' : last;
+  } catch {
+    return null;
+  }
+}
 
 export const step: Step = {
   id: '05-build-container',
@@ -47,8 +68,10 @@ export const step: Step = {
       const m = Math.floor(secs / 60);
       const s = secs % 60;
       const elapsed = m > 0 ? `${m}m ${s}s` : `${s}s`;
+      const lastLine = getLastBuildActivity();
+      const suffix = lastLine ? ` — last: ${lastLine}` : '';
       // Use stderr-like raw print to avoid breaking the clack frame.
-      process.stdout.write(`  · still building… (${elapsed} elapsed)\n`);
+      process.stdout.write(`  · still building… (${elapsed} elapsed)${suffix}\n`);
     }, 30_000);
 
     let result;

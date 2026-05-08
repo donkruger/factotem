@@ -16,7 +16,7 @@ node cli/claw-setup/dist/index.js
 
 ## Prerequisites
 
-- **Node.js ≥ 24** (the wizard probes `process.versions.node`)
+- **Node.js ≥ 20** (the wizard probes `process.versions.node`; Node 22 is the realistic floor for development)
 - **Docker** (running daemon — `docker info` must succeed)
 - **Tailscale** (`tailscale status` must succeed)
 - **macOS**: TCC implications — see below

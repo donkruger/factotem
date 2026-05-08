@@ -44,7 +44,13 @@ export const step: Step = {
         initialValue: false,
       });
       if (clack.isCancel(confirmed) || !confirmed) {
-        return { warning: `${m.name} not confirmed installed; rerun --resume after installing` };
+        ui.note(
+          'Resume',
+          `Once ${m.name} is installed, from the factotem repo run:\n` +
+            '  npm run claw-setup -- --resume\n' +
+            'to pick up at this step.',
+        );
+        return { warning: `${m.name} not confirmed installed; resume after installing` };
       }
     }
 

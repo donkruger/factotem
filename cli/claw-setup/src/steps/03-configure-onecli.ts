@@ -215,8 +215,11 @@ export const step: Step = {
         ocKey as string,
       ]);
       if (login.code !== 0) {
+        // Tail of stderr — onecli prints the actionable error at the end
+        // ("invalid api key", "host unreachable", etc.) so head-truncation
+        // hides the line the operator needs.
         ui.error(
-          `onecli auth login failed (exit ${login.code}). stderr: ${login.stderr.slice(0, 400)}`,
+          `onecli auth login failed (exit ${login.code}). Last 400 chars of stderr:\n${login.stderr.slice(-400)}`,
         );
         throw new Error('onecli auth login failed');
       }
@@ -293,7 +296,7 @@ export const step: Step = {
     ]);
     if (reg.code !== 0) {
       ui.error(
-        `onecli secrets create failed (exit ${reg.code}). stderr: ${reg.stderr.slice(0, 400)}`,
+        `onecli secrets create failed (exit ${reg.code}). Last 400 chars of stderr:\n${reg.stderr.slice(-400)}`,
       );
       throw new Error('onecli secrets create failed');
     }

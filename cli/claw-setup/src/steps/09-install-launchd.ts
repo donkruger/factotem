@@ -115,9 +115,9 @@ export const step: Step = {
 
     const bootstrap = await clack.confirm({
       message:
-        'Start NanoClaw now via launchd? (Default Yes. Bootstrapping starts the\n' +
-        '  orchestrator + WhatsApp ingestion + container spawning. You can stop\n' +
-        '  it later with `launchctl bootout`.)',
+        'Start NanoClaw now? Bootstrapping launches the orchestrator, WhatsApp\n' +
+        '  ingestion, and container spawning. You can stop it later with\n' +
+        '  `launchctl bootout`.',
       initialValue: true,
     });
     if (clack.isCancel(bootstrap) || !bootstrap) {

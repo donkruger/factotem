@@ -52,7 +52,8 @@ export const step: Step = {
         '1. Open WhatsApp on your phone\n' +
         '2. Settings → Linked Devices → Link a Device\n' +
         '3. Scan the QR code that appears here\n' +
-        '4. Wait for "✓ Authenticated" — pairing typically takes 5–15 seconds\n' +
+        '4. Wait for "✓ Authenticated" — pairing usually takes 10–30 seconds\n' +
+        '   (longer on slow networks or first-time iCloud sync)\n' +
         '5. The wizard will resume after the auth script exits',
     );
 

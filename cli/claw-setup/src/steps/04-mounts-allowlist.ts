@@ -46,10 +46,12 @@ export const step: Step = {
     } else {
       ui.note(
         'Mount allowlist',
-        'Wrote default empty allowlist to ~/.config/nanoclaw/mount-allowlist.json\n' +
-          '(no allowedRoots, nonMainReadOnly: true).\n' +
-          'To allow agents to read/write specific directories, edit that file later\n' +
-          'or run: npx tsx setup/index.ts --step mounts --json \'{...}\' --force',
+        'Mounts are folders the agent is allowed to read or write — for example a\n' +
+          'Brain folder of notes, or a Documents folder you want indexed. The default\n' +
+          'is empty (no folders accessible to agents) — the safe starting point.\n\n' +
+          'Wrote ~/.config/nanoclaw/mount-allowlist.json (no allowedRoots, nonMainReadOnly: true).\n' +
+          'To grant access later, edit that file or run:\n' +
+          "  npx tsx setup/index.ts --step mounts --json '{...}' --force",
       );
     }
 

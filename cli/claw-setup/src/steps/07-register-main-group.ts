@@ -168,13 +168,24 @@ export const step: Step = {
 
       const startedAt = Date.now();
       let lastReportedCount = 0;
+      const totalSecs = Math.round(GROUP_POLL_TIMEOUT_MS / 1000);
       while (Date.now() - startedAt < GROUP_POLL_TIMEOUT_MS) {
         await new Promise((resolve) => setTimeout(resolve, GROUP_POLL_INTERVAL_MS));
         chats = readGroupChats(dbPath);
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        const remaining = Math.max(0, totalSecs - elapsed);
         if (chats.length !== lastReportedCount) {
-          const elapsed = Math.round((Date.now() - startedAt) / 1000);
-          process.stdout.write(`  · chats: ${chats.length} group(s) found (${elapsed}s elapsed)\n`);
+          // Group count changed — definitive progress signal.
+          process.stdout.write(
+            `  · ${chats.length} group(s) visible (${elapsed}s elapsed, ${remaining}s remaining)\n`,
+          );
           lastReportedCount = chats.length;
+        } else {
+          // No new groups yet — still emit a tick so the operator sees the
+          // wizard is alive and tracking time. Lighter dot variant.
+          process.stdout.write(
+            `  · waiting for groups… (${elapsed}s elapsed, ${remaining}s remaining)\n`,
+          );
         }
         if (chats.length > 0) break;
       }

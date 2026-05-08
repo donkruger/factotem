@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -29,6 +30,30 @@ export const step: Step = {
       }
     } catch {
       // best-effort
+    }
+
+    // Backstop: if machine.json is absent or has no machineId, seed one
+    // here so the cheat sheet doesn't show "<not yet generated>". The
+    // orchestrator will respect this file on next start; if it has its
+    // own version, the existing fields win (we only fill in what's
+    // missing). Best-effort — never fails the wizard.
+    if (!machine.machineId) {
+      try {
+        machine = {
+          machineId: randomUUID(),
+          region: machine.region ?? 'Local',
+          hostname: machine.hostname ?? os.hostname(),
+        };
+        await fs.promises.mkdir(path.dirname(machinePath), { recursive: true, mode: 0o700 });
+        await fs.promises.writeFile(machinePath, JSON.stringify(machine, null, 2), {
+          mode: 0o600,
+        });
+      } catch (err) {
+        ui.warn(
+          `Couldn't seed ${machinePath}: ${(err as Error).message}. ` +
+            'Cheat sheet will show placeholders; orchestrator regenerates on first start.',
+        );
+      }
     }
 
     const hostname = os.hostname();
@@ -107,15 +132,18 @@ export const step: Step = {
         }
       }
     } catch (err) {
-      // Surface the actual installer output, not just "Command failed".
-      // execSync error has stdout/stderr buffers attached when stdio:'pipe'.
+      // Surface a short tail of the actual installer output (not just
+      // "Command failed"). 5 lines is enough to spot the real error in
+      // most cases; the manual install options below are the actionable
+      // recovery path. execSync error has stdout/stderr buffers attached
+      // when stdio:'pipe'.
       const e = err as Error & { stdout?: Buffer; stderr?: Buffer };
       const output = (
         (e.stdout?.toString() ?? '') + (e.stderr?.toString() ?? '')
       ).trim();
-      const tail = output ? output.split('\n').slice(-15).join('\n') : e.message;
+      const tail = output ? output.split('\n').slice(-5).join('\n') : e.message;
       ui.warn(
-        'Doctor install failed. Last 15 lines of installer output:\n' +
+        'Doctor install failed. Last 5 lines of installer output:\n' +
           tail +
           '\n\nManual install options:\n' +
           '  1. Re-run the installer (uses curl fallback to the public mirror):\n' +
@@ -151,16 +179,14 @@ export const step: Step = {
         ? [
             'Factotem Doctor:',
             `  ${doctorAppPath} — running in your menu bar`,
-            '  Click the icon for: Open Dashboard, Repair Stack, Settings, Logs',
+            '  Click the icon for: Open Dashboard, Repair Stack, Pull updates, Settings, Logs',
             '  Tooltip refreshes every 5s with Docker / OneCLI / NanoClaw health',
-            '',
           ]
         : []),
-      'Brain ticket integration: kanbanpro://open-ticket?id=...',
     ].join('\n');
 
     ui.note('Handoff', cheatSheet);
-    ui.outro('Setup complete — happy clawing.');
+    ui.outro('Setup complete — your assistant is ready.');
 
     return {};
   },
