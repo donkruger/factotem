@@ -75,7 +75,10 @@ export function startHttpServer(
     const dashboardOut = path.join(PROJECT_ROOT, 'dashboard', 'out');
     if (fs.existsSync(dashboardOut)) {
       app.use(express.static(dashboardOut));
-      logger.info({ dashboardOut }, 'startHttpServer: dashboard static export mounted');
+      logger.info(
+        { dashboardOut },
+        'startHttpServer: dashboard static export mounted',
+      );
 
       // Static-export friendly fallback for dynamic routes. Next.js with
       // `output: 'export'` only generates one HTML file per dynamic-route
@@ -113,7 +116,10 @@ export function startHttpServer(
     // (lesson from the 2026-05-05 incident where EADDRINUSE during Baileys
     // mid-write corrupted creds.json to 0 bytes).
     const server = app.listen(port, '0.0.0.0');
-    logger.info({ port }, 'startHttpServer: app.listen() called, waiting for listening event');
+    logger.info(
+      { port },
+      'startHttpServer: app.listen() called, waiting for listening event',
+    );
     server.on('listening', () => {
       const addr = server.address();
       logger.info(
@@ -125,7 +131,8 @@ export function startHttpServer(
       if (err.code === 'EADDRINUSE') {
         logger.warn(
           { port, err: err.message },
-          'startHttpServer: port in use; /health + /api unavailable but NanoClaw continues. Find holder: lsof -iTCP:' + port,
+          'startHttpServer: port in use; /health + /api unavailable but NanoClaw continues. Find holder: lsof -iTCP:' +
+            port,
         );
       } else {
         logger.error(
