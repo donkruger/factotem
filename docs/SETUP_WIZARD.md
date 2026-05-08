@@ -116,7 +116,7 @@ Wizard step **03 (`configure-onecli`)** invokes `onecli config add` with `--type
 | `00-profile-mode`        | Choose deployment profile                   | Short-circuits on `collaborator-invite`.                             |
 | `01-check-prereqs`       | Probe Node, Docker, Tailscale, TCC          | TCC hard-stop runs here too.                                         |
 | `02-install-prerequisites` | Install missing tools                     | Opens install URLs in browser; never auto-installs.                  |
-| `03-configure-onecli`    | Register Anthropic credential               | Uses `--type generic` (Q8 fix).                                      |
+| `03-configure-onecli`    | Register Anthropic credential               | Uses `--type generic` (Q8 fix). Installs OneCLI inline via `sh -c` + 180s timeout (no second Terminal window); falls back to opening Terminal on timeout / non-zero exit. |
 | `04-mounts-allowlist`    | Configure mount allowlist                   | Wraps `setup --step mounts`.                                         |
 | `05-build-container`     | Build agent container                       | Invokes `container/build.sh`; surfaces image SHA.                    |
 | `06-pair-whatsapp`       | Pair WhatsApp                               | Refuses over existing creds without `--force`. Spawns `src/whatsapp-auth.ts` with stdio inheritance to render the QR. |

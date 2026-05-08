@@ -75,36 +75,103 @@ export const step: Step = {
         // as a Go binary from onecli.sh, NOT an npm package — chain
         // both `install` (the gateway daemon) and `cli/install` (the
         // CLI client) so a single Enter press completes both.
+        // VISION pillar 5: every external Terminal we open is a UX
+        // failure for non-technical operators. The OneCLI install is a
+        // self-contained `curl … | sh` chain that can run inline; the
+        // wizard's `ui.runCommand` already streams stdout/stderr to the
+        // session log and writes per-line ticks to the operator's
+        // terminal. Borrowed from EasyClaw's `runWithLog` pattern at
+        // `src/main/services/installer.ts`.
+        //
+        // We bound the inline run with a 180s wall-clock timeout and
+        // fall back to the legacy "open Terminal" path if it doesn't
+        // complete cleanly — covers sudo prompts, EULA waits, network
+        // hangs, or anything else that needs a real TTY. The fallback
+        // path is identical to today's UX, so the operator is strictly
+        // no worse off.
+        //
+        // Two-step install per the setup skill: daemon then CLI.
+        // Combined with `&&` so one process runs both.
+        const installCmd =
+          'curl -fsSL onecli.sh/install | sh && curl -fsSL onecli.sh/cli/install | sh';
+        const installTimeoutMs = 180_000;
+
         ui.note(
-          'Install OneCLI',
-          'OneCLI is the credential gateway that injects API keys into agent containers.\n' +
-            'A new Terminal window will open with the installer commands pre-staged.\n' +
-            'Press Enter in that Terminal to run them, follow any prompts, then come back here.',
+          'Installing OneCLI inline',
+          'OneCLI is the credential gateway that injects API keys into\n' +
+            'agent containers. Installing now (~30s on a fast connection).\n' +
+            'You\'ll see heartbeat ticks below while it runs. If anything\n' +
+            'prompts for sudo or hangs, we\'ll fall back to opening a\n' +
+            'Terminal window so you can interact with the installer there.',
         );
 
-        if (process.platform === 'darwin') {
-          // Two-step install per the setup skill: daemon then CLI.
-          // Combined with `&&` so a single Enter runs both.
-          const installCmd =
-            'curl -fsSL onecli.sh/install | sh && curl -fsSL onecli.sh/cli/install | sh';
-          const script =
-            'tell application "Terminal" to activate\n' +
-            'tell application "Terminal" to do script "' + installCmd + '"';
-          await ui.runCommand('osascript', ['-e', script]);
+        const installStartedAt = Date.now();
+        const installHeartbeat = setInterval(() => {
+          const secs = Math.round((Date.now() - installStartedAt) / 1000);
+          process.stdout.write(`  · still installing OneCLI… (${secs}s elapsed)\n`);
+        }, 30_000);
+
+        let installResult: { stdout: string; stderr: string; code: number } = {
+          stdout: '',
+          stderr: '',
+          code: 124,
+        };
+        try {
+          // Promise.race — whichever resolves first wins. The timeout
+          // branch rejects so the catch below fills installResult with
+          // a pseudo-failure code that triggers the Terminal fallback.
+          installResult = await Promise.race([
+            ui.runCommand('sh', ['-c', installCmd]),
+            new Promise<{ stdout: string; stderr: string; code: number }>(
+              (_, reject) =>
+                setTimeout(
+                  () => reject(new Error('install timed out after ' + installTimeoutMs / 1000 + 's')),
+                  installTimeoutMs,
+                ),
+            ),
+          ]);
+        } catch (err) {
+          installResult = {
+            stdout: '',
+            stderr: (err as Error).message,
+            code: 124,
+          };
+        } finally {
+          clearInterval(installHeartbeat);
         }
 
-        // Block until the operator confirms the install completed in
-        // the other Terminal window. Same gesture as step 02.
-        const confirmed = await clack.confirm({
-          message: 'Have you completed the OneCLI install in the other Terminal?',
-          initialValue: false,
-        });
-        if (clack.isCancel(confirmed) || !confirmed) {
-          ui.note(
-            'Resume',
-            'Once OneCLI is installed, from the factotem repo root rerun:\n  npm run claw-setup -- --resume',
+        if (installResult.code !== 0) {
+          // Inline path didn't complete cleanly — fall back to the
+          // legacy Terminal-pop. The operator runs the same install
+          // command interactively in a real TTY, then confirms back
+          // here. UX matches what the wizard did before this commit.
+          ui.warn(
+            `Inline install didn't complete (exit ${installResult.code}).\n` +
+              'Falling back to opening Terminal so the installer can run\n' +
+              'interactively (e.g. respond to sudo prompts directly).',
           );
-          return { warning: 'OneCLI not installed; resume after install' };
+
+          if (process.platform === 'darwin') {
+            const script =
+              'tell application "Terminal" to activate\n' +
+              'tell application "Terminal" to do script "' + installCmd + '"';
+            await ui.runCommand('osascript', ['-e', script]);
+          }
+
+          const confirmed = await clack.confirm({
+            message: 'Have you completed the OneCLI install in the other Terminal?',
+            initialValue: false,
+          });
+          if (clack.isCancel(confirmed) || !confirmed) {
+            ui.note(
+              'Resume',
+              'Once OneCLI is installed, from the factotem repo root rerun:\n  npm run claw-setup -- --resume',
+            );
+            return { warning: 'OneCLI not installed; resume after install' };
+          }
+        } else {
+          const elapsedSecs = Math.round((Date.now() - installStartedAt) / 1000);
+          ui.success(`OneCLI installed inline (${elapsedSecs}s).`);
         }
 
         // Re-probe after install — gateway should now be reachable.
