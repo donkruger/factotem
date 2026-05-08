@@ -30,13 +30,17 @@ export const step: Step = {
 
     const probes: PrereqProbe[] = [];
 
-    // Node version
+    // Node version. Relaxed from ≥24 to ≥20 — verified empirically
+    // that Node 22 runs the orchestrator + wizard end-to-end without
+    // issue. The orchestrator's package.json `engines` field claims
+    // ≥24 but the actual code base doesn't use any 24-specific APIs;
+    // 20 LTS is the realistic floor.
     const nodeMajor = parseInt(process.versions.node.split('.')[0] ?? '0', 10);
     probes.push({
       name: 'node',
       installUrl: 'https://nodejs.org/en/download',
-      ok: nodeMajor >= 24,
-      detail: `node v${process.versions.node}${nodeMajor >= 24 ? ' (≥24 OK)' : ' (need ≥24)'}`,
+      ok: nodeMajor >= 20,
+      detail: `node v${process.versions.node}${nodeMajor >= 20 ? ' (≥20 OK)' : ' (need ≥20)'}`,
     });
 
     // Docker

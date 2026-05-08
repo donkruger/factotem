@@ -14,7 +14,7 @@
     "format:check": "prettier --check \"src/**/*.ts\"",
     "prepare": "husky",
     "setup": "tsx setup/index.ts",
-    "claw-setup": "cd cli/claw-setup && npm install --silent && npm run build --silent && cd ../.. && node cli/claw-setup/dist/index.js",
+    "claw-setup": "npm install --silent && cd cli/claw-setup && npm install --silent && npm run build --silent && cd ../.. && node cli/claw-setup/dist/index.js",
     "auth": "tsx src/whatsapp-auth.ts",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
