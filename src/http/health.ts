@@ -19,6 +19,17 @@ import { ONECLI_URL, PROJECT_ROOT, STORE_DIR } from '../config.js';
 import { logger } from '../logger.js';
 import { getMachineIdentity, MachineIdentity } from './machine-identity.js';
 
+const PACKAGE_VERSION: string = (() => {
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf-8'),
+    );
+    return typeof pkg.version === 'string' ? pkg.version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
+
 export interface HealthSnapshot {
   machine: MachineIdentity & { tailscale_ip: string | null };
   nanoclaw: {
@@ -76,7 +87,7 @@ export async function getHealthSnapshot(): Promise<HealthSnapshot> {
       running: true,
       pid: process.pid,
       uptime_seconds: Math.floor(process.uptime()),
-      version: process.env.NANOCLAW_VERSION ?? 'unknown',
+      version: process.env.NANOCLAW_VERSION ?? PACKAGE_VERSION,
     },
     docker,
     onecli,
@@ -215,14 +226,45 @@ async function probeTailscale(): Promise<string | null> {
 }
 
 async function probeOpenDm(): Promise<HealthSnapshot['open_dm']> {
-  // open_dm config lives on the main group's containerConfig in SQLite.
-  // Reading via the existing better-sqlite3 connection is the cleanest
-  // approach but introduces a circular import with db.ts. For v1, we
-  // surface a placeholder and let the dashboard call /api/groups separately.
-  // Dashboard panels can render the real values from there.
-  return {
-    enabled: false,
-    daily_budget_cents: null,
-    today_spent_cents: 0,
-  };
+  // open_dm config lives on the main group's container_config JSON in SQLite.
+  // Probe via the existing readonly connection — same pattern as probeWhatsApp.
+  // Fail-soft on every error: an unreadable DB or malformed JSON degrades to
+  // the original placeholder shape, which is harmless for the dashboard.
+  try {
+    const row = getProbeDb()
+      .prepare(
+        'SELECT container_config FROM registered_groups WHERE is_main = 1 LIMIT 1',
+      )
+      .get() as { container_config: string | null } | undefined;
+    if (!row?.container_config) {
+      return { enabled: false, daily_budget_cents: null, today_spent_cents: 0 };
+    }
+    const parsed = JSON.parse(row.container_config) as {
+      openMode?: { enabled?: boolean; dailyBudgetCents?: number | null };
+    };
+    const openMode = parsed.openMode;
+    if (!openMode?.enabled) {
+      return { enabled: false, daily_budget_cents: null, today_spent_cents: 0 };
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    let todaySpentCents = 0;
+    try {
+      const spend = getProbeDb()
+        .prepare(
+          'SELECT est_cost_cents FROM open_spend_log WHERE date = ?',
+        )
+        .get(today) as { est_cost_cents?: number } | undefined;
+      todaySpentCents = spend?.est_cost_cents ?? 0;
+    } catch {
+      /* open_spend_log may not exist on fresh installs — leave at 0 */
+    }
+    return {
+      enabled: true,
+      daily_budget_cents: openMode.dailyBudgetCents ?? null,
+      today_spent_cents: todaySpentCents,
+    };
+  } catch (err) {
+    logger.debug({ err }, 'health: open-dm probe failed');
+    return { enabled: false, daily_budget_cents: null, today_spent_cents: 0 };
+  }
 }

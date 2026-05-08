@@ -7,6 +7,7 @@ const LINKS = [
   { href: '/', label: 'Server Health' },
   { href: '/activity', label: 'Activity' },
   { href: '/groups', label: 'Groups' },
+  { href: '/persona', label: 'Persona' },
   { href: '/cost', label: 'Cost' },
   { href: '/alerts', label: 'Alerts' },
   { href: '/audit', label: 'Audit' },

@@ -199,6 +199,24 @@ export async function getGroup(jid: string): Promise<Group> {
   return getJson<Group>(`/api/groups/${encodeURIComponent(jid)}`);
 }
 
+export interface PersonaGroup {
+  jid: string;
+  name: string;
+  folder: string;
+  trigger?: string;
+  is_main: boolean;
+}
+
+export interface Persona {
+  assistant_name: string;
+  default_trigger: string;
+  groups: PersonaGroup[];
+}
+
+export async function getPersona(): Promise<Persona> {
+  return getJson<Persona>('/api/persona');
+}
+
 export interface GetTurnsOpts {
   group?: string;
   model?: string;

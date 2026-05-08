@@ -550,10 +550,7 @@ export class WhatsAppChannel implements Channel {
     }
   }
 
-  private scheduleReconnect(
-    attempt: number,
-    onFirstOpen?: () => void,
-  ): void {
+  private scheduleReconnect(attempt: number, onFirstOpen?: () => void): void {
     const delayMs = Math.min(5000 * Math.pow(2, attempt - 1), 300000);
     logger.info({ attempt, delayMs }, 'Reconnecting...');
     setTimeout(() => {

@@ -6,6 +6,29 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-08
 
+### Phase 3 / Doctor v0.1.7 — persona page + health probe wiring + reconnect-resolve fix
+
+Tag-and-publish that bundles the orchestrator wins accumulated since v0.1.6 plus three small follow-ups surfaced while verifying Sarah on the iMac. The Doctor binary itself has zero code changes — the version bump is the ratchet that signals "the deployment behind me has these orchestrator improvements" and keeps the auto-updater pipeline exercised.
+
+**A. WhatsApp `connect()` resolve fix (`src/channels/whatsapp.ts`).** High-severity hang surfaced on Don's iMac post-W.1 bootstrap. The orchestrator's main loop hung at `await channel.connect()` (`src/index.ts:993`) after a Baileys close-reopen cycle, so `queue.setProcessMessagesFn` (line 1052) and `startHttpServer` (line 1058) never ran — `launchctl print` reported `state = running` but `/health` returned 000 and the agent never replied. Cause: `scheduleReconnect()` invoked `connectInternal()` without forwarding the `onFirstOpen` callback, so the resolve passed to the original Promise was held only in the first connection scope and lost when that attempt closed. Fix: thread `onFirstOpen` through `scheduleReconnect(attempt, onFirstOpen?)`, retry path forwards it on each subsequent attempt. After: connect resolves on the first successful 'open' event whether that's attempt 1 or attempt N. Fully written up at `ben-log/2026-05-08-whatsapp-onfirstopen-lost-on-reconnect.md`. Productisation note: every channel implementation needs the same retry-forwards-resolve invariant — Telegram/Slack/Signal/Discord likely have analogous bugs.
+
+**B. `/health` `probeOpenDm` now actually probes (`src/http/health.ts:217-228`).** v1 stub returned a hard-coded `{ enabled: false, daily_budget_cents: null, today_spent_cents: 0 }` regardless of state. Replaced with a SQLite read of the main group's `container_config.openMode` JSON via the existing `getProbeDb()` readonly connection — same pattern as `probeWhatsApp`. Returns the real `enabled`, `daily_budget_cents`, and `today_spent_cents` (joined with `open_spend_log` for today's UTC date). Fail-soft: every error path degrades to the original placeholder shape.
+
+**C. `nanoclaw.version` now actually surfaces (`src/http/health.ts:79`).** Was `process.env.NANOCLAW_VERSION ?? 'unknown'` — env var is never set, so `/health` always reported `"version": "unknown"`. Now reads `package.json` once at module load via `JSON.parse(fs.readFileSync(...))` (the existing experimental-JSON-modules warning suggested avoiding `import assert`). Env var still wins if set, for CI override.
+
+**D. Read-only Persona page (`/api/persona` + dashboard route `/persona`).**
+
+- **`src/http/api.ts`** — new `GET /api/persona` returns `{ assistant_name, default_trigger, groups: [{ jid, name, folder, trigger, is_main }] }`. Reads `ASSISTANT_NAME` and `DEFAULT_TRIGGER` from `src/config.ts`, group list from `deps.getRegisteredGroups()`. No mutating endpoint in this release — operators continue to edit `.env` and re-register via the existing `setup --step register` path.
+- **`dashboard/src/app/persona/{page.tsx,PersonaView.tsx}`** — new route modelled on `/groups`. Polls `/api/persona` every 10s. Renders three Cards: (1) global assistant name + default trigger Badge; (2) per-group table showing trigger and main/subgroup role; (3) "How to change persona" with the operator's `.env` line and a re-register command, both copy-to-clipboard.
+- **`dashboard/src/components/layout/NavLinks.tsx`** — adds `Persona` link between Groups and Cost.
+- **`dashboard/src/lib/nanoclaw.ts`** — adds `getPersona()` + `Persona`/`PersonaGroup` types mirroring the backend response.
+
+**E. Doctor version bump → 0.1.7.** Five files: `cli/claw-doctor/package.json`, `cli/claw-doctor/package-lock.json`, `cli/claw-doctor/src-tauri/Cargo.toml`, `cli/claw-doctor/src-tauri/Cargo.lock`, `cli/claw-doctor/src-tauri/tauri.conf.json`. Lockfiles regenerated via `npm install --package-lock-only` and `cargo check --offline`. No Doctor code changes — the existing v0.1.6 binary behaviour is preserved.
+
+**Verification target.** Lexical Lighthouse — Don's iMac. Pull, `npm install && npm run build`, `npm --prefix dashboard run build`, bootout/bootstrap. Expected `/health` shows real version + real openMode state; `/api/persona` returns Sarah + Mason Web Dev; `/persona/` renders in the browser. Doctor auto-update notification arrives within 4h of `latest.json` publication.
+
+**Recovery tag.** `pre-doctor-0.1.7-2026-05-08` (at `bb632ed`).
+
 ### Phase 3 / W.1 — WhatsApp end-to-end + persona + open-DM + /health diagnose
 
 After 14 separate papercuts landed across R.7→R.9 and the wizard finally completed end-to-end on Don's external iMac, three substantive issues remained that fell below the "true cold-start" bar:

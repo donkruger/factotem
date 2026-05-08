@@ -30,7 +30,7 @@ import { AgentTurnRow, getAllTasks, setRegisteredGroup } from '../db.js';
 import Database from 'better-sqlite3';
 import { execSync } from 'child_process';
 import path from 'path';
-import { STORE_DIR } from '../config.js';
+import { ASSISTANT_NAME, DEFAULT_TRIGGER, STORE_DIR } from '../config.js';
 import { logger } from '../logger.js';
 import { RegisteredGroup } from '../types.js';
 import { getAlertsSnapshot, isRestartStackEnabled } from './alerts.js';
@@ -99,6 +99,30 @@ export function mountApi(app: Express, deps: ApiDeps): void {
       ...group,
       requires_trigger: group.requiresTrigger ?? true,
       is_main: group.isMain ?? false,
+    });
+  });
+
+  // ---- persona ----
+
+  // Read-only snapshot of the deployment's assistant identity. Surfaces the
+  // global ASSISTANT_NAME (from .env via src/config.ts) and the per-group
+  // trigger_pattern (from registered_groups). Mutations stay on the existing
+  // PATCH /api/groups/:jid (per-group trigger) and operator-side `.env` edit
+  // for the global name; this endpoint exists so the dashboard can show
+  // "what persona is this deployment running as?" without grepping the host.
+  app.get('/api/persona', (_req: Request, res: Response) => {
+    const groups = deps.getRegisteredGroups();
+    const list = Object.entries(groups).map(([jid, g]) => ({
+      jid,
+      name: g.name,
+      folder: g.folder,
+      trigger: g.trigger,
+      is_main: g.isMain ?? false,
+    }));
+    res.json({
+      assistant_name: ASSISTANT_NAME,
+      default_trigger: DEFAULT_TRIGGER,
+      groups: list,
     });
   });
 
