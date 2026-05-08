@@ -4,6 +4,47 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ---
 
+## 2026-05-08
+
+### Phase 2 / Release pipeline — R.9 (welcome CTA: drop `gh` requirement, surface real prereqs) → v0.1.6
+
+Don ran R.8's welcome one-liner on his external iMac (a clean machine) and hit `zsh: command not found: gh`. The CTA assumed `gh` CLI was installed; on a fresh Mac it isn't. **Repo also flipped public** in the meantime, which means we don't need `gh` for auth anymore — plain `git clone` over HTTPS works.
+
+R.9 makes two changes:
+
+**1. Use `git clone` over HTTPS instead of `gh repo clone`.** `git` is much more universally available on macOS than `gh` — the Xcode Command Line Tools (which ship `git`) auto-prompt for install on first invocation, while `gh` requires an explicit Homebrew install. Now that the source repo is public, no GitHub auth is needed for the clone.
+
+New welcome one-liner:
+
+```
+git clone https://github.com/donkruger/factotem.git && cd factotem && npm run claw-setup
+```
+
+**2. Surface the real prerequisites honestly.** The previous welcome copy said "source-repo access required" — which was accurate when the repo was private but no longer applies. The genuine prereqs on a fresh Mac are now:
+- `git` (via Xcode CLT — macOS auto-prompts)
+- Node.js 20+ (operator installs from nodejs.org — no automatic prompt)
+
+The welcome card lists both with inline guidance: macOS will handle git automatically when the operator presses Enter, but Node has to be installed manually first. There's a link to nodejs.org and a `node --version` check command. Everything else (Docker, OneCLI, Tailscale, agent container, launchd plist) is handled by the wizard once it starts.
+
+**Files changed.**
+
+- `cli/claw-doctor/src/views/WelcomeView.tsx`:
+  - `SETUP_COMMAND` constant updated to use `git clone https://github.com/donkruger/factotem.git`
+  - Setup-state card rewritten — drop "private repo" / "source-repo access" framing; new "Prerequisites" section listing git + Node 20+ with the nodejs.org link and the `node --version` check tip
+  - Removed the "Don't have access yet?" footer (no longer applicable since the repo is public)
+  - Added `.hint.prereqs` styling for the new prereqs section
+- `cli/claw-doctor/src-tauri/src/commands.rs` — `open_setup_in_terminal` AppleScript updated to stage `git clone https://github.com/donkruger/factotem.git && cd factotem && npm run claw-setup`. Docstring updated to reflect the real prereqs.
+- Version bumped 0.1.5 → 0.1.6 in five locations (`package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, `tauri.conf.json`).
+- `docs/CHANGE_LOG.md` — this entry.
+
+**Note on repo visibility.** The source repo (`donkruger/factotem`) flipped public during the R.8 → R.9 cycle. The two-repo split (source + release-mirror) still applies operationally — release artefacts continue to land on `RichardBNel/Factotem` because that's where CI's `gh release create` is configured to push, and there's no harm in keeping artefacts off the source repo's Releases page (it's a cleanliness thing now, not a privacy thing). Doc references to "private repo" in `README.md`, `docs/RELEASES.md` § "Why two repos?", and `CONTRIBUTING.md` are now stale and should be updated in a follow-up doc commit; they don't affect runtime behaviour.
+
+**Convention check.** Pure additive — one welcome-view rewrite, one Tauri command edit, version bump. No new dependencies. No orchestrator code touched. Reversal: `git revert <r9 commit>`. Operators on v0.1.6 who downgrade to v0.1.5 manually would see the broken `gh repo clone` CTA again — but the welcome window itself still works; only the auto-staged Terminal command is wrong.
+
+**Recovery tag:** `pre-r9-2026-05-08`.
+
+---
+
 ## 2026-05-07
 
 ### Phase 2 / Release pipeline — R.8 (welcome CTA fix — source-repo-honest one-liner) → v0.1.5

@@ -21,17 +21,21 @@ import {
   type StackStatus,
 } from '../lib/tauri';
 
-// One-liner that an operator with source-repo access can paste into a
-// fresh terminal: clones the repo, then runs the wizard via the
-// orchestrator's top-level `npm run claw-setup` script (which handles
-// the wizard's own install + build + run internally).
+// One-liner that an operator pastes into a fresh terminal: clones the
+// (public) source repo via plain git over HTTPS — no `gh` CLI needed
+// — then runs the wizard via the orchestrator's top-level
+// `npm run claw-setup` script (which handles the wizard's own install
+// + build + run internally).
 //
-// Operators WITHOUT source-repo access need to ask their Factotem
-// maintainer to grant them collaborator access on donkruger/factotem
-// first — the wizard provisions the orchestrator from a clone of that
-// (private) repo. Documented in the welcome copy below.
+// Real prerequisites on a fresh macOS:
+//   - git (Xcode Command Line Tools — auto-prompts to install on
+//     first use; macOS handles this transparently)
+//   - Node.js 20+ (operator must install — link to nodejs.org below)
+//
+// Everything else (Docker, OneCLI, Tailscale, the agent container,
+// the launchd plist) is handled by the wizard once it starts.
 const SETUP_COMMAND =
-  'gh repo clone donkruger/factotem && cd factotem && npm run claw-setup';
+  'git clone https://github.com/donkruger/factotem.git && cd factotem && npm run claw-setup';
 
 export function WelcomeView() {
   const [status, setStatus] = useState<StackStatus | null>(null);
@@ -145,14 +149,7 @@ export function WelcomeView() {
           <h2>You don't have NanoClaw set up yet</h2>
           <p>
             The Factotem Doctor monitors a NanoClaw orchestrator running on
-            this machine. Setting one up requires <strong>source-repo access</strong>{' '}
-            — the wizard provisions from a clone of <code>donkruger/factotem</code>{' '}
-            (a private repo).
-          </p>
-          <p className="prereq">
-            <strong>If you're a maintainer with access</strong>, run the
-            wizard with this one-liner. It clones the repo and starts the
-            cold-start wizard:
+            this machine. To install one, run the cold-start wizard:
           </p>
           <div className="cmd-row">
             <code className="cmd">{SETUP_COMMAND}</code>
@@ -181,21 +178,37 @@ export function WelcomeView() {
             <p className="error">Could not open Terminal: {terminalError}</p>
           )}
           <p className="hint">
-            Terminal.app opens with the command pre-staged. You press Enter
-            to run it — the Doctor never executes setup commands without
-            your explicit approval. Requires <code>gh</code> CLI installed
-            and authenticated as a user with access to{' '}
-            <code>donkruger/factotem</code>.
+            Terminal.app opens with the command pre-staged. You press
+            Enter to run it — the Doctor never executes setup commands
+            without your explicit approval.
           </p>
-          <p className="hint no-access">
-            <strong>Don't have access yet?</strong> Contact your Factotem
-            maintainer to be added as a collaborator on the source repo.
-            The Doctor will keep running in your menu bar regardless — it
-            shows "NanoClaw not installed" until a deployment exists on
-            this machine.
+          <p className="hint prereqs">
+            <strong>Prerequisites:</strong>
+            <br />
+            • <code>git</code> — macOS prompts to install Xcode Command
+            Line Tools on first use; just click <em>Install</em> when
+            prompted.
+            <br />
+            • <code>node</code> 20+ — install from{' '}
+            <a
+              href="https://nodejs.org/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              nodejs.org
+            </a>{' '}
+            if you don't have it (run <code>node --version</code> in your
+            terminal to check).
+            <br />
+            Everything else (Docker, OneCLI, Tailscale, agent container,
+            launchd service) is handled by the wizard.
           </p>
           <p className="docs-link">
-            <a href="https://github.com/donkruger/factotem/blob/main/docs/SETUP_WIZARD.md" target="_blank" rel="noopener noreferrer">
+            <a
+              href="https://github.com/donkruger/factotem/blob/main/docs/SETUP_WIZARD.md"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
               Read the setup wizard documentation →
             </a>
           </p>
@@ -349,10 +362,22 @@ function Styles() {
         font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
         font-size: 0.72rem;
       }
-      .hint.no-access {
+      .hint.prereqs {
         margin-top: 0.85rem;
         padding-top: 0.65rem;
         border-top: 1px solid var(--color-hairline);
+        line-height: 1.7;
+      }
+      .hint.prereqs a {
+        color: var(--color-accent);
+        text-decoration: none;
+      }
+      .hint.prereqs a:hover {
+        text-decoration: underline;
+      }
+      .hint.prereqs em {
+        font-style: italic;
+        color: var(--color-ink);
       }
       .prereq {
         margin: 0.85rem 0 0.5rem;

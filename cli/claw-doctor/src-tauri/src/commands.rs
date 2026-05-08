@@ -474,12 +474,15 @@ pub fn dismiss_welcome(state: State<'_, SettingsState>) -> Result<(), String> {
 /// we don't auto-execute, since that would surprise an operator who
 /// hasn't approved the wizard's mutations.
 ///
-/// The staged command clones the (private) source repo + invokes the
+/// The staged command clones the (now-public) source repo via plain
+/// git over HTTPS — no `gh` CLI required — then invokes the
 /// orchestrator's top-level `npm run claw-setup` script which builds
-/// + runs the wizard. Operators without source-repo access see the
-/// gh clone fail with a clear error from gh itself ("repository not
-/// found or access denied"); the welcome window's UI explains the
-/// prerequisite up front so the failure isn't surprising.
+/// + runs the wizard.
+///
+/// Real prerequisites on a fresh macOS:
+///   - `git` (Xcode Command Line Tools — auto-prompts to install on
+///     first invocation; macOS handles this transparently)
+///   - Node.js 20+ (operator installs from nodejs.org)
 ///
 /// AppleScript is used because Tauri's shell plugin doesn't expose
 /// a clean "open Terminal with a pre-staged command" API.
@@ -490,7 +493,7 @@ pub fn open_setup_in_terminal() -> Result<(), String> {
     // newline injected by `do script`). Escape literal quotes
     // carefully — osascript -e is sensitive to nested quoting.
     let script = r#"tell application "Terminal" to activate
-tell application "Terminal" to do script "gh repo clone donkruger/factotem && cd factotem && npm run claw-setup""#;
+tell application "Terminal" to do script "git clone https://github.com/donkruger/factotem.git && cd factotem && npm run claw-setup""#;
     let output = std::process::Command::new("/usr/bin/osascript")
         .args(["-e", script])
         .output()
