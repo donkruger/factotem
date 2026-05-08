@@ -6,6 +6,53 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-08
 
+### Phase 3 / Doctor v0.1.12 — fix curl-pipe stdin EOF that silently cancelled the wizard
+
+Hot-fix for the Doctor v0.1.10 cold-start one-liner shape (R2). When the operator pasted the documented `curl -fsSL https://github.com/RichardBNel/Factotem/releases/latest/download/bootstrap.sh | sh` into Terminal, the bootstrap script worked correctly through clone + `npm install`, then `exec`'d `npm run claw-setup`. The wizard rendered its first prompt — a `clack.select()` with three deployment-profile options — and the operator pressed Enter on "Just me on my own machine". Nothing happened: the prompt's close-bracket (`└`) appeared and the shell prompt returned, no error message. The wizard never recorded any input and never reached step 01.
+
+**Root cause.** `curl … | sh` runs the script with stdin connected to the (now-closed) curl pipe. `bootstrap.sh` `exec`'d `npm run claw-setup` which inherited that EOF stdin all the way down to the wizard's Node process. `@clack/prompts` reads stdin to capture keypresses; the very first read returned EOF; clack interpreted it as a cancel; the wizard's `if (clack.isCancel(choice)) { ui.error(...); process.exit(1); }` branch fired, but the cleanup happened too fast for the `ui.error` to render before the process exited. From the operator's perspective: the prompt rendered, "press enter", silent exit. Same class of bug oh-my-zsh, nvm, and rustup all hit ~2017 and fixed with the standard `exec < /dev/tty` re-attach idiom.
+
+Canonical incident: [`ben-log/2026-05-08-bootstrap-curl-pipe-stdin.md`](../ben-log/2026-05-08-bootstrap-curl-pipe-stdin.md). Operator on `fctm-1@iPhone` (host self-named `iPhone` via tethering), fresh v0.1.11 install (PATH lift worked perfectly — the prereq checklist was green and ungated the CTA), zero post-CTA progress.
+
+**Fix A — bootstrap.sh stdin re-attach.** New block in `scripts/bootstrap.sh` immediately before `exec npm run claw-setup`:
+
+```bash
+if [[ ! -t 0 ]]; then
+  if [[ -e /dev/tty ]]; then
+    exec < /dev/tty
+  else
+    fail "stdin is not a terminal and /dev/tty is unavailable."
+    # ... actionable copy + exit 4
+  fi
+fi
+```
+
+When stdin is a TTY (operator ran `bash scripts/bootstrap.sh` from a checkout) → no-op. When stdin is the curl pipe but the controlling terminal is reachable (the canonical case) → swap stdin to `/dev/tty` so subsequent `exec` inherits a real TTY. When neither is true (CI / cron / containerised invocation with no controlling terminal) → fail loudly with operator-facing copy explaining the two-step download-then-bash workaround. New exit code `4` documented at the top of the script.
+
+**Fix B — wizard defence-in-depth.** New TTY guard at the top of `cli/claw-setup/src/index.ts::main()`, after `parseArgs` and the `--help` branch, before any `clack.*` call:
+
+```ts
+if (!process.stdin.isTTY) {
+  process.stderr.write(/* actionable multi-line copy */);
+  process.exit(2);
+}
+```
+
+Catches the rarer cases where the wizard is invoked some other non-interactive way (`npm run claw-setup` from a CI step, a launchd plist, an editor task runner) without going through `bootstrap.sh`. Operator now sees a loud actionable error instead of the silent cancel. Skipped when `--help` is passed so non-TTY help piping (`claw-setup --help | less`) still works.
+
+**Files changed.**
+- `scripts/bootstrap.sh` (new stdin re-attach block + updated exit code documentation)
+- `cli/claw-setup/src/index.ts` (TTY guard at start of `main()`)
+- 5-file version bump to 0.1.12 (`package.json`, `package-lock.json`, `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`)
+
+**Doctor binary unchanged from v0.1.11** except for the embedded version string. The release exists to publish the updated `bootstrap.sh` to the public mirror's stable `/latest/download/` URL. Operators on v0.1.11 see no functional difference in the menu-bar app itself; the value of upgrading is for next-time-they-help-someone-set-up: the curl one-liner the v0.1.11 Welcome window stages will now actually work end-to-end after the v0.1.12 bootstrap.sh lands on the mirror.
+
+**Convention check.** Pure additive — no Tauri commands removed, no event channels or schemas changed, no wizard step IDs or step order touched. PrereqChecklist UI behaviour unchanged. Reversal: revert the v0.1.12 commits; both fixes are isolated 30-line additions removable without touching any caller.
+
+**Operator-side workaround until v0.1.12 publishes.** From an existing checkout where bootstrap already cloned + installed: `cd ~/factotem && npm run claw-setup`. The wizard launched directly inherits the operator's interactive Terminal stdin and prompts work normally. This is also the recovery path for any operator already stuck mid-cancel on v0.1.11 — `bootstrap.sh`'s clone + npm install steps were idempotent and completed fine; only the final wizard `exec` was broken.
+
+**Recovery tag:** `pre-doctor-0.1.12-2026-05-08` (at v0.1.11 release tip, before any v0.1.12 commit landed).
+
 ### Phase 3 / Doctor v0.1.11 — fix GUI-vs-shell PATH false-fail in prereq probes
 
 Hot-fix for v0.1.10's pre-flight checklist (R1). On any macOS host where `launchctl getenv PATH` is unset (the default unless the operator has explicitly run `sudo launchctl config user path …`), the Doctor — being a GUI app launched by Finder/Spotlight/launchd — inherited the launchd-default PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which **excludes** `/usr/local/bin` (where the official Node.js .pkg installs) and `/opt/homebrew/bin` (where Homebrew installs on Apple Silicon). The Welcome window's `tokio::process::Command::new("node")` call returned `No such file or directory`, the prereq checklist marked the operator's freshly-installed Node 24.15.0 as "not installed", and the "Open Terminal" CTA stayed gated. Identical class of bug also silently affected the docker, tailscale, and git probes — all four ran with the impoverished GUI PATH. Same canonical macOS issue that bites VS Code, Slack, and every other GUI app calling out to developer-tools binaries; standard fix is the [`fix-path`](https://www.npmjs.com/package/fix-path)/[`shell-env`](https://github.com/sindresorhus/shell-env) pattern.
