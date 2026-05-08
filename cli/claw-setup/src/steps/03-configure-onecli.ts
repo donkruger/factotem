@@ -1,7 +1,44 @@
 import * as clack from '@clack/prompts';
-import type { Step } from '../types.js';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import type { Step, UI } from '../types.js';
 
 const ONECLI_URL = 'http://127.0.0.1:10254';
+
+/**
+ * Resolve the `onecli` binary's path. The OneCLI installer drops the
+ * binary at ~/.local/bin/onecli and doesn't always add that dir to the
+ * operator's shell PATH (the operator usually has to update .zshrc
+ * themselves — documented in the setup skill). So we can't rely on
+ * `onecli` being on PATH inside the wizard's subprocess.
+ *
+ * Strategy:
+ *   1. If `onecli` is already on PATH, use it directly.
+ *   2. Else fall back to ~/.local/bin/onecli (the install script's
+ *      canonical destination — verified on Don's machine).
+ *   3. Else throw with a clear message pointing at the PATH fix.
+ */
+async function resolveOnecliCmd(ui: UI): Promise<string> {
+  // 1. PATH probe.
+  const onPath = await ui.runCommand('which', ['onecli']);
+  if (onPath.code === 0 && onPath.stdout.trim()) {
+    return 'onecli';
+  }
+
+  // 2. Known install location.
+  const fallback = path.join(os.homedir(), '.local', 'bin', 'onecli');
+  if (fs.existsSync(fallback)) {
+    return fallback;
+  }
+
+  // 3. Neither — tell the operator how to fix.
+  throw new Error(
+    'onecli binary not found. Expected at ~/.local/bin/onecli (the OneCLI install script\'s default). ' +
+      'Either re-run the install script, or add ~/.local/bin to your PATH and retry: ' +
+      'echo \'export PATH="$HOME/.local/bin:$PATH"\' >> ~/.zshrc && source ~/.zshrc',
+  );
+}
 
 export const step: Step = {
   id: '03-configure-onecli',
@@ -128,9 +165,14 @@ export const step: Step = {
       throw new Error('Anthropic API key entry cancelled');
     }
 
-    // 3. Register via onecli config (R3 friction 1: --type generic, NOT anthropic)
+    // 3. Register via onecli config (R3 friction 1: --type generic, NOT anthropic).
+    // OneCLI is a Go binary, NOT an npm package — call it directly,
+    // not via `npx`. The previous version used `npx onecli ...` which
+    // 404s on the npm registry every time. resolveOnecliCmd() handles
+    // PATH lookup with a fallback to the canonical ~/.local/bin
+    // install location.
+    const onecliCmd = await resolveOnecliCmd(ui);
     const args = [
-      'onecli',
       'config',
       'add',
       'anthropic',
@@ -145,7 +187,7 @@ export const step: Step = {
       '--secret',
       apiKey as string,
     ];
-    const reg = await ui.runCommand('npx', args);
+    const reg = await ui.runCommand(onecliCmd, args);
     if (reg.code !== 0) {
       ui.error(`onecli config add failed (exit ${reg.code}). stderr: ${reg.stderr.slice(0, 400)}`);
       throw new Error('onecli config add failed');
