@@ -6,6 +6,43 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-08
 
+### Phase 3 / Wizard UX — EasyClaw-inspired inline OneCLI install (`ae453ae`)
+
+Removes one of the two external-Terminal pop-ups in the cold-start wizard. Step 03 used to spawn a second Terminal window via `osascript "tell application Terminal to do script ..."` for the OneCLI installer (`curl … | sh && curl … | sh`). Non-technical operators saw two Terminals open at once and didn't know which was the wizard.
+
+Pattern borrowed from [EasyClaw](https://github.com/ybgwon96/easyclaw) — an Electron + React installer for OpenClaw that consciously avoids ever opening a Terminal. Their [`runWithLog(cmd, args, onLog)`](https://github.com/ybgwon96/easyclaw/blob/main/src/main/services/installer.ts) helper spawns the install command in the main process, decodes stdout/stderr line-by-line, and streams each line into the renderer via IPC. We can't go full GUI today (the wizard itself is a CLI app), but we can run the install inline within the wizard's existing terminal window, which is half the win.
+
+Now: `ui.runCommand('sh', ['-c', installCmd])` runs the install inline with a 30s heartbeat tick (same shape as `05-build-container.ts`'s pattern). Bounded by `Promise.race` against a 180s wall-clock timeout — if the installer hangs on a sudo prompt, an EULA wait, or a network stall, the wizard falls back to the legacy Terminal-pop path with a clear `ui.warn` explaining why. Operator strictly no worse off than today; happy path is one Terminal window instead of two.
+
+The remaining external-Terminal pop — Doctor's "Set up NanoClaw…" tray button opening Terminal for `git clone && npm run claw-setup` — needs a Tauri-based GUI wizard to eliminate (deferred to a v1.5 milestone; tracked under [`docs/VISION.md`](VISION.md) pillar 4).
+
+**Files.** `cli/claw-setup/src/steps/03-configure-onecli.ts` (replace osascript block with inline runCommand + heartbeat + 180s timeout + fallback). `docs/SETUP_WIZARD.md` (one-line note on the step-03 row).
+
+### Phase 3 / Wizard UX — Tier 1+2 polish pass (`988734f`)
+
+Fourteen low-risk UX edits across the cold-start wizard, scoped to copy/feedback improvements and small additive logic. No step-order changes, no state-schema changes, no new steps. Aligned with [`docs/VISION.md`](VISION.md) pillar 2 (human-readable UX) and pillar 5 (every CLI step is product debt; every raw-stderr error is a UX failure).
+
+**Tier 1 — copy-only.**
+
+- `docs/SETUP_WIZARD.md`: stale "Node ≥ 24" → "≥ 20" to match the actual prereq probe at `01-check-prereqs.ts:42`.
+- `00-profile-mode.ts`: profile labels flipped — friendly text ("Just me on my own machine") now primary; technical token in hint. `collaborator-invite` exit message warmed up.
+- `02-install-prerequisites.ts`: declined-install warning now embeds the full `npm run claw-setup -- --resume` command in a `ui.note`, not bare `--resume` jargon.
+- `03-configure-onecli.ts`: `stderr.slice(0, 400)` → `slice(-400)` on both auth-login and secrets-create failures. Real onecli errors print at the end of stderr; head-truncation was hiding them.
+- `06-pair-whatsapp.ts`: pairing time estimate "5–15 seconds" → "10–30 seconds (longer on slow networks or first-time iCloud sync)".
+- `09-install-launchd.ts`: confirm prompt drops the redundant "(Default Yes." prefix — clack already shows the default.
+- `11-handoff.ts`: outro "happy clawing" → "your assistant is ready". Removed unconditional KP integration line from cheat sheet (fresh operators don't have KP set up; the line was jargon).
+
+**Tier 2 — additive logic.**
+
+- `04-mounts-allowlist.ts`: mount allowlist note now explains what mounts are ("folders the agent can read or write, e.g. a Brain folder"), not just the default's shape.
+- `05-build-container.ts`: new `getLastBuildActivity()` helper reads the most recent `[STDOUT]/[STDERR]` line from the wizard's session log and appends it to each 30s heartbeat tick. Operator now sees `still building… (90s elapsed) — last: Pulling base layer` rather than just ticks. Concrete signal of progress without leaving the terminal.
+- `07-register-main-group.ts`: group-poll feedback now ticks every cycle with elapsed + remaining (`waiting for groups… 12s elapsed, 78s remaining`), not just on count change.
+- `11-handoff.ts`: `machine.json` backstop — if the file is missing or has no `machineId` when handoff runs, seed a UUID + hostname + region (`"Local"`) so the cheat sheet shows real values instead of `<not yet generated>`. Best-effort; never fails the wizard. Removes the embarrassing placeholder Don's iMac was showing.
+- `11-handoff.ts`: Doctor install failure tail capped to 5 lines (was 15), trimming the wall-of-stderr while keeping manual install options intact.
+- `11-handoff.ts`: Factotem Doctor cheat-sheet line now mentions "Pull updates" alongside Repair Stack.
+
+Builds clean; all 352 orchestrator tests still pass.
+
 ### Phase 3 / Doctor v0.1.9 — Per-step badge propagation fix
 
 Surfaced live on Don's iMac while testing v0.1.8's "Pull upstream updates…" against a deliberately dirty working tree. Preflight correctly refused to mutate (the chain stopped at "Working tree is clean"), but the UI showed two visible defects:

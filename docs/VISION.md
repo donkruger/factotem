@@ -57,9 +57,10 @@ Everything in this doc is in service of that picture.
 
 | | |
 |---|---|
-| **Today** | `npm run claw-setup` runs the CLI wizard. Doctor is a signed/notarised `.dmg` that auto-updates, but the orchestrator + dashboard + claw-setup wizard ship via "fork-and-modify" (`git pull && npm run build` — see Pull Updates in v0.1.8 for the mitigation). Operators must already have Node, Docker, Tailscale, and OneCLI installed. |
-| **Target** | A single signed `.dmg` (or equivalent) installs everything: orchestrator, dashboard, claw-setup, sandbox runtime. The wizard runs **inside the app**, not in Terminal. Dependencies (Docker / Apple Container / Tailscale / OneCLI / Node) are probed and offered as one-click installs (or bundled where licensing allows). The Doctor's "Set up NanoClaw…" flow + `scripts/install-doctor.sh` are the seeds. v0.1.8's "Pull upstream updates…" closes the half of this gap that operates *after* install. |
+| **Today** | `npm run claw-setup` runs the CLI wizard. Doctor is a signed/notarised `.dmg` that auto-updates, but the orchestrator + dashboard + claw-setup wizard ship via "fork-and-modify" (`git pull && npm run build` — see Pull Updates in v0.1.8 for the mitigation). Operators must already have Node, Docker, Tailscale, and OneCLI installed. v0.1.10's inline OneCLI install (commit `ae453ae`) eliminated the wizard's second-Terminal pop-up in step 03 — one of two such pops gone. |
+| **Target** | A single signed `.dmg` (or equivalent) installs everything: orchestrator, dashboard, claw-setup, sandbox runtime. The wizard runs **inside the app**, not in Terminal. Dependencies (Docker / Apple Container / Tailscale / OneCLI / Node) are probed and offered as one-click installs (or bundled where licensing allows). The Doctor's "Set up NanoClaw…" flow + `scripts/install-doctor.sh` are the seeds. v0.1.8's "Pull upstream updates…" closes the half of this gap that operates *after* install; the GUI wizard closes the *before*-install half. |
 | **Why** | Every Terminal step is a future product debt and a churn risk. The vision doesn't ask non-technical users to learn `npm`. |
+| **Reference implementation** | [EasyClaw](https://github.com/ybgwon96/easyclaw) — Electron + React 19 + Tailwind 4 installer for OpenClaw (a sibling/predecessor of NanoClaw, MIT licensed). Their `runWithLog(cmd, args, onLog)` pattern in `src/main/services/installer.ts` + the `useInstallLogs()` hook + inline `<LogViewer>` component is the model the v1.5 GUI-wizard milestone should mirror — Tauri stack instead of Electron (3 MB binary vs 80 MB, same toolchain as the Doctor + Pull Updates view). Borrow patterns, don't fork code; different agent ecosystem. |
 | **Non-goals (v1/v2)** | Mac App Store distribution (signing constraints conflict with the dependency probe). Auto-updating the orchestrator codebase on machines with local commits (Pull Updates' preflight handles this — customised forks stay safe). Bundling Docker (licensing). |
 
 ### 5. Ethos — radical simplification for non-technical operators
@@ -90,10 +91,13 @@ constraint we apply when choosing between options.
 | W.1 (orchestrator) | ✓ shipped | Persona configurability, open-DM, `/health` diagnostics | 2, 5 |
 | v0.1.7 (orchestrator) | ✓ shipped | Persona dashboard page, real `/health` probes, version stamping | 2 |
 | v0.1.8 (Doctor) | ✓ shipped | "Pull upstream updates…" tray action — closes the orchestrator-auto-update gap | 4, 5 |
-| Phase 3 (planned) | Multi-deployment federation (v2) | 3 |
-| Phase 4 (planned) | Multi-tenant boundary (v3) — segment-admin tier, tenant isolation | 3, 5 |
-| Future | Pluggable LLM providers (`add-ollama-tool` is a precursor) | 1 |
-| Future | Bundled-runtime app wrapper | 4, 5 |
+| v0.1.9 (Doctor) | ✓ shipped | Per-step badge propagation fix — Pull/Repair UIs reconcile from the synchronous result so failure detail always renders | 2 |
+| Wizard UX Tier 1+2 (orchestrator) | ✓ shipped | 14 copy + feedback edits across the 12-step CLI wizard — labels, heartbeats, error tails, `machine.json` backstop | 2, 5 |
+| EasyClaw-inspired inline install (orchestrator) | ✓ shipped | Step 03 OneCLI install runs in the wizard's terminal instead of opening a second one. First `osascript "tell Terminal"` removed from the cold-start flow | 4, 5 |
+| Phase 3 | planned | Multi-deployment federation (v2) | 3 |
+| Phase 4 | planned | Multi-tenant boundary (v3) — segment-admin tier, tenant isolation | 3, 5 |
+| Future | — | Pluggable LLM providers (`add-ollama-tool` is a precursor) | 1 |
+| Future | — | Bundled-runtime app wrapper (Tauri GUI wizard, EasyClaw shape) | 4, 5 |
 
 ## Non-goals (v1/v2)
 
