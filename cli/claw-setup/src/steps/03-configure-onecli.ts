@@ -28,21 +28,71 @@ export const step: Step = {
         initialValue: false,
       });
       if (clack.isCancel(installed) || !installed) {
+        // Mirror step 02's "auto-open install URL" pattern, adapted for
+        // a CLI installer rather than a browser page: open Terminal.app
+        // pre-staged with the install command so the operator just
+        // presses Enter in the new window. We never auto-execute —
+        // the operator confirms the run by hitting Enter themselves.
         ui.note(
           'Install OneCLI',
-          'Run this in another terminal (interactive installer):\n  npx -y @anthropic-ai/onecli install\nThen, from the factotem repo root, rerun:\n  npm run claw-setup -- --resume',
+          'OneCLI is the credential gateway that injects API keys into agent containers.\n' +
+            'A new Terminal window will open with the installer command pre-staged.\n' +
+            'Press Enter in that Terminal to run it, follow the prompts, then come back here.',
         );
-        return { warning: 'OneCLI not installed; resume after install' };
-      }
-      // OneCLI installed but not running — instruct operator
-      ui.note(
-        'Start OneCLI',
-        'Start the OneCLI gateway service in another terminal, then continue.',
-      );
-      const reprobe = await ui.runCommand('curl', ['-sf', '-o', '/dev/null', ONECLI_URL + '/']);
-      onecliReachable = reprobe.code === 0;
-      if (!onecliReachable) {
-        return { warning: 'OneCLI still not reachable; resume after starting' };
+
+        if (process.platform === 'darwin') {
+          const script =
+            'tell application "Terminal" to activate\n' +
+            'tell application "Terminal" to do script "npx -y @anthropic-ai/onecli install"';
+          await ui.runCommand('osascript', ['-e', script]);
+        }
+
+        // Block until the operator confirms the install completed in
+        // the other Terminal window. Same gesture as step 02.
+        const confirmed = await clack.confirm({
+          message: 'Have you completed the OneCLI install in the other Terminal?',
+          initialValue: false,
+        });
+        if (clack.isCancel(confirmed) || !confirmed) {
+          ui.note(
+            'Resume',
+            'Once OneCLI is installed, from the factotem repo root rerun:\n  npm run claw-setup -- --resume',
+          );
+          return { warning: 'OneCLI not installed; resume after install' };
+        }
+
+        // Re-probe after install — gateway should now be reachable.
+        const postInstallProbe = await ui.runCommand('curl', [
+          '-sf',
+          '-o',
+          '/dev/null',
+          ONECLI_URL + '/',
+        ]);
+        onecliReachable = postInstallProbe.code === 0;
+        if (!onecliReachable) {
+          ui.warn(
+            'OneCLI installed but gateway still not reachable at ' +
+              ONECLI_URL +
+              '. Make sure the OneCLI service is running.',
+          );
+          return { warning: 'OneCLI installed but not running; resume after starting' };
+        }
+      } else {
+        // OneCLI installed but not running — instruct operator
+        ui.note(
+          'Start OneCLI',
+          'Start the OneCLI gateway service in another terminal, then continue.',
+        );
+        const reprobe = await ui.runCommand('curl', [
+          '-sf',
+          '-o',
+          '/dev/null',
+          ONECLI_URL + '/',
+        ]);
+        onecliReachable = reprobe.code === 0;
+        if (!onecliReachable) {
+          return { warning: 'OneCLI still not reachable; resume after starting' };
+        }
       }
     }
 
