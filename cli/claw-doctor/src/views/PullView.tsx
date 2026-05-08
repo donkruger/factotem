@@ -121,6 +121,20 @@ export function PullView() {
     }
     try {
       const result: RepairResult = await startPull(confirm);
+      // Reconcile per-step state from the synchronous result. Events are
+      // advisory — fast preflight failures (preflight-clean exits in ~50ms)
+      // can race the Tauri listener subscription, leaving badges stuck at
+      // "Pending" while the failure footer correctly shows "failed". The
+      // RepairResult is the authoritative final state by design (see
+      // `src-tauri/src/repair.rs` module doc), so syncing it here makes the
+      // per-step badges robust to event-delivery quirks.
+      setProgress((prev) => {
+        const next = { ...prev };
+        for (const s of result.steps) {
+          next[s.id] = s.state;
+        }
+        return next;
+      });
       if (result.overall.kind === 'completed') {
         setOverall({
           kind: 'completed',

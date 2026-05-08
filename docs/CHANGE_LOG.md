@@ -6,6 +6,30 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-08
 
+### Phase 3 / Doctor v0.1.9 — Per-step badge propagation fix
+
+Surfaced live on Don's iMac while testing v0.1.8's "Pull upstream updates…" against a deliberately dirty working tree. Preflight correctly refused to mutate (the chain stopped at "Working tree is clean"), but the UI showed two visible defects:
+
+1. The "Working tree is clean" badge stayed at **Pending** instead of flipping to **Failed (Xms)**.
+2. The failure-footer detail rendered as `(no detail)` even though the Rust side had captured the dirty file list (`Uncommitted changes detected:\n M groups/main/CLAUDE.md\n …`) into the step's `detail` field.
+
+Net effect: the operator could see *something* failed but had to drop to Terminal to learn *what*. That's exactly the kind of UX gap [`docs/VISION.md`](VISION.md) pillar 5 calls out — every error message hidden behind a generic "(no detail)" is a UX failure.
+
+**Root cause.** Two independent state-propagation paths in `PullView.tsx` and `RepairView.tsx`:
+
+- The `overall` state is set from BOTH the Tauri event channel AND the synchronous `result.overall` returned by `startPull()` / `startRepair()`. Whichever arrives later wins; the synchronous return always corrects whatever the events delivered.
+- The per-step `progress` state was set ONLY from the event channel. The synchronous `result.steps[i].state` (which contains the authoritative final state of every step, including the failure detail) was ignored.
+
+When events propagated cleanly the two paths agreed. When they didn't — likely a timing race between a fast preflight failure (~50ms) and the Tauri listener subscription, but the exact cause is irrelevant to the fix — the per-step badges stayed stuck at "Pending" while the failure footer correctly showed "failed".
+
+**Fix.** Both views now reconcile `result.steps` into `progress` after the await resolves. The synchronous result is the authoritative final state by design (the `repair.rs` module doc says it explicitly: "the synchronous return value is the authoritative final result; events are advisory"). Same shape of fix as the WhatsApp `connect()` resolve fix (`bb632ed`) — when events are unreliable, fall back to the synchronous Promise return value.
+
+After the fix, the "Working tree is clean" badge flips to **Failed (Xms)** with the dirty file list visible in its detail card. The operator sees exactly what's blocking Pull and has a clear next action (stash, commit, or revert).
+
+**Files.** `cli/claw-doctor/src/views/PullView.tsx` + `RepairView.tsx` (the reconcile block — ~7 lines added in each, with a comment pointing at the `repair.rs` doc that establishes the result-as-authoritative invariant). Doctor version bump 0.1.8 → 0.1.9 across the standard 5 files.
+
+**Recovery tag.** `pre-doctor-0.1.9-2026-05-08` (at `988734f`).
+
 ### Phase 3 / Doctor v0.1.8 — Pull upstream updates from the Doctor
 
 Closes the productisation gap surfaced while shipping v0.1.7: the Doctor auto-updates its own binary, but the orchestrator + dashboard + claw-setup wizard explicitly *don't* auto-update — per the [README](../README.md), they "ship via the fork-and-modify workflow (`git pull` + `npm run build`) — they're not auto-updated because operators customise them." That's correct for customised forks like Ben's dev box (months of local commits, applied skills, edited `.env`), but it leaves un-customised deployments like Lexical Lighthouse manually running `git pull && npm install && npm run build` after every release.
