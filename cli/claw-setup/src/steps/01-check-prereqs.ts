@@ -1,10 +1,80 @@
-import type { Step } from '../types.js';
+import fs from 'fs';
+import type { Step, UI } from '../types.js';
 
 interface PrereqProbe {
   name: string;
   installUrl: string;
   ok: boolean;
   detail: string;
+}
+
+/**
+ * R3 from the 2026-05-08 setup-journey UX audit
+ * (assessments/2026-05-08-setup-journey-ux.md): if Docker Desktop is
+ * installed but the daemon isn't running, auto-launch it and wait up
+ * to 60s for `docker info` to succeed before classifying as missing.
+ *
+ * The previous behaviour treated "installed but not started" identically
+ * to "not installed at all", which was a high-frequency false-fail —
+ * Don's machines hit this every reboot until launchd's Docker autostart
+ * kicked in. macOS-only (Docker.app at /Applications/Docker.app); other
+ * OSes fall through to the original "missing" classification.
+ *
+ * Returns the final probe result after the (optional) launch + retry.
+ */
+async function probeDockerWithAutoLaunch(
+  ui: UI,
+): Promise<{ ok: boolean; detail: string }> {
+  const first = await ui.runCommand('docker', ['info']);
+  if (first.code === 0) {
+    return { ok: true, detail: 'docker daemon reachable' };
+  }
+
+  if (process.platform !== 'darwin') {
+    return { ok: false, detail: 'docker info failed' };
+  }
+
+  const dockerApp = '/Applications/Docker.app';
+  if (!fs.existsSync(dockerApp)) {
+    return { ok: false, detail: 'docker not installed (Docker.app missing)' };
+  }
+
+  // Installed but not running — try to launch it.
+  ui.note(
+    'Starting Docker Desktop',
+    'Docker is installed but the daemon isn\'t running yet. Launching\n' +
+      'Docker Desktop in the background — this typically takes 15–45s on\n' +
+      'first boot. We\'ll re-probe every 2s for up to 60s before giving up.',
+  );
+
+  const launchResult = await ui.runCommand('open', ['-a', 'Docker']);
+  if (launchResult.code !== 0) {
+    return {
+      ok: false,
+      detail: `docker installed but \`open -a Docker\` failed (exit ${launchResult.code}); start Docker Desktop manually and re-run`,
+    };
+  }
+
+  const startedAt = Date.now();
+  const timeoutMs = 60_000;
+  const pollIntervalMs = 2_000;
+  while (Date.now() - startedAt < timeoutMs) {
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    const probe = await ui.runCommand('docker', ['info']);
+    if (probe.code === 0) {
+      const elapsedSecs = Math.round((Date.now() - startedAt) / 1000);
+      return {
+        ok: true,
+        detail: `docker daemon came up in ${elapsedSecs}s after auto-launch`,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    detail:
+      'docker installed but daemon didn\'t come up within 60s; open Docker Desktop manually and re-run',
+  };
 }
 
 export const step: Step = {
@@ -43,13 +113,14 @@ export const step: Step = {
       detail: `node v${process.versions.node}${nodeMajor >= 20 ? ' (≥20 OK)' : ' (need ≥20)'}`,
     });
 
-    // Docker
-    const dockerResult = await ui.runCommand('docker', ['info']);
+    // Docker — auto-launch Docker Desktop if installed but not running.
+    // See probeDockerWithAutoLaunch for the rationale + 60s wait policy.
+    const dockerProbe = await probeDockerWithAutoLaunch(ui);
     probes.push({
       name: 'docker',
       installUrl: 'https://docker.com/products/docker-desktop',
-      ok: dockerResult.code === 0,
-      detail: dockerResult.code === 0 ? 'docker daemon reachable' : 'docker info failed',
+      ok: dockerProbe.ok,
+      detail: dockerProbe.detail,
     });
 
     // Tailscale

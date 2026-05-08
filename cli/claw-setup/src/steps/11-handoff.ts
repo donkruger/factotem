@@ -154,35 +154,41 @@ export const step: Step = {
       );
     }
 
+    // Cheat-sheet ordering matters for non-technical operators per the
+    // 2026-05-08 setup-journey UX audit (assessments/2026-05-08-setup-journey-ux.md
+    // F11): the Doctor + dashboard are the daily-use surfaces, the raw
+    // Terminal incantations are an emergency-only fallback. Lead with
+    // the GUI surfaces, demote the curl/launchctl/tail block to "If you
+    // ever need to debug from Terminal" — present but not load-bearing.
     const cheatSheet = [
       '✓ NanoClaw deployment ready',
       '',
-      `Dashboard:    ${dashboardUrl}`,
-      `Health:       ${healthUrl}`,
       `Operator:     ${operator}`,
       `Machine:      ${machineId} (${region})`,
       '',
-      'Common commands:',
-      '  curl http://localhost:7842/health | jq',
-      '  launchctl list | grep com.nanoclaw',
-      '  tail -f logs/nanoclaw.log',
+      ...(doctorInstalled
+        ? [
+            'Your daily surface — Factotem Doctor (menu bar):',
+            `  ${doctorAppPath} — running in your menu bar now`,
+            '  Click the F icon for: Open Dashboard, Repair Stack, Pull updates, Settings, Logs',
+            '  The icon refreshes every 5s with Docker / OneCLI / NanoClaw health',
+            '',
+          ]
+        : []),
+      `Dashboard (in any browser):  ${dashboardUrl}`,
       '',
       ...(recoveryInstalled
         ? [
-            'Recovery panel:',
+            'If something goes wrong — Recovery panel:',
             '  Double-click "Factotem Recovery" on your Desktop',
             `  or open ${recoveryPath}`,
             '',
           ]
         : []),
-      ...(doctorInstalled
-        ? [
-            'Factotem Doctor:',
-            `  ${doctorAppPath} — running in your menu bar`,
-            '  Click the icon for: Open Dashboard, Repair Stack, Pull updates, Settings, Logs',
-            '  Tooltip refreshes every 5s with Docker / OneCLI / NanoClaw health',
-          ]
-        : []),
+      'If you ever need to debug from Terminal:',
+      `  curl ${healthUrl} | jq      (health JSON)`,
+      '  launchctl list | grep com.nanoclaw     (is the service running?)',
+      '  tail -f logs/nanoclaw.log              (live log stream)',
     ].join('\n');
 
     ui.note('Handoff', cheatSheet);
