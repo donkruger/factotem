@@ -265,10 +265,14 @@ export const step: Step = {
     }
 
     // 2d. Create the Anthropic secret. The new `secrets create` API
-    // replaces the v1.0-era `config add` shape. `--type generic` with
-    // `--host-pattern api.anthropic.com` produces the same injection
-    // config Don's main machine has (verified: pathPattern '/*',
-    // headerName 'x-api-key', valueFormat '{value}').
+    // replaces the v1.0-era `config add` shape. `--type generic`
+    // requires `--header-name` (per `onecli secrets create --help`);
+    // the four flag values below match Don's main-machine config
+    // byte-for-byte:
+    //   pathPattern '/*' · headerName 'x-api-key' · valueFormat '{value}'
+    // The R3-friction-1 lesson still applies: do NOT use --type
+    // anthropic; --type generic with explicit header config is what
+    // works against the live Anthropic API.
     const reg = await ui.runCommand(onecliCmd, [
       'secrets',
       'create',
@@ -280,6 +284,12 @@ export const step: Step = {
       apiKey as string,
       '--host-pattern',
       'api.anthropic.com',
+      '--path-pattern',
+      '/*',
+      '--header-name',
+      'x-api-key',
+      '--value-format',
+      '{value}',
     ]);
     if (reg.code !== 0) {
       ui.error(
