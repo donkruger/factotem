@@ -6,6 +6,42 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-05-08
 
+### Phase 3 / Doctor v0.1.11 — fix GUI-vs-shell PATH false-fail in prereq probes
+
+Hot-fix for v0.1.10's pre-flight checklist (R1). On any macOS host where `launchctl getenv PATH` is unset (the default unless the operator has explicitly run `sudo launchctl config user path …`), the Doctor — being a GUI app launched by Finder/Spotlight/launchd — inherited the launchd-default PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which **excludes** `/usr/local/bin` (where the official Node.js .pkg installs) and `/opt/homebrew/bin` (where Homebrew installs on Apple Silicon). The Welcome window's `tokio::process::Command::new("node")` call returned `No such file or directory`, the prereq checklist marked the operator's freshly-installed Node 24.15.0 as "not installed", and the "Open Terminal" CTA stayed gated. Identical class of bug also silently affected the docker, tailscale, and git probes — all four ran with the impoverished GUI PATH. Same canonical macOS issue that bites VS Code, Slack, and every other GUI app calling out to developer-tools binaries; standard fix is the [`fix-path`](https://www.npmjs.com/package/fix-path)/[`shell-env`](https://github.com/sindresorhus/shell-env) pattern.
+
+**The fix.** New module `cli/claw-doctor/src-tauri/src/path_resolver.rs` (~190 lines incl. doc-comment + tests). One public function: `lift_path_at_startup()`. Spawns `/bin/zsh -ilc 'echo $PATH'` (interactive flag mandatory — `~/.zshrc` only sources for interactive shells, and that's where nvm / volta / asdf inject their PATH shims) on a worker thread bounded by `mpsc::recv_timeout(2s)` so a hung shell config can't block app boot. Falls back to `/bin/bash -ilc` for operators on older macOS or who switched away from zsh. Defends against `.zshrc` banner output (powerlevel10k status, motd) by extracting the LAST non-empty line of stdout (PATH itself is always single-line per POSIX). Sanity-checks the lifted string contains `:` or starts with `/` before trusting it. Merges `lifted + inherited + canonical_fallbacks` (the fallbacks are `/usr/local/bin`, `/opt/homebrew/bin`, sbin variants — appended unconditionally so operators with no shell config at all still see Node) and calls `std::env::set_var("PATH", merged)` exactly once. Wired into `lib.rs::run()` immediately after tracing init and BEFORE `tauri::Builder::default()` — `set_var` is unsound when called concurrently with other env-reading threads, so single-threaded startup is the only safe window. Two unit tests confirm fallback dirs always present + lifted-PATH ordering wins.
+
+**Zero per-probe code change required.** Every existing `Command::new(...)` in `prereqs.rs` (git/node/docker/tailscale), `probe.rs` (orchestrator process detection), `pull.rs` (`git pull` + `npm` invocations), and `repair.rs` (`launchctl kickstart`) inherits the merged PATH automatically. The fix is therefore both narrow (one new module + one wiring line) and complete (covers every subprocess the Doctor will ever spawn).
+
+**Operator-side workaround until v0.1.11 ships.** `sudo launchctl config user path "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"` then restart the Doctor (or whole session). Power-user fix; v0.1.11 makes it unnecessary for everyone.
+
+**Files changed.**
+- `cli/claw-doctor/src-tauri/src/path_resolver.rs` (new, ~190 lines)
+- `cli/claw-doctor/src-tauri/src/lib.rs` (one `mod path_resolver;` + one call inside `run()`)
+- 5-file version bump to 0.1.11 (`package.json`, `package-lock.json`, `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`)
+
+**Convention check.** Pure additive — no existing Tauri commands removed, no existing API contracts changed, no event channels touched. PrereqChecklist UI behaviour is unchanged on machines that already worked (lifted PATH is a strict superset of GUI-default PATH); previously-broken machines now resolve binaries the same way Terminal does. Reversal path: revert the v0.1.11 commits; isolated module is removable without touching any caller.
+
+**Evidence the fix is needed (canonical incident).** Operator on `fctm-1@36-DE-B4-45-AE-3E`, fresh Doctor v0.1.10 install, 2026-05-08:
+
+```text
+$ echo "version: $(node --version 2>&1)"
+$ echo "binary:  $(command -v node 2>&1)"
+$ echo "shell PATH: $PATH"
+$ echo "GUI PATH (what Doctor sees):"
+$ launchctl getenv PATH
+version: v24.15.0
+binary:  /usr/local/bin/node
+shell PATH: /usr/local/bin:...
+GUI PATH (what Doctor sees):
+                                 ← empty
+```
+
+Full ben-log entry: [`ben-log/2026-05-08-doctor-prereq-gui-path.md`](../ben-log/2026-05-08-doctor-prereq-gui-path.md).
+
+**Recovery tag:** `pre-doctor-0.1.11-2026-05-08` (at v0.1.10 release tip, before any v0.1.11 commit landed).
+
 ### Phase 3 / Doctor v0.1.10 — pre-flight checklist + bootstrap one-liner
 
 Ships R1 + R2 from the 2026-05-08 setup-journey UX audit (`assessments/2026-05-08-setup-journey-ux.md`, kept outside the repo as a workspace artefact). The Welcome window now actively probes git, node, docker, and tailscale before exposing the "Open Terminal" CTA — failures move from "operator stranded in Terminal with `command not found: npm`" to "Welcome window says 'Install Node.js, then click Recheck'". The cold-start one-liner the Doctor stages into Terminal collapses from a 110-character `git clone … && cd … && npm run …` chain to a single `curl -fsSL …/bootstrap.sh | sh` (the same idiom oh-my-zsh, nvm, rustup use). Both changes attack the highest-frequency derailments the audit flagged 🔴 for non-technical operators. Aligned with [`docs/VISION.md`](VISION.md) pillar 5 (every CLI step is product debt) and pillar 4 (wizard → fully housed app wrapper) — every Terminal hop the Doctor absorbs is a step toward the EasyClaw shape pillar 4 names as the long-run target.
