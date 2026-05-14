@@ -1,0 +1,150 @@
+#
+# Release pipeline for the NanoClaw Setup wizard (cli/claw-setup-gui).
+#
+# Triggered when a `wizard-v*` tag is pushed. The wizard's release.mjs
+# script in cli/claw-setup-gui/scripts/ creates such tags via
+# `npm run release` from inside that directory.
+#
+# Mirrors the convention already in use by .github/workflows/release.yml
+# (the Doctor's pipeline) on this repo:
+#   • tags pushed to the SOURCE repo (private)
+#   • releases land on the PUBLIC mirror (RichardBNel/Factotem) via
+#     gh release create with the MIRROR_REPO_TOKEN
+#   • Apple secrets reuse the same names the Doctor's workflow uses;
+#     this workflow re-exports them as the env vars electron-builder
+#     expects (CSC_LINK / CSC_KEY_PASSWORD / APPLE_APP_SPECIFIC_PASSWORD)
+#
+# Required GitHub Actions secrets (already configured for the Doctor
+# pipeline — same names, same values):
+#   APPLE_CERT_BASE64         base64-encoded Developer ID .p12
+#   APPLE_CERT_PASSWORD       passphrase for the .p12
+#   APPLE_ID                  Apple ID for notarytool
+#   APPLE_PASSWORD            app-specific password (NOT the iCloud password)
+#   APPLE_TEAM_ID             e.g. D8G67T74V6
+#   MIRROR_REPO_TOKEN         PAT with `repo` scope on RichardBNel/Factotem
+#                             (default GITHUB_TOKEN can't write to other repos)
+#
+name: Release Wizard
+
+env:
+  MIRROR_REPO: RichardBNel/Factotem
+
+on:
+  push:
+    tags:
+      - 'wizard-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build + sign + notarise + release
+    runs-on: macos-14   # Apple Silicon — matches Doctor's runner
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: nanoclaw/cli/claw-setup-gui
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: nanoclaw/cli/claw-setup-gui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the dashboard (the orchestrator serves it from /dashboard/out)
+        working-directory: nanoclaw/dashboard
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build, sign, and notarise the wizard
+        env:
+          # electron-builder reads CSC_LINK as either a file path or a
+          # base64-encoded .p12. Reusing APPLE_CERT_BASE64 (the secret
+          # the Doctor's pipeline already populates) means there's one
+          # source of truth for the Apple cert across both pipelines.
+          CSC_LINK: ${{ secrets.APPLE_CERT_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run build:mac-local
+
+      - name: Stage release artefacts (versioned + stable filenames)
+        id: stage
+        run: |
+          # Tag is wizard-vX.Y.Z; strip the prefix for the version literal.
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#wizard-v}"
+
+          RELEASE_DIR="$RUNNER_TEMP/release"
+          mkdir -p "$RELEASE_DIR"
+
+          # electron-builder writes nanoclaw-setup.dmg + blockmap + latest-mac.yml
+          DMG_SRC="dist/nanoclaw-setup.dmg"
+          MAP_SRC="dist/nanoclaw-setup.dmg.blockmap"
+          YML_SRC="dist/latest-mac.yml"
+
+          # Versioned copies — handy for users who want to pin.
+          cp "$DMG_SRC"  "$RELEASE_DIR/NanoClaw-Setup_${VERSION}.dmg"
+          cp "$MAP_SRC"  "$RELEASE_DIR/NanoClaw-Setup_${VERSION}.dmg.blockmap"
+          cp "$YML_SRC"  "$RELEASE_DIR/latest-mac.yml"
+
+          # Versionless copy for stable /releases/latest/download URL.
+          # GitHub's `latest/download/<filename>` redirect requires the
+          # filename to stay constant across releases.
+          cp "$DMG_SRC"  "$RELEASE_DIR/nanoclaw-setup.dmg"
+
+          echo "version=$VERSION"           >> "$GITHUB_OUTPUT"
+          echo "release_dir=$RELEASE_DIR"   >> "$GITHUB_OUTPUT"
+          ls -la "$RELEASE_DIR"
+
+      - name: Verify codesign + notarisation stapled
+        run: |
+          DMG="$(echo "${{ steps.stage.outputs.release_dir }}"/NanoClaw-Setup_*.dmg)"
+          MOUNT_POINT=$(hdiutil attach "$DMG" -nobrowse -noverify | tail -1 | awk '{print $3}')
+          APP=$(find "$MOUNT_POINT" -name "*.app" -maxdepth 2 | head -1)
+          spctl --assess --type execute --verbose=2 "$APP" || echo "::warning::spctl rejected $APP"
+          xcrun stapler validate "$APP" || echo "::warning::stapler rejected $APP"
+          hdiutil detach "$MOUNT_POINT" -force || true
+
+      - name: Create GitHub Release on public mirror
+        env:
+          # MIRROR_REPO_TOKEN is a PAT with `repo` scope on
+          # RichardBNel/Factotem. Required because the default
+          # GITHUB_TOKEN can only write to this (source) repo.
+          GH_TOKEN: ${{ secrets.MIRROR_REPO_TOKEN }}
+        run: |
+          VERSION="${{ steps.stage.outputs.version }}"
+          RELEASE_DIR="${{ steps.stage.outputs.release_dir }}"
+          TAG="${GITHUB_REF_NAME}"
+
+          NOTES_FILE="$RUNNER_TEMP/notes.md"
+          {
+            echo "NanoClaw Setup v$VERSION"
+            echo ""
+            echo "**Download:**"
+            echo "[NanoClaw-Setup.dmg](https://github.com/${MIRROR_REPO}/releases/latest/download/nanoclaw-setup.dmg) (macOS, universal)"
+            echo ""
+            echo "Drag the app into Applications, launch it, and follow the setup wizard."
+            echo "If your NanoClaw is already running, the wizard skips straight to the Factotem dashboard."
+            echo ""
+            echo "Source: github.com/donkruger/factotem (private)."
+          } > "$NOTES_FILE"
+
+          # --latest makes this the target of /releases/latest/download/<filename>.
+          gh release create "$TAG" \
+            "$RELEASE_DIR"/* \
+            --repo "$MIRROR_REPO" \
+            --title "NanoClaw Setup v$VERSION" \
+            --notes-file "$NOTES_FILE" \
+            --latest

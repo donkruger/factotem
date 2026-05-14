@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 380" width="540" height="380">
+  <!--
+    DMG window background — 540x380.
+    When opened, the user sees:
+      • App icon at (x=144, y=178) — left of centre
+      • Applications symlink at (x=396, y=178) — right of centre
+    Geometry matches electron-builder.yml (dmg.contents block).
+
+    This background sits behind those icons. Keep the area around the
+    two anchor points empty so the icons read cleanly. The arrow + caption
+    below sit on the centreline; the icons cover y=138..218 each.
+  -->
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#fafafa"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Light surface -->
+  <rect x="0" y="0" width="540" height="380" fill="url(#bg)"/>
+
+  <!-- Wordmark, top -->
+  <text x="270" y="64" text-anchor="middle"
+        font-family="Comfortaa, sans-serif" font-weight="600"
+        font-size="28" fill="#1d1d1f" letter-spacing="-0.02em">
+    NanoClaw Setup
+  </text>
+  <line x1="248" y1="78" x2="292" y2="78" stroke="#ff7a3a" stroke-width="2.5"
+        stroke-linecap="round"/>
+
+  <!-- Drag-arrow + caption, between the two icon anchor positions -->
+  <g transform="translate(220, 200)">
+    <path d="M 0 0 L 100 0 M 92 -8 L 100 0 L 92 8"
+          fill="none" stroke="#ff7a3a" stroke-width="3"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="270" y="248" text-anchor="middle"
+        font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif"
+        font-size="11" fill="#86868b" letter-spacing="0.015em">
+    Drag NanoClaw Setup to Applications to install
+  </text>
+
+  <!-- Subtle footer caption -->
+  <text x="270" y="336" text-anchor="middle"
+        font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif"
+        font-size="10" fill="#b4b4b8" letter-spacing="0.015em">
+    Open Applications afterwards to launch the wizard
+  </text>
+</svg>

@@ -51,3 +51,5 @@ agents-sdk-docs
 dashboard/out/
 dashboard/.next/
 dashboard/node_modules/
+dashboard/out.pre-eperm.bak/
+dashboard/tsconfig.tsbuildinfo

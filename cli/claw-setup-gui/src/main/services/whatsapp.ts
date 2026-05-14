@@ -1,0 +1,168 @@
+// WhatsApp pairing — embedded flow.
+//
+// The orchestrator's auth script `nanoclaw/src/whatsapp-auth.ts` does
+// something convenient: in addition to rendering an ASCII QR to stdout
+// (via `qrcode-terminal`), it writes the RAW QR payload to
+// `<root>/store/qr-data.txt` BEFORE rendering it, and writes the
+// pairing status to `<root>/store/auth-status.txt` as it progresses.
+// We poll those two files while the subprocess runs and stream their
+// contents back to the renderer over IPC — same pattern as the
+// container build's log streaming, just driven by file watches.
+//
+// Result: the GUI shows a real QR (rendered with the `qrcode` lib in
+// the renderer) and a live status indicator. No CLI handoff needed for
+// the default QR-scan flow. The pairing-code flow (which reads a phone
+// number from stdin) is still a terminal handoff — that's a v2.
+
+import fs from 'fs'
+import path from 'path'
+import { randomUUID } from 'crypto'
+import type { BrowserWindow } from 'electron'
+import { spawn, type ChildProcess } from 'child_process'
+import { envWithPath } from './path-utils'
+
+const POLL_INTERVAL_MS = 250
+
+interface Session {
+  runId: string
+  child: ChildProcess
+  qrPath: string
+  statusPath: string
+  credsPath: string
+  pollTimer: NodeJS.Timeout
+  lastQr: string | null
+  lastStatus: string | null
+  done: boolean
+}
+
+const sessions = new Map<string, Session>()
+
+function getMainWindow(): BrowserWindow | null {
+  const { BrowserWindow: BW } = require('electron') as typeof import('electron')
+  return BW.getAllWindows()[0] ?? null
+}
+
+function emit(channel: string, payload: unknown): void {
+  const win = getMainWindow()
+  if (!win || win.isDestroyed()) return
+  win.webContents.send(channel, payload)
+}
+
+function readIfExists(p: string): string | null {
+  try {
+    return fs.readFileSync(p, 'utf8').trim()
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    return null
+  }
+}
+
+function pollOnce(s: Session): void {
+  if (s.done) return
+
+  // QR data — written by the auth script the moment Baileys emits a QR.
+  // The file gets unlinked when pairing succeeds, so we only watch for
+  // its appearance and content changes (a fresh QR is issued every ~60s
+  // if no scan happens).
+  const qr = readIfExists(s.qrPath)
+  if (qr && qr !== s.lastQr) {
+    s.lastQr = qr
+    emit(`whatsapp:qr:${s.runId}`, qr)
+  }
+
+  // Status — append-only-ish status string. Final values: authenticated,
+  // already_authenticated, failed:*, pairing_code:<code>.
+  const status = readIfExists(s.statusPath)
+  if (status && status !== s.lastStatus) {
+    s.lastStatus = status
+    emit(`whatsapp:status:${s.runId}`, status)
+    if (
+      status === 'authenticated' ||
+      status === 'already_authenticated' ||
+      status.startsWith('failed:')
+    ) {
+      // Terminal state — stop polling. The subprocess will exit on its own.
+      s.done = true
+    }
+  }
+
+  // Defensive: also check for creds.json appearing. The script writes
+  // STATUS_FILE=authenticated and then unlinks QR_FILE, but on some
+  // edge cases (stream-error retry path) the status file may lag.
+  if (!s.done && fs.existsSync(s.credsPath)) {
+    s.done = true
+    emit(`whatsapp:status:${s.runId}`, 'authenticated')
+  }
+}
+
+export interface StartResult {
+  runId: string
+  qrPath: string
+  statusPath: string
+  credsPath: string
+}
+
+export function startWhatsAppAuth(orchestratorRoot: string): StartResult {
+  const runId = randomUUID()
+  const qrPath = path.join(orchestratorRoot, 'store', 'qr-data.txt')
+  const statusPath = path.join(orchestratorRoot, 'store', 'auth-status.txt')
+  const credsPath = path.join(orchestratorRoot, 'store', 'auth', 'creds.json')
+
+  // Clean up stale files from previous runs so polling doesn't
+  // immediately emit a leftover authenticated/QR.
+  for (const p of [qrPath, statusPath]) {
+    try {
+      fs.unlinkSync(p)
+    } catch {
+      /* not present — ignore */
+    }
+  }
+
+  const child = spawn('npx', ['tsx', 'src/whatsapp-auth.ts'], {
+    cwd: orchestratorRoot,
+    env: envWithPath(),
+    shell: false
+  })
+
+  // Also stream stdout/stderr for the LogViewer behind the QR.
+  child.stdout?.on('data', (d: Buffer) =>
+    emit(`whatsapp:line:${runId}`, d.toString())
+  )
+  child.stderr?.on('data', (d: Buffer) =>
+    emit(`whatsapp:line:${runId}`, d.toString())
+  )
+
+  const session: Session = {
+    runId,
+    child,
+    qrPath,
+    statusPath,
+    credsPath,
+    pollTimer: setInterval(() => pollOnce(session), POLL_INTERVAL_MS),
+    lastQr: null,
+    lastStatus: null,
+    done: false
+  }
+  sessions.set(runId, session)
+
+  child.on('error', (err) => {
+    emit(`whatsapp:line:${runId}`, `[spawn error] ${err.message}\n`)
+  })
+  child.on('close', (code) => {
+    // Final poll to catch any last writes.
+    pollOnce(session)
+    emit(`whatsapp:exit:${runId}`, { code: code ?? -1 })
+    clearInterval(session.pollTimer)
+    sessions.delete(runId)
+  })
+
+  return { runId, qrPath, statusPath, credsPath }
+}
+
+export function cancelWhatsAppAuth(runId: string): boolean {
+  const s = sessions.get(runId)
+  if (!s) return false
+  s.child.kill('SIGTERM')
+  clearInterval(s.pollTimer)
+  return true
+}

@@ -1,0 +1,227 @@
+@import 'tailwindcss';
+/* Comfortaa for the wordmark is loaded via a <link> tag in
+ * src/renderer/index.html, NOT via @import here. Tailwind v4's
+ * `@import 'tailwindcss'` directive expands at compile time into
+ * @theme + @layer rules, so any subsequent @import url(...) here
+ * ends up below those rules in the bundle and triggers a PostCSS
+ * spec violation ("@import must precede all other statements"). */
+
+/*
+ * Design tokens — mirror of `nanoclaw/dashboard/src/styles/tokens.css`.
+ *
+ * The dashboard is the canonical source. Keep these byte-compatible with
+ * the dashboard's tokens.css. If you change one, change the other in the
+ * same commit. See docs/ui-ux-direction.md for the rule.
+ *
+ * Naming follows the dashboard: --color-bg / --color-ink / --color-accent
+ * (not --color-primary, --color-text). Components reference these names
+ * directly so a copy-paste between the wizard and dashboard works without
+ * renames.
+ */
+@theme {
+  /* Surfaces — white, subtle off-white, elevated panel grey */
+  --color-bg: #ffffff;
+  --color-bg-subtle: #fafafa;
+  --color-bg-elevated: #f5f5f7;
+
+  /* Ink — near-black foreground, muted gray secondary, dim tertiary */
+  --color-ink: #1d1d1f;
+  --color-ink-muted: #86868b;
+  --color-ink-dim: #b4b4b8;
+
+  /* Hairline borders */
+  --color-hairline: #e5e5e7;
+
+  /* Brand */
+  --color-accent: #ff7a3a;
+  --color-accent-hover: #ff8d57;
+  --color-accent-soft: rgba(255, 122, 58, 0.12);
+  --color-accent-secondary: #6a00ff;
+
+  /* Focus ring (Apple blue) */
+  --color-focus-ring: #0071e3;
+
+  /* Status — solid swatch + tinted background */
+  --color-success: #10b981;
+  --color-success-bg: #d1fae5;
+  --color-warning: #d97706;
+  --color-warning-bg: #fef3c7;
+  --color-error: #dc2626;
+  --color-error-bg: #fee2e2;
+
+  /* Letter-spacing scale */
+  --tracking-wordmark: -0.02em;
+  --tracking-display: -0.015em;
+  --tracking-tight: -0.01em;
+  --tracking-normal: 0;
+  --tracking-caption: 0.015em;
+
+  /* Radius scale (8/12/16/24/32px + pill) */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.5rem;
+  --radius-2xl: 2rem;
+  --radius-pill: 9999px;
+
+  /* Apple-flat elevation */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.06);
+  --shadow-3: 0 24px 56px rgba(0, 0, 0, 0.08);
+
+  /* Motion */
+  --ease-apple: cubic-bezier(0.32, 0.72, 0, 1);
+  --duration-micro: 200ms;
+  --duration-state: 320ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-micro: 0ms;
+    --duration-state: 0ms;
+  }
+}
+
+/*
+ * Comfortaa for the wordmark; system stack everywhere else. Matches
+ * the dashboard's typography rules — don't apply Comfortaa to body text.
+ * Font import lives at the top of this file, per CSS spec.
+ */
+
+body {
+  margin: 0;
+  background: var(--color-bg-subtle);
+  color: var(--color-ink);
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    'SF Pro Text',
+    'Segoe UI',
+    'Inter',
+    sans-serif;
+  overflow: hidden;
+  letter-spacing: var(--tracking-normal);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+input,
+button,
+textarea,
+a,
+select,
+label {
+  font-family: inherit;
+}
+
+#root {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/*
+ * Surface primitive — flat panel with hairline border. The dashboard's
+ * canonical card pattern. No glass blur, no animated background.
+ */
+.panel {
+  background: var(--color-bg);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-xl);
+  transition:
+    box-shadow var(--duration-micro) var(--ease-apple),
+    transform var(--duration-micro) var(--ease-apple);
+}
+
+.panel-elevated {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-xl);
+}
+
+.panel-hover:hover {
+  box-shadow: var(--shadow-1);
+  transform: translateY(-1px);
+}
+
+/* Wordmark */
+.wordmark {
+  font-family: 'Comfortaa', var(--font-comfortaa, sans-serif);
+  letter-spacing: var(--tracking-wordmark);
+  font-weight: 600;
+}
+
+/*
+ * Step entry — quiet animation, plus the scroll-container plumbing.
+ *
+ * Every step's outer div has `flex-1 flex flex-col` so `mt-auto` on the
+ * button row can pin the action bar to the bottom for short content.
+ * But that also makes the step's bounding box exactly equal to
+ * <main>'s height — which means <main>'s overflow-y-auto never sees
+ * overflow, even when the step's content extends below.
+ *
+ * Fix: the step container itself becomes the scroll container.
+ * `min-height: 0` lets it shrink below its content size in the flex
+ * column, and `overflow-y: auto` engages scroll only when needed.
+ * Buttons stay pinned via mt-auto for short content; long content
+ * scrolls naturally inside the step's own scroll viewport.
+ */
+.step-enter {
+  animation: step-in var(--duration-state) var(--ease-apple) forwards;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+@keyframes step-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Inputs */
+.input-field {
+  width: 100%;
+  background: var(--color-bg);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  color: var(--color-ink);
+  font-size: 0.95rem;
+  outline: none;
+  transition:
+    border-color var(--duration-micro) var(--ease-apple),
+    box-shadow var(--duration-micro) var(--ease-apple);
+}
+
+.input-field:focus {
+  border-color: var(--color-focus-ring);
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.15);
+}
+
+.input-field::placeholder {
+  color: var(--color-ink-dim);
+}
+
+/* Scrollbar — slim, neutral */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-hairline);
+  border-radius: var(--radius-pill);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-dim);
+}

@@ -176,10 +176,25 @@ async function probeWhatsApp(): Promise<HealthSnapshot['whatsapp']> {
   let authenticated = false;
   let lastMessageAt: string | null = null;
   try {
-    const authStatusPath = path.join(STORE_DIR, 'auth-status.txt');
-    if (fs.existsSync(authStatusPath)) {
-      const status = fs.readFileSync(authStatusPath, 'utf-8').trim();
-      authenticated = status === 'authenticated';
+    // Canonical signal: store/auth/creds.json. Baileys writes this on
+    // successful pair and re-reads it on every connection — its
+    // presence is what makes the agent actually responsive. The
+    // transient store/auth-status.txt was only ever written by the
+    // pairing flow's auth script and isn't kept current post-pair,
+    // so a stale or deleted auth-status.txt produced false negatives
+    // ("Not paired" in the dashboard while the agent was happily
+    // replying in WhatsApp).
+    const credsPath = path.join(STORE_DIR, 'auth', 'creds.json');
+    authenticated = fs.existsSync(credsPath);
+
+    // Defence-in-depth: if creds.json somehow isn't there but the
+    // auth-status hand-off does say 'authenticated', accept that too.
+    if (!authenticated) {
+      const authStatusPath = path.join(STORE_DIR, 'auth-status.txt');
+      if (fs.existsSync(authStatusPath)) {
+        const status = fs.readFileSync(authStatusPath, 'utf-8').trim();
+        authenticated = status === 'authenticated';
+      }
     }
   } catch {
     /* fall through */

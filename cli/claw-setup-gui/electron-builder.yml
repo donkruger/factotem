@@ -1,0 +1,79 @@
+appId: com.nanoclaw.setup-gui
+productName: NanoClaw Setup
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md,CLAUDE.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!scripts/**'
+asarUnpack:
+  - resources/**
+
+# ── Windows ──────────────────────────────────────────────────────────────────
+win:
+  icon: build/icon.ico
+  executableName: NanoClawSetup
+  forceCodeSigning: false
+  requestedExecutionLevel: asInvoker
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  artifactName: nanoclaw-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+
+# ── macOS ────────────────────────────────────────────────────────────────────
+mac:
+  icon: build/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    - NSDocumentsFolderUsageDescription: NanoClaw Setup requests access to the user's Documents folder to detect existing orchestrator checkouts.
+    - NSDownloadsFolderUsageDescription: NanoClaw Setup requests access to the user's Downloads folder.
+  notarize: true
+  target:
+    - target: dmg
+      arch:
+        - universal
+
+# Drag-to-Applications DMG layout (identical geometry to EasyClaw):
+# 540×380 window, app icon at (144, 178), Applications symlink at (396, 178).
+# Users open the DMG and see exactly: [app icon] → [Applications folder].
+dmg:
+  artifactName: nanoclaw-setup.${ext}
+  title: ${productName}
+  background: build/background.png
+  iconSize: 80
+  window:
+    width: 540
+    height: 380
+  contents:
+    - x: 144
+      y: 178
+    - x: 396
+      y: 178
+      type: link
+      path: /Applications
+
+# ── Publish ──────────────────────────────────────────────────────────────────
+# The GitHub Actions workflow does the upload via `gh release upload`,
+# so `publish: never` is the local-build default. The build:mac / build:win
+# scripts override with `--publish always` when invoked from CI with
+# secrets configured.
+publish:
+  provider: github
+  owner: RichardBNel
+  repo: Factotem
+  releaseType: release
+
+npmRebuild: false

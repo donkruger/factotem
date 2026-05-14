@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    NanoClaw mascot icon — v0.1 placeholder.
+    Brand: warm orange #ff7a3a, near-black ink #1d1d1f, soft halo.
+    Apple-flat: no glow, no gradient stroke, no harsh shadows.
+
+    Source for icon.icns / icon.ico / icon.png. Render with:
+      npm run build:assets
+    in cli/claw-setup-gui — generates PNG / ICO / ICNS / DMG bg.
+  -->
+
+  <!-- Rounded-square background — 1024x1024 with iOS-like 22.4% corner radius -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fff4ec"/>
+      <stop offset="100%" stop-color="#ffe5d4"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="42%" r="50%">
+      <stop offset="0%" stop-color="#ffd2b4" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#ffd2b4" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="229" ry="229" fill="url(#bg)"/>
+  <ellipse cx="512" cy="432" rx="380" ry="320" fill="url(#halo)"/>
+
+  <!-- Body (centered around y≈560) -->
+  <g transform="translate(0, 40)">
+    <!-- Left claw -->
+    <ellipse cx="246" cy="512" rx="113" ry="72" fill="#ff7a3a"/>
+    <ellipse cx="215" cy="471" rx="51" ry="31" fill="#ff7a3a"/>
+    <ellipse cx="215" cy="553" rx="51" ry="31" fill="#ff7a3a"/>
+
+    <!-- Right claw -->
+    <ellipse cx="778" cy="512" rx="113" ry="72" fill="#ff7a3a"/>
+    <ellipse cx="809" cy="471" rx="51" ry="31" fill="#ff7a3a"/>
+    <ellipse cx="809" cy="553" rx="51" ry="31" fill="#ff7a3a"/>
+
+    <!-- Connecting arms -->
+    <path d="M 333 512 Q 435 461 512 512 Q 589 461 691 512"
+          fill="none" stroke="#ff7a3a" stroke-width="31"
+          stroke-linecap="round" opacity="0.65"/>
+
+    <!-- Body -->
+    <ellipse cx="512" cy="563" rx="174" ry="143" fill="#ff7a3a"/>
+
+    <!-- Eyes -->
+    <circle cx="461" cy="522" r="20" fill="#1d1d1f"/>
+    <circle cx="563" cy="522" r="20" fill="#1d1d1f"/>
+    <circle cx="466" cy="517" r="7" fill="#ffffff"/>
+    <circle cx="568" cy="517" r="7" fill="#ffffff"/>
+
+    <!-- Smile -->
+    <path d="M 471 604 Q 512 624 553 604"
+          fill="none" stroke="#1d1d1f" stroke-width="10"
+          stroke-linecap="round"/>
+
+    <!-- Antennae -->
+    <line x1="471" y1="420" x2="441" y2="348"
+          stroke="#ff7a3a" stroke-width="10" stroke-linecap="round"/>
+    <line x1="553" y1="420" x2="583" y2="348"
+          stroke="#ff7a3a" stroke-width="10" stroke-linecap="round"/>
+    <circle cx="441" cy="348" r="13" fill="#ff7a3a"/>
+    <circle cx="583" cy="348" r="13" fill="#ff7a3a"/>
+  </g>
+
+  <!-- Optional wordmark band at the bottom — subtle, deletable -->
+  <text x="512" y="912" text-anchor="middle"
+        font-family="Comfortaa, sans-serif" font-weight="600"
+        font-size="64" fill="#1d1d1f" letter-spacing="-0.02em">
+    NanoClaw
+  </text>
+</svg>

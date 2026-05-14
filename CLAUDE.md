@@ -3,6 +3,7 @@
 Personal Claude assistant — operator-facing brand **Factotem**, orchestrator primitive **NanoClaw** (fork: `donkruger/factotem`, originally forked as `donkruger/benclaw`).
 
 - [docs/VISION.md](docs/VISION.md) — **Long-run trajectory**: five pillars (model agnosticism, human-readable UX, multi-machine fleet over Tailscale, wizard-as-app-wrapper, radical simplification) + non-goals. **Read this before proposing any non-trivial change** — does it move us toward the vision or away from it?
+- [docs/ui-ux-direction.md](docs/ui-ux-direction.md) — **The three user-facing surfaces** (CLI wizard, GUI wizard, dashboard) and the hand-off rules between them. **Read this before changing anything visible** — colour tokens, wizard flow, dashboard layout, anything an operator sees.
 - [docs/DEPLOYMENT_CONVENTIONS.md](docs/DEPLOYMENT_CONVENTIONS.md) — **5-minute deployment briefing**: two-repo setup, five-file version bump, tag namespace, what NOT to do, verification commands. **Read this before cutting a release or designing a change that affects how operators receive updates.**
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Full current-state architecture, message flow, security model
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — Philosophy and design decisions
@@ -16,6 +17,8 @@ Personal Claude assistant — operator-facing brand **Factotem**, orchestrator p
 Single Node.js process with skill-based channel system. Channels (WhatsApp, Telegram, Slack, Discord, Gmail) are skills that self-register at startup. Messages route to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
 
 **Vision-check before non-trivial work:** the project is heading toward LLM model agnosticism, human-readable UX everywhere, multi-machine fleet orchestration over Tailscale, and a single-download app-wrapper installer — all in service of non-technical operators running their own agentic workforce on owned hardware. Every CLI step we add is a future product debt; every error message in raw stderr is a UX failure. See [docs/VISION.md](docs/VISION.md) for the full pillars + non-goals.
+
+**The three operator-facing surfaces** are the CLI wizard at `cli/claw-setup/` (headless / SRE path), the GUI wizard at `cli/claw-setup-gui/` (download-and-double-click installer), and the dashboard at `dashboard/` (post-setup home). They share a state file and a design system; the GUI hands off to the dashboard on completion. See [docs/ui-ux-direction.md](docs/ui-ux-direction.md) before touching anything visible, and `cli/claw-setup-gui/CLAUDE.md` for GUI-specific rules.
 
 ## Key Files
 

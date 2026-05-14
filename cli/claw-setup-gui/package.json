@@ -1,0 +1,50 @@
+{
+  "name": "@nanoclaw/claw-setup-gui",
+  "version": "0.1.0",
+  "description": "Electron-based setup wizard for NanoClaw",
+  "private": true,
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
+    "lint": "eslint --cache .",
+    "format": "prettier --write .",
+    "postinstall": "electron-builder install-app-deps",
+    "build:unpack": "npm run build && electron-builder --dir",
+    "build:mac": "npm run build && electron-builder --mac --publish always",
+    "build:win": "npm run build && electron-builder --win --publish always",
+    "build:mac-local": "npm run build && electron-builder --mac --publish never",
+    "build:win-local": "npm run build && electron-builder --win --publish never",
+    "release": "node scripts/release.mjs",
+    "build:assets": "node scripts/build-assets.mjs"
+  },
+  "dependencies": {
+    "@electron-toolkit/preload": "^3.0.2",
+    "@electron-toolkit/utils": "^4.0.0",
+    "qrcode": "^1.5.4",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@electron-toolkit/tsconfig": "^2.0.0",
+    "png2icons": "^2.0.1",
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/node": "^22.19.1",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^39.2.6",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^5.0.0",
+    "prettier": "^3.7.4",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6"
+  }
+}

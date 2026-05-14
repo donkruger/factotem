@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>NanoClaw Setup</title>
+    <!-- CSP is set at the response-header level from the main process
+         (src/main/index.ts session.webRequest.onHeadersReceived) so a
+         single source of truth governs both file:// and the dev server.
+         A static <meta> tag here would conflict and override that. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Comfortaa for the wordmark. Loaded as a regular stylesheet so it
+         doesn't go through PostCSS @import processing (which would fight
+         with Tailwind v4's @import 'tailwindcss' expansion order). -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@300;400;500;600;700&display=swap"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>
