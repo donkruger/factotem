@@ -111,11 +111,11 @@ jobs:
       - name: Verify codesign + notarisation stapled
         run: |
           DMG="$(echo "${{ steps.stage.outputs.release_dir }}"/NanoClaw-Setup_*.dmg)"
-          MOUNT_POINT=$(hdiutil attach "$DMG" -nobrowse -noverify | tail -1 | awk '{print $3}')
-          APP=$(find "$MOUNT_POINT" -name "*.app" -maxdepth 2 | head -1)
-          spctl --assess --type execute --verbose=2 "$APP" || echo "::warning::spctl rejected $APP"
-          xcrun stapler validate "$APP" || echo "::warning::stapler rejected $APP"
-          hdiutil detach "$MOUNT_POINT" -force || true
+          # Verify notarisation staple and Gatekeeper acceptance on the DMG itself,
+          # not on the .app inside — the staple attaches to the outermost artefact.
+          xcrun stapler validate "$DMG" || echo "::warning::stapler rejected $DMG — DMG may be unsigned"
+          spctl --assess --type open --verbose=2 --context context:primary-signature "$DMG" \
+            || echo "::warning::spctl rejected $DMG — Gatekeeper will block unsigned installs"
 
       - name: Create GitHub Release on public mirror
         env:
