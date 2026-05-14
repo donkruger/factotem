@@ -44,7 +44,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: nanoclaw/cli/claw-setup-gui
+        working-directory: cli/claw-setup-gui
 
     steps:
       - name: Checkout
@@ -55,13 +55,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: nanoclaw/cli/claw-setup-gui/package-lock.json
+          cache-dependency-path: cli/claw-setup-gui/package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
       - name: Build the dashboard (the orchestrator serves it from /dashboard/out)
-        working-directory: nanoclaw/dashboard
+        working-directory: dashboard
         run: |
           npm ci
           npm run build
