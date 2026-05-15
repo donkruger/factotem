@@ -227,7 +227,7 @@ flowchart TB
     OneCLI[OneCLI gateway<br/>127.0.0.1:10254<br/>credential proxy]
 
     WA & TG & SL & GM -->|messages| REG
-    REG -->|@trigger override| AID
+    REG -->|"@trigger override"| AID
     REG --> Q
     SCHED --> Q
     AID --> REG2
