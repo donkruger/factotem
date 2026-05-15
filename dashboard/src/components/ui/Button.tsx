@@ -1,6 +1,9 @@
 import { ButtonHTMLAttributes, forwardRef } from 'react';
 
-type Variant = 'primary' | 'ghost';
+// v1.2.1-finish-blueprint § 4 added the 'danger' variant for the
+// TypedConfirmModal's destructive commit. Reuse for any future
+// destructive action that already uses the typed-confirm pattern.
+type Variant = 'primary' | 'ghost' | 'danger';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
@@ -15,6 +18,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         'bg-[var(--color-ink)] text-[var(--color-bg)] hover:-translate-y-px hover:shadow-[var(--shadow-1)]',
       ghost:
         'border border-[var(--color-hairline)] text-[var(--color-ink)] hover:bg-[var(--color-bg-subtle)]',
+      danger:
+        'bg-red-600 text-white hover:bg-red-700 hover:-translate-y-px hover:shadow-[var(--shadow-1)] dark:bg-red-700 dark:hover:bg-red-800',
     };
     return (
       <button

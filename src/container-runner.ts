@@ -26,9 +26,95 @@ import {
 } from './container-runtime.js';
 import { OneCLI } from '@onecli-sh/sdk';
 import { validateAdditionalMounts } from './mount-security.js';
-import { RegisteredGroup } from './types.js';
+import { Provider, RegisteredGroup } from './types.js';
+import { resolveAgentForGroup, resolveProviderForGroup } from './agents.js';
+import {
+  getContainerImageForProtocol,
+  getWireProtocolForProtocol,
+  loadProviderRegistry,
+} from './providers-registry.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
+
+/**
+ * Map a provider's protocol → wire protocol → container image. Reads from
+ * the canonical `setup/providers.json` registry; the orchestrator never
+ * hardcodes individual providers.
+ *
+ * Behaviour for the v1.0 Claude path is byte-identical: `anthropic` →
+ * `nanoclaw-agent:latest` (the registry's `container_image` for the
+ * anthropic row is `nanoclaw-agent`, which appended with `:latest`
+ * matches the existing `CONTAINER_IMAGE` env default).
+ *
+ * Unknown protocols (a registry typo, or an agent created against a
+ * protocol we haven't shipped registry support for yet) fall back to
+ * `CONTAINER_IMAGE` so the operator keeps working on the default agent.
+ *
+ * See docs/PROVIDER_PLAYBOOK.md § 4.1 (Container contract) and § 1
+ * (Container per wire protocol).
+ */
+function imageForProvider(provider: Provider): string {
+  try {
+    const image = getContainerImageForProtocol(provider.protocol);
+    // For Anthropic specifically, honour the CONTAINER_IMAGE env override
+    // if one is set — operators using a custom-built Claude container
+    // (e.g. a fork with extra MCP tools) still get their image. The
+    // registry value `nanoclaw-agent:latest` is the default fallback when
+    // no env override is in place.
+    if (provider.protocol === 'anthropic') {
+      return CONTAINER_IMAGE;
+    }
+    return image;
+  } catch (err) {
+    logger.warn(
+      { protocol: provider.protocol, err: (err as Error).message },
+      'Unknown provider protocol — falling back to default container image',
+    );
+    return CONTAINER_IMAGE;
+  }
+}
+
+/**
+ * Resolve the wire protocol for a provider. Used by callers that need to
+ * branch on Anthropic-native vs OpenAI-compatible shape (e.g. when
+ * deciding which env vars to set or which OneCLI agent to attach).
+ */
+function wireProtocolForProvider(
+  provider: Provider,
+): 'anthropic' | 'openai-compatible' {
+  try {
+    return getWireProtocolForProtocol(provider.protocol);
+  } catch {
+    // Unknown protocols default to Anthropic so the v1.0 path keeps
+    // working — same envelope as before this refactor.
+    return 'anthropic';
+  }
+}
+
+/**
+ * Resolve the base_url for an openai-compatible provider when the Provider
+ * record itself doesn't carry one (most cloud entries come from the
+ * registry, not from the per-agent provider override).
+ */
+function getProviderBaseUrl(protocol: string): string | null {
+  try {
+    const reg = loadProviderRegistry();
+    return reg[protocol]?.base_url ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Preload the registry at module init so a malformed providers.json
+// surfaces at orchestrator boot rather than at first message spawn.
+try {
+  loadProviderRegistry();
+} catch (err) {
+  logger.error(
+    { err: (err as Error).message },
+    'Failed to load setup/providers.json at startup — provider routing will fall back to defaults',
+  );
+}
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -74,6 +160,14 @@ export interface ContainerOutput {
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
   };
+  // Container-authoritative cost in micro-USD. Emitted by
+  // nanoclaw-agent-oai (which reads provider rates from
+  // setup/providers.json at build time). Not yet emitted by the
+  // legacy nanoclaw-agent Claude image — the orchestrator's
+  // `costCentsFromContainer` helper falls through to the
+  // token-derived estimate in that case. See
+  // PROVIDER_PLAYBOOK § 4.1 + multi-agent-completion-blueprint § 3.1.
+  cost_micros?: number;
   started_at?: string;
   finished_at?: string;
   duration_ms?: number;
@@ -286,10 +380,25 @@ function buildVolumeMounts(
   return mounts;
 }
 
+interface ProviderContext {
+  /** Resolved provider for this group (per-group override → agent → default). */
+  provider: Provider;
+  /** Wire protocol — drives env-var shape and container image. */
+  wire_protocol: 'anthropic' | 'openai-compatible';
+  /** Resolved agent — used for AGENT_ID, AGENT_NAME, MEMORY_PATH env vars. */
+  agent: {
+    id: string;
+    name: string;
+    memory_namespace: string;
+    parent_agent_id: string | null;
+  };
+}
+
 async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
-  agentIdentifier?: string,
+  agentIdentifier: string | undefined,
+  providerCtx: ProviderContext,
 ): Promise<string[]> {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -297,22 +406,79 @@ async function buildContainerArgs(
   args.push('-e', `TZ=${TIMEZONE}`);
 
   // Optional: override the default SDK model via host env var. Plist config.
-  if (process.env.ANTHROPIC_MODEL) {
+  // Only forwarded when the resolved provider is Anthropic — the OAI
+  // container reads MODEL/PROVIDER_BASE_URL instead.
+  if (
+    providerCtx.provider.protocol === 'anthropic' &&
+    process.env.ANTHROPIC_MODEL
+  ) {
     args.push('-e', `ANTHROPIC_MODEL=${process.env.ANTHROPIC_MODEL}`);
+  }
+
+  // Provider-context env (PROVIDER_PLAYBOOK § 4.1 Container contract).
+  // MODEL is the canonical `<protocol>/<model>` string surface used by
+  // the dashboard, audit log, and OneCLI. Both Anthropic-native and
+  // OpenAI-compatible containers read it (the Anthropic container also
+  // honours ANTHROPIC_MODEL for legacy compatibility — already set above).
+  args.push(
+    '-e',
+    `MODEL=${providerCtx.provider.protocol}/${providerCtx.provider.model}`,
+  );
+  // PROVIDER_BASE_URL is read by the OAI container to decide which
+  // endpoint to call. For openai-compatible providers we pull it from
+  // the registry-resolved base_url (Gemini's compat endpoint,
+  // OpenRouter's, etc.). For local providers (Ollama, vLLM) the
+  // base_url is set on the Provider record itself.
+  if (providerCtx.wire_protocol === 'openai-compatible') {
+    const baseUrl =
+      providerCtx.provider.base_url ??
+      getProviderBaseUrl(providerCtx.provider.protocol);
+    if (baseUrl) {
+      args.push('-e', `PROVIDER_BASE_URL=${baseUrl}`);
+    }
+  } else if (providerCtx.provider.base_url) {
+    args.push('-e', `PROVIDER_BASE_URL=${providerCtx.provider.base_url}`);
+  }
+
+  // Agent-context env (PROVIDER_PLAYBOOK § 11.2 forward-compat — sub-agent
+  // containers know their parent; today PARENT_AGENT_ID is always
+  // empty for top-level agents).
+  args.push('-e', `AGENT_ID=${providerCtx.agent.id}`);
+  args.push('-e', `AGENT_NAME=${providerCtx.agent.name}`);
+  args.push(
+    '-e',
+    `ASSISTANT_NAME=${providerCtx.agent.name}`, // Persona-name alias for SDK consumers.
+  );
+  args.push('-e', `MEMORY_PATH=${providerCtx.agent.memory_namespace}`);
+  if (providerCtx.agent.parent_agent_id) {
+    args.push('-e', `PARENT_AGENT_ID=${providerCtx.agent.parent_agent_id}`);
   }
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
-  const onecliApplied = await onecli.applyContainerConfig(args, {
-    addHostMapping: false, // Nanoclaw already handles host gateway
-    agent: agentIdentifier,
-  });
-  if (onecliApplied) {
-    logger.info({ containerName }, 'OneCLI gateway config applied');
+  // Per-provider credentials live under the provider's credential_id
+  // (e.g. 'Anthropic', 'Gemini'); local providers (base_url set) skip
+  // OneCLI entirely.
+  if (providerCtx.provider.credential_id) {
+    const onecliApplied = await onecli.applyContainerConfig(args, {
+      addHostMapping: false, // Nanoclaw already handles host gateway
+      agent: agentIdentifier,
+    });
+    if (onecliApplied) {
+      logger.info(
+        { containerName, credential: providerCtx.provider.credential_id },
+        'OneCLI gateway config applied',
+      );
+    } else {
+      logger.warn(
+        { containerName },
+        'OneCLI gateway not reachable — container will have no credentials',
+      );
+    }
   } else {
-    logger.warn(
-      { containerName },
-      'OneCLI gateway not reachable — container will have no credentials',
+    logger.info(
+      { containerName, provider: providerCtx.provider.protocol },
+      'Skipping OneCLI — local provider does not require credentials',
     );
   }
 
@@ -337,7 +503,10 @@ async function buildContainerArgs(
     }
   }
 
-  args.push(CONTAINER_IMAGE);
+  // Image selection — per wire-protocol image (PROVIDER_PLAYBOOK § 1).
+  // For Anthropic groups (the only kind today) this resolves to the
+  // existing CONTAINER_IMAGE, preserving the v1.0 behaviour byte-for-byte.
+  args.push(imageForProvider(providerCtx.provider));
 
   return args;
 }
@@ -369,10 +538,33 @@ export async function runContainerAgent(
   const agentIdentifier = usesDefaultAgent
     ? undefined
     : group.folder.toLowerCase().replace(/_/g, '-');
+
+  // Resolve the agent and provider that should answer this message.
+  // Resolution order (PROVIDER_PLAYBOOK § 0):
+  //   1. group.containerConfig.provider — rare per-group override
+  //   2. group.agent_id → that agent's provider
+  //   3. deployment default agent's provider (fallback when group is
+  //      unassigned, which is the v1/v2 install state on upgrade)
+  // On a v1.0 install the resolved provider is always Anthropic with
+  // claude-opus-4.6 — identical behaviour to before this change.
+  const resolvedAgent = resolveAgentForGroup(group);
+  const resolvedProvider = resolveProviderForGroup(group);
+  const providerCtx: ProviderContext = {
+    provider: resolvedProvider,
+    wire_protocol: wireProtocolForProvider(resolvedProvider),
+    agent: {
+      id: resolvedAgent.id,
+      name: resolvedAgent.name,
+      memory_namespace: resolvedAgent.memory_namespace,
+      parent_agent_id: resolvedAgent.parent_agent_id,
+    },
+  };
+
   const containerArgs = await buildContainerArgs(
     mounts,
     containerName,
     agentIdentifier,
+    providerCtx,
   );
 
   logger.debug(

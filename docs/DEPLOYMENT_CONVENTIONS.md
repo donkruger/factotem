@@ -30,16 +30,28 @@ If you only need the runbook for an in-progress incident, [OPERATIONS.md](OPERAT
 
 If we ever take the source private, all three break for non-collaborators. See [VISION.md § Pillar 4](VISION.md#4-wizard--fully-housed-app-wrapper) for the path that closes this constraint.
 
-## Two distribution paths
+## Three distribution paths
 
-NanoClaw splits into **auto-updateable** and **fork-and-modify** components. This
-isn't accidental — operators customise the latter (skills, `.env`, per-group
-`CLAUDE.md`); auto-overwriting their fork would clobber that work.
+NanoClaw splits into **auto-updateable signed binaries** (the desktop apps)
+and **fork-and-modify source** (the orchestrator + dashboard + claw-setup
+CLI). This isn't accidental — operators customise the source (skills,
+`.env`, per-group `CLAUDE.md`); auto-overwriting their fork would clobber
+that work. The desktop apps are stateless installers / diagnostics, so a
+signed-binary update lane is the right shape for them.
 
-| Component | Distribution |
-|---|---|
-| **Factotem Doctor** (Tauri menu-bar app) | Signed `.dmg`. Tagged releases. Auto-updates via Tauri updater polling `latest.json` every 4h. Operator approves install via Settings. |
-| **Orchestrator + dashboard + claw-setup wizard** | `git pull && npm run build`. Three update paths in order of recommendation: Doctor "Pull upstream updates…" (v0.1.8+, un-customised forks) → `/update-nanoclaw` skill (customised forks) → manual `git pull && npm run build` (always works). See [OPERATIONS.md § Updating the Orchestrator](OPERATIONS.md#updating-the-orchestrator). |
+| Component | Tag namespace | Distribution |
+|---|---|---|
+| **NanoClaw Setup** (Electron installer) — `cli/claw-setup-gui/` | `wizard-v*` | Signed `.dmg`. Drags into Applications, runs the twelve-step setup wizard, then auto-skips straight to the dashboard on every subsequent launch when the orchestrator is up. No in-app updater yet — operators redownload from the mirror for a new version. |
+| **Factotem Doctor** (Tauri menu-bar app) — `cli/claw-doctor/` | `v*` | Signed `.dmg`. Auto-updates via Tauri updater polling `latest.json` every 4h. Operator approves install via Settings. |
+| **Orchestrator + dashboard + claw-setup CLI** — repo root | (untagged) | `git pull && npm run build`. Three update paths in order of recommendation: Doctor "Pull upstream updates…" (v0.1.8+, un-customised forks) → `/update-nanoclaw` skill (customised forks) → manual `git pull && npm run build` (always works). See [OPERATIONS.md § Updating the Orchestrator](OPERATIONS.md#updating-the-orchestrator). |
+
+**Both signed-binary pipelines share the same Apple secrets and the same
+mirror-publish pattern** — tags push to the private source repo
+(`donkruger/factotem`), CI builds + signs + notarises, then publishes
+to the public mirror (`RichardBNel/Factotem`) via `MIRROR_REPO_TOKEN`.
+The wizard pipeline reuses `APPLE_CERT_BASE64` / `APPLE_CERT_PASSWORD` /
+`APPLE_PASSWORD` / `APPLE_ID` / `APPLE_TEAM_ID` without setting any
+duplicate secrets.
 
 ## Cutting a Doctor release
 
@@ -141,6 +153,60 @@ Should report `asset_count: 5`. The five artifacts:
 - `Factotem-Doctor_X.Y.Z_aarch64.app.tar.gz` — Tauri updater payload
 - `Factotem-Doctor_X.Y.Z_aarch64.app.tar.gz.sig` — Ed25519 signature
 - `latest.json` — Tauri updater manifest
+
+## Cutting a Wizard release
+
+The NanoClaw Setup wizard (`cli/claw-setup-gui/`) ships under the
+`wizard-v*` tag namespace, separate from the Doctor's `v*` tags. The
+flow is much simpler than the Doctor's — the wizard is single-file,
+no Tauri updater payload, no Cargo lockfile to regenerate.
+
+### 1. Run the release script
+
+From inside the wizard package:
+
+```bash
+cd cli/claw-setup-gui
+npm run release             # patch bump (0.1.0 → 0.1.1)
+npm run release -- minor    # minor bump
+npm run release -- major    # major bump
+```
+
+The script (`scripts/release.mjs`) bumps `package.json` + `package-lock.json`,
+commits with `chore(wizard): bump version to wizard-vX.Y.Z`, tags as
+`wizard-vX.Y.Z`, and pushes both the branch and the tag to `origin`. CI
+watches for `wizard-v*` tag pushes specifically — the Doctor's `v*`
+trigger doesn't fire and vice versa.
+
+### 2. Watch the workflow
+
+```bash
+gh run list --repo donkruger/factotem --workflow release-wizard.yml --limit 1
+gh run watch <run-id> --repo donkruger/factotem --exit-status
+```
+
+Build takes **~8–12 minutes** end-to-end (npm install + electron-vite
+build + dashboard static-export build + electron-builder DMG packaging +
+Apple notarisation + cross-repo mirror push).
+
+### 3. Verify on the public mirror
+
+```bash
+gh release view wizard-vX.Y.Z --repo RichardBNel/Factotem \
+  --json tagName,publishedAt,assets \
+  --jq '{tag, published: .publishedAt, asset_count: (.assets | length)}'
+```
+
+Should report `asset_count: 4`. The four artefacts:
+
+- `nanoclaw-setup.dmg` — versionless stable URL
+- `NanoClaw-Setup_X.Y.Z.dmg` — versioned copy
+- `NanoClaw-Setup_X.Y.Z.dmg.blockmap` — electron-builder differential-update payload
+- `latest-mac.yml` — electron-builder update manifest (reserved for when an in-app updater is wired in)
+
+The wizard's always-latest URL is
+`https://github.com/RichardBNel/Factotem/releases/latest/download/nanoclaw-setup.dmg`
+— same `/latest/download/<filename>` redirect contract the Doctor uses.
 
 ## Workflow noise to ignore
 

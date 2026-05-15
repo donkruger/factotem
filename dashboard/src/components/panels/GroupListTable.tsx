@@ -70,9 +70,28 @@ function profileOf(group: Group): string {
 }
 
 function modelOf(group: Group): string {
+  // Gemini blueprint PR 4 (Phase E.1): /api/groups now joins the
+  // resolved provider per row. Prefer that — it reflects the agent's
+  // provider after the resolution chain (per-group override → agent →
+  // default). Fall back to the legacy per-group model override or the
+  // 'default' placeholder for installs predating the join.
+  if (group.provider) {
+    return `${group.provider.protocol}/${group.provider.model}`;
+  }
   const cfg = group.container_config as Record<string, unknown> | null;
   const v = cfg?.['model'];
   return typeof v === 'string' && v.length > 0 ? v : 'default';
+}
+
+/** Display name for the agent owning this group. Falls back to '—'. */
+function agentNameOf(group: Group): string {
+  return group.agent?.name ?? '—';
+}
+
+/** Whether the row's provider is an explicit per-group override. */
+function hasProviderOverride(group: Group): boolean {
+  const cfg = group.container_config as Record<string, unknown> | null;
+  return !!(cfg && typeof cfg === 'object' && 'provider' in cfg);
 }
 
 /**
@@ -208,6 +227,7 @@ export function GroupListTable({ groups, onSelect }: GroupListTableProps) {
           <TableRow>
             <TableCell header>Name</TableCell>
             <TableCell header>Channel</TableCell>
+            <TableCell header>Agent</TableCell>
             <TableCell header>Profile</TableCell>
             <TableCell header>Model</TableCell>
             <TableCell header>Status</TableCell>
@@ -221,7 +241,7 @@ export function GroupListTable({ groups, onSelect }: GroupListTableProps) {
           {filtered.length === 0 && (
             <TableRow>
               <TableCell
-                colSpan={7}
+                colSpan={8}
                 className="text-center text-sm text-[var(--color-ink-muted)]"
               >
                 No groups match the current filters.
@@ -254,13 +274,30 @@ export function GroupListTable({ groups, onSelect }: GroupListTableProps) {
                   </span>
                 </TableCell>
                 <TableCell>
+                  <span className="text-xs text-[var(--color-ink)]">
+                    {agentNameOf(g)}
+                  </span>
+                </TableCell>
+                <TableCell>
                   <span className="font-mono text-xs text-[var(--color-ink-muted)]">
                     {profileOf(g)}
                   </span>
                 </TableCell>
                 <TableCell>
-                  <span className="font-mono text-xs text-[var(--color-ink-muted)]">
+                  <span
+                    className="font-mono text-xs text-[var(--color-ink-muted)]"
+                    title={
+                      hasProviderOverride(g)
+                        ? 'Per-group provider override is active.'
+                        : 'Inherited from this group’s agent.'
+                    }
+                  >
                     {shortenModel(modelOf(g))}
+                    {hasProviderOverride(g) && (
+                      <span className="ml-1 text-[var(--color-warning)]">
+                        ◆
+                      </span>
+                    )}
                   </span>
                 </TableCell>
                 <TableCell>

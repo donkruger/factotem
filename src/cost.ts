@@ -45,6 +45,24 @@ const MODEL_COSTS: Record<string, ModelCost> = {
     cache_create: 125,
     cache_read: 10,
   },
+  // Gemini via the OpenAI-compat endpoint. Cache rates are 0 because
+  // the compat layer doesn't expose Gemini's native caching. Source:
+  // https://ai.google.dev/pricing — re-verify at every release.
+  // The OAI container's per-build PRICE_TABLE is the primary source
+  // of truth; this fallback covers legacy containers that don't emit
+  // `cost_micros` in the OUTPUT envelope. See PROVIDER_PLAYBOOK § 4.1.
+  'gemini/gemini-2.5-pro': {
+    input: 125,
+    output: 500,
+    cache_create: 0,
+    cache_read: 0,
+  },
+  'gemini/gemini-2.5-flash': {
+    input: 7.5,
+    output: 30,
+    cache_create: 0,
+    cache_read: 0,
+  },
 };
 
 /**
@@ -79,4 +97,56 @@ export function knownModel(model: string): boolean {
 
 export function listKnownModels(): string[] {
   return Object.keys(MODEL_COSTS);
+}
+
+/**
+ * Container OUTPUT-envelope shape we care about for cost. Subset of
+ * `ContainerOutput` — duplicated here to avoid an import cycle with
+ * `container-runner.ts`. When ContainerOutput's shape changes, this
+ * type updates too.
+ */
+interface CostFromContainerInput {
+  cost_micros?: number;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
+}
+
+/**
+ * Cost in cents for a single turn.
+ *
+ * Prefers the container's own `cost_micros` when present and positive
+ * — the container reads provider rates from `setup/providers.json` at
+ * build time and knows the authoritative price for that turn's exact
+ * model. Falls back to the orchestrator's token-derived estimate when
+ * the container didn't emit `cost_micros` (legacy `nanoclaw-agent`
+ * Claude image; or any new image we add before its build script
+ * learns the cost calculation).
+ *
+ * `Math.round` rather than `Math.ceil` here because the container's
+ * `cost_micros` is already precise — rounding up would over-bill.
+ * The fallback path keeps `Math.ceil` (via `estimateCostCents`) for
+ * conservative budget tracking.
+ *
+ * See PROVIDER_PLAYBOOK § 4.1 (Container contract — cost_micros) and
+ * docs/implementation/multi-agent-completion-blueprint.md § 3.1.
+ */
+export function costCentsFromContainer(
+  output: CostFromContainerInput,
+  model: string,
+): number {
+  if (typeof output.cost_micros === 'number' && output.cost_micros > 0) {
+    // 1 cent = 10_000 micro-USD.
+    return Math.round(output.cost_micros / 10_000);
+  }
+  return estimateCostCents(
+    model,
+    output.usage?.input_tokens ?? 0,
+    output.usage?.output_tokens ?? 0,
+    output.usage?.cache_creation_input_tokens ?? 0,
+    output.usage?.cache_read_input_tokens ?? 0,
+  );
 }

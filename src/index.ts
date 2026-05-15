@@ -19,6 +19,7 @@ import './channels/index.js';
 import {
   getChannelFactory,
   getRegisteredChannelNames,
+  normaliseFactoryResult,
 } from './channels/registry.js';
 import {
   ContainerOutput,
@@ -26,12 +27,14 @@ import {
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { getAgentOrDefault, resolveAgentByTrigger } from './agents.js';
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
-import { estimateCostCents } from './cost.js';
+import { costCentsFromContainer } from './cost.js';
 import {
+  getAgentSpendForDate,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -40,6 +43,7 @@ import {
   getMessagesSince,
   getNewMessages,
   getRouterState,
+  incrementAgentSpend,
   initDatabase,
   insertAgentTurn,
   setRegisteredGroup,
@@ -342,16 +346,77 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
-  // For non-main groups, check if trigger is required and present
+  // For non-main groups, check if trigger is required and present.
+  //
+  // Phase H.3 (Gemini blueprint PR 4): per-message trigger override.
+  // Beyond the group's own trigger, scan every message for an
+  // `@<agent>` prefix that matches *any* registered agent. When a
+  // non-group-default agent's trigger matches, we dispatch to that
+  // agent's container regardless of the group's assignment — operators
+  // can say "@Ben what time is it" in Andy's group and get a Ben
+  // response. Returns null when no agent override applies and we fall
+  // back to the group's assigned agent.
+  let agentOverride: ReturnType<typeof resolveAgentByTrigger> = null;
   if (!isMainGroup && group.requiresTrigger !== false) {
     const triggerPattern = getTriggerPattern(group.trigger);
     const allowlistCfg = loadSenderAllowlist();
-    const hasTrigger = missedMessages.some(
-      (m) =>
-        triggerPattern.test(m.content.trim()) &&
-        (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
-    );
+
+    // Walk messages: keep the *last* message whose trigger matches
+    // (either the group's own trigger or any agent trigger). That's
+    // what the operator most recently asked for, so it wins.
+    let hasTrigger = false;
+    for (const m of missedMessages) {
+      const allowed =
+        m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg);
+      if (!allowed) continue;
+      const text = m.content.trim();
+      // Per-agent trigger (multi-agent dispatch) — wins over the
+      // group-default trigger when it matches.
+      const byAgent = resolveAgentByTrigger(text);
+      if (byAgent) {
+        hasTrigger = true;
+        agentOverride = byAgent;
+        continue;
+      }
+      // Group-default trigger — keeps the legacy single-agent path
+      // working unchanged for v1.0 installs.
+      if (triggerPattern.test(text)) {
+        hasTrigger = true;
+        // Reset any earlier per-agent override — the most recent
+        // group-trigger match means the operator wants the *group's*
+        // assigned agent for this turn.
+        agentOverride = null;
+      }
+    }
     if (!hasTrigger) return true;
+  } else {
+    // Main group / requiresTrigger=false path. Still let an explicit
+    // `@<agent>` mention override the default agent, since the main
+    // group is multi-agent-friendly territory by definition.
+    for (const m of missedMessages) {
+      const byAgent = resolveAgentByTrigger(m.content.trim());
+      if (byAgent) {
+        agentOverride = byAgent;
+      }
+    }
+  }
+
+  // If a per-message agent trigger fired, dispatch to that agent's
+  // container even when the group is assigned elsewhere. We clone the
+  // group object so the override doesn't leak into in-memory caches.
+  const dispatchGroup =
+    agentOverride && agentOverride.id !== (group.agent_id ?? null)
+      ? { ...group, agent_id: agentOverride.id }
+      : group;
+  if (agentOverride && dispatchGroup !== group) {
+    logger.info(
+      {
+        chatJid,
+        groupAgent: group.agent_id ?? null,
+        triggeredAgent: agentOverride.id,
+      },
+      'Per-message agent trigger overrode the group\'s assigned agent',
+    );
   }
 
   const prompt = formatMessages(missedMessages, TIMEZONE, {
@@ -414,7 +479,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let output: 'success' | 'error';
   try {
     output = await runAgent(
-      group,
+      dispatchGroup,
       prompt,
       chatJid,
       imageAttachments,
@@ -562,13 +627,12 @@ async function runAgent(
             const cacheCreate = output.usage?.cache_creation_input_tokens ?? 0;
             const cacheRead = output.usage?.cache_read_input_tokens ?? 0;
             const model = output.model ?? 'unknown';
-            const estCostCents = estimateCostCents(
-              model,
-              inputTokens,
-              outputTokens,
-              cacheCreate,
-              cacheRead,
-            );
+            // Prefer the container's `cost_micros` when present
+            // (authoritative — the container reads provider rates at
+            // build time). Falls back to the token-derived estimate
+            // for legacy containers (Claude image) that don't emit it.
+            // See multi-agent-completion-blueprint § 3.1.
+            const estCostCents = costCentsFromContainer(output, model);
             insertAgentTurn({
               turn_id: `${turnId}-${Date.now()}`,
               machine_id: machine.id,
@@ -599,7 +663,36 @@ async function runAgent(
               is_main: isMain ? 1 : 0,
               is_scheduled_task: 0,
               attachment_count: imageAttachments.length,
+              // group here is the dispatchGroup — already carries the
+              // trigger-override agent_id when @<trigger> dispatch
+              // re-routed away from the group's assigned agent.
+              // PR 8 § 3.2 of the multi-agent-completion blueprint.
+              responder_agent_id: group.agent_id ?? null,
+              // PR 12 § 3 — concurrency telemetry. queue.consumeQueueWait
+              // is read-and-clear; subsequent reads for the same batch
+              // return 0. concurrent_at_spawn is sampled at this
+              // moment via the queue's public getter.
+              queue_wait_ms: queue.consumeQueueWait(chatJid),
+              concurrent_at_spawn: queue.getActiveCount(),
             });
+
+            // PR 10 — per-agent spend rollup. Atomic INCR by today's
+            // date + the responding agent. Used by the pre-spawn gate
+            // to enforce daily_budget_cents on the next inbound.
+            // Skipped silently when responder_agent_id is null
+            // (pre-v1.2.1 turn) — the next gate firing has nothing
+            // to enforce.
+            if (group.agent_id && estCostCents > 0) {
+              try {
+                const today = new Date().toISOString().slice(0, 10);
+                incrementAgentSpend(today, group.agent_id, estCostCents);
+              } catch (err) {
+                logger.debug(
+                  { err, agentId: group.agent_id },
+                  'agent_spend_log: increment failed (non-fatal)',
+                );
+              }
+            }
           } catch (err) {
             logger.warn(
               { err, group: group.folder, turnId },
@@ -625,6 +718,37 @@ async function runAgent(
       return 'success';
     }
     openRecordSpawnSpend(openMode);
+  }
+
+  // PR 10 — per-agent daily budget cap (multi-agent-completion § 4.2).
+  // Independent of the group-level open-DM cap above; both layers
+  // apply. The agent gate covers every group the agent answers
+  // (regular groups, open-DM, scheduled tasks). Cap = NULL means
+  // unbounded (v1.0 / v1.2 default).
+  //
+  // `group` here is the dispatchGroup — already carries the
+  // trigger-override agent_id when @<trigger> dispatched away from
+  // the group's assigned agent. The cap that fires is therefore
+  // the *responding* agent's cap, not the group's owner's.
+  if (group.agent_id) {
+    const respondingAgent = getAgentOrDefault(group.agent_id);
+    const cap = respondingAgent.daily_budget_cents;
+    if (cap != null && cap > 0) {
+      const today = new Date().toISOString().slice(0, 10);
+      const spent = getAgentSpendForDate(today, respondingAgent.id);
+      if (spent >= cap) {
+        logger.warn(
+          {
+            agent: respondingAgent.id,
+            spentCents: spent,
+            capCents: cap,
+            chatJid,
+          },
+          'agent budget hit — skipping spawn',
+        );
+        return 'success';
+      }
+    }
   }
 
   try {
@@ -978,19 +1102,29 @@ async function main(): Promise<void> {
 
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
-  // Factories return null when credentials are missing, so unconfigured channels are skipped.
+  // Factories return null when credentials are missing, OR one
+  // channel per pairing for kinds that support multiple instances
+  // (WhatsApp — multi-agent-completion-blueprint § 4.1).
   for (const channelName of getRegisteredChannelNames()) {
     const factory = getChannelFactory(channelName)!;
-    const channel = factory(channelOpts);
-    if (!channel) {
+    const instances = normaliseFactoryResult(factory(channelOpts));
+    if (instances.length === 0) {
       logger.warn(
         { channel: channelName },
         'Channel installed but credentials missing — skipping. Check .env or re-run the channel skill.',
       );
       continue;
     }
-    channels.push(channel);
-    await channel.connect();
+    for (const channel of instances) {
+      channels.push(channel);
+      await channel.connect();
+    }
+    if (instances.length > 1) {
+      logger.info(
+        { channel: channelName, instances: instances.length },
+        'Channel kind started multiple pairings',
+      );
+    }
   }
   if (channels.length === 0) {
     logger.fatal('No channels connected');

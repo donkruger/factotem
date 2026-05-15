@@ -6,12 +6,16 @@ Project-scoped instructions for Claude (and human contributors) working in `nano
 
 Electron + React + Tailwind 4 desktop setup wizard for NanoClaw. It is the GUI sibling of `cli/claw-setup/` (which stays as the headless / SRE CLI path). Both wizards share the state file at `~/.config/nanoclaw/setup-state.json` and the visual system documented at `nanoclaw/docs/ui-ux-direction.md`. **Read `ui-ux-direction.md` first** — it explains the three-surface architecture (CLI wizard, GUI wizard, dashboard) and the hand-off rules between them.
 
+**Provider work has its own playbook.** If you're adding a wizard branch for a new AI provider (OpenAI, Gemini, Ollama, anything non-Claude), read [`nanoclaw/docs/PROVIDER_PLAYBOOK.md`](../../docs/PROVIDER_PLAYBOOK.md) before touching any code in `src/renderer/src/steps/`. It defines the per-provider wizard contract (§ 4.2), the wizard-flow integration showing exactly which steps split (§ 3), the operator-language guide for copy (§ 8), and the implementation checklist (§ 9) including acceptance tests.
+
 ## Things that MUST stay in sync (any one changes → change them all)
 
-1. **State schema** — `cli/claw-setup/src/state.ts` (canonical) and `cli/claw-setup-gui/src/main/services/state-store.ts` (mirror). Same zod fields, same regex for assistant names, same `version` literal.
-2. **Health type** — `dashboard/src/lib/nanoclaw.ts` (canonical) and `cli/claw-setup-gui/src/shared/types.ts` (the `HealthSummary` interface).
-3. **Design tokens** — `dashboard/src/styles/tokens.css` (canonical) and `cli/claw-setup-gui/src/renderer/src/assets/main.css` (mirror).
-4. **`UI` interface** (when prompt methods are added, see Future Work) — `cli/claw-setup/src/types.ts` (canonical) and any `ElectronUI` adapter that implements it.
+1. **State schema (v3 since the Gemini blueprint)** — `cli/claw-setup/src/state.ts` (canonical) and `cli/claw-setup-gui/src/main/services/state-store.ts` (mirror). Same zod fields, same regex for assistant names, same `version` literal. Includes the `agents` array, `default_agent_id`, and the legacy `assistantName` + `provider_default` mirrors.
+2. **Agent + Provider types** — `nanoclaw/src/types.ts` (canonical, orchestrator-side) and `cli/claw-setup-gui/src/shared/types.ts` (mirror). The shapes drive both surfaces' provider routing.
+3. **Provider registry** — `nanoclaw/setup/providers.json` (single source of truth, read by orchestrator via `src/providers-registry.ts`, by wizard via `setup/onecli-providers.ts` + the GUI's `src/main/services/providers.ts`). Adding the 9th provider is a JSON edit; the wizard's Provider step renders it automatically. **Don't fork this — every reader hits the same file.**
+4. **Health type** — `dashboard/src/lib/nanoclaw.ts` (canonical) and `cli/claw-setup-gui/src/shared/types.ts` (the `HealthSummary` interface).
+5. **Design tokens** — `dashboard/src/styles/tokens.css` (canonical) and `cli/claw-setup-gui/src/renderer/src/assets/main.css` (mirror).
+6. **`UI` interface** (when prompt methods are added, see Future Work) — `cli/claw-setup/src/types.ts` (canonical) and any `ElectronUI` adapter that implements it.
 
 If you change one half without the other, you've created a bug for the next agent.
 
@@ -36,7 +40,14 @@ Renderer code talks to the main process **only** through `useElectronAPI()` (the
 
 ## State machine rules
 
-The wizard step order is fixed in `src/renderer/src/hooks/useWizard.ts`. Adding a step means adding it there *and* mapping it in `App.tsx`'s render switch. Step IDs are stable identifiers and appear in the state file's `currentStep` and `completedSteps` arrays — they must match the CLI's `cli/claw-setup/src/steps/*.ts` step `id` field whenever the GUI step corresponds to a CLI step. (Today: only `00-profile-mode` matches. As more steps are ported, this list grows.)
+The wizard step order is fixed in `src/renderer/src/hooks/useWizard.ts`. Adding a step means adding it there *and* mapping it in `App.tsx`'s render switch. Step IDs are stable identifiers and appear in the state file's `currentStep` and `completedSteps` arrays — they must match the CLI's `cli/claw-setup/src/steps/*.ts` step `id` field whenever the GUI step corresponds to a CLI step.
+
+Per the Gemini blueprint (PR 3, Phase D), the legacy `onecli` step split into `provider` + `credentials` in both surfaces:
+
+- GUI: `ProviderStep.tsx` + `CredentialsStep.tsx` — data-driven from `setup/providers.json` via `window.electronAPI.providers.{list,probeKey,createCredential}`.
+- CLI: `03a-provider.ts` + `03b-credentials.ts` (the existing `03-configure-onecli.ts` still runs first to install + auth OneCLI itself, which is provider-independent).
+
+When the operator re-launches the GUI and `setup-state.json` already shows ≥1 agent, the Welcome step swaps its "Re-run setup anyway" CTA for **Add another agent** + **Reconfigure**. The Add path sets `state.data.__mode = 'add-agent'`; the Provider step honours that flag and appends a non-default agent on commit. See `WelcomeStep.tsx` + `ProviderStep.tsx`.
 
 On every app launch, `main/index.ts` probes `/health` before showing the window. If healthy → open the dashboard and quit. Don't bypass this — it's the entire reason the wizard is repair-only post-setup.
 

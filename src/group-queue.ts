@@ -25,6 +25,17 @@ interface GroupState {
   containerName: string | null;
   groupFolder: string | null;
   retryCount: number;
+  /**
+   * Timestamp (ms) the most recent batch of messages became pending
+   * for this group. Set when `enqueueMessageCheck` arrives and the
+   * group is busy/capped (work goes on the waiting list); cleared
+   * the next time `runForGroup` actually grants a slot.
+   *
+   * Used by `consumeQueueWait()` so the spawn site can record
+   * `queue_wait_ms` on the `agent_turns` row — see
+   * multi-agent-completion-blueprint § 5.2.
+   */
+  pendingSince: number | null;
 }
 
 export class GroupQueue {
@@ -49,14 +60,47 @@ export class GroupQueue {
         containerName: null,
         groupFolder: null,
         retryCount: 0,
+        pendingSince: null,
       };
       this.groups.set(groupJid, state);
     }
     return state;
   }
 
+  /**
+   * Read-and-clear: returns the milliseconds the group's most recent
+   * batch waited before this spawn moment, then clears the timestamp.
+   * Returns 0 when the spawn fired immediately (no wait). Called from
+   * the orchestrator's spawn site so the value lands on the next
+   * `agent_turns` row's `queue_wait_ms` column.
+   *
+   * Idempotent — calling twice after the same enqueue returns 0 the
+   * second time. The capture happens in `enqueueMessageCheck` when
+   * the spawn is deferred (busy or capped). Direct spawns clear it
+   * to null so the first read after one returns 0, matching reality.
+   */
+  consumeQueueWait(groupJid: string): number {
+    const state = this.groups.get(groupJid);
+    if (!state || state.pendingSince == null) return 0;
+    const waitMs = Math.max(0, Date.now() - state.pendingSince);
+    state.pendingSince = null;
+    return waitMs;
+  }
+
   setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {
     this.processMessagesFn = fn;
+  }
+
+  /**
+   * Read-only sample of how many containers are currently running.
+   * Used by the spawn site to record `concurrent_at_spawn` in
+   * `agent_turns` telemetry — see multi-agent-completion-blueprint
+   * § 5.2 + v1.2.1-finish-blueprint § 3. Sampling is a single read
+   * of the private counter; the value reflects queue state at this
+   * instant.
+   */
+  getActiveCount(): number {
+    return this.activeCount;
   }
 
   enqueueMessageCheck(groupJid: string): void {
@@ -66,12 +110,18 @@ export class GroupQueue {
 
     if (state.active) {
       state.pendingMessages = true;
+      // First enqueue while the container is busy stamps
+      // `pendingSince`; subsequent enqueues coalesce into the same
+      // batch and don't reset the clock — we measure from when the
+      // *batch* started waiting, not the latest re-trigger.
+      if (state.pendingSince == null) state.pendingSince = Date.now();
       logger.debug({ groupJid }, 'Container active, message queued');
       return;
     }
 
     if (this.activeCount >= MAX_CONCURRENT_CONTAINERS) {
       state.pendingMessages = true;
+      if (state.pendingSince == null) state.pendingSince = Date.now();
       if (!this.waitingGroups.includes(groupJid)) {
         this.waitingGroups.push(groupJid);
       }
@@ -82,6 +132,9 @@ export class GroupQueue {
       return;
     }
 
+    // Direct spawn (slot was free). Wait is 0; clear any stale
+    // pendingSince in case a previous batch's value lingers.
+    state.pendingSince = null;
     this.runForGroup(groupJid, 'messages').catch((err) =>
       logger.error({ groupJid, err }, 'Unhandled error in runForGroup'),
     );

@@ -21,9 +21,21 @@ import makeWASocket, {
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 
-const AUTH_DIR = './store/auth';
-const QR_FILE = './store/qr-data.txt';
-const STATUS_FILE = './store/auth-status.txt';
+// Per-pairing auth + hand-off paths (v1.2.1-finish-blueprint § 2).
+// Defaults preserve the v1.0 single-pairing behaviour: AUTH_DIR
+// falls back to `./store/auth/`, QR / STATUS files have no suffix.
+// When the wizard pairs a *new* WhatsApp account in add-agent mode,
+// it sets NANOCLAW_AUTH_DIR (per-pairing auth dir) and
+// NANOCLAW_PAIRING_ID (suffix for the hand-off files) so concurrent
+// pair runs don't collide.
+const AUTH_DIR = process.env.NANOCLAW_AUTH_DIR
+  ? path.resolve(process.env.NANOCLAW_AUTH_DIR)
+  : './store/auth';
+const PAIRING_SUFFIX = process.env.NANOCLAW_PAIRING_ID
+  ? `-${process.env.NANOCLAW_PAIRING_ID}`
+  : '';
+const QR_FILE = `./store/qr-data${PAIRING_SUFFIX}.txt`;
+const STATUS_FILE = `./store/auth-status${PAIRING_SUFFIX}.txt`;
 
 const logger = pino({
   level: 'warn', // Quiet logging - only show errors

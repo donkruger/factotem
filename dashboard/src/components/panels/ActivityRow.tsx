@@ -181,6 +181,23 @@ export function ActivityRow({ turn, groupName }: Props) {
                 label="TTFT"
                 value={turn.ttft_ms ? formatDurationMs(turn.ttft_ms) : '—'}
               />
+              <Detail
+                label="Queue wait"
+                value={
+                  turn.queue_wait_ms != null
+                    ? formatDurationMs(turn.queue_wait_ms)
+                    : '—'
+                }
+                accent={(turn.queue_wait_ms ?? 0) > 1_000}
+              />
+              <Detail
+                label="Concurrent at spawn"
+                value={
+                  turn.concurrent_at_spawn != null
+                    ? String(turn.concurrent_at_spawn)
+                    : '—'
+                }
+              />
             </DetailGroup>
 
             <DetailGroup title="Reliability">

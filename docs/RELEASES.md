@@ -1,6 +1,19 @@
 # Releases
 
-This document explains how Factotem Doctor releases work — for operators downloading + updating, and for maintainers tagging + publishing.
+This document explains how Factotem releases work — for operators
+downloading + updating, and for maintainers tagging + publishing. Two
+pipelines share the same Apple secrets and the same source-to-mirror
+flow:
+
+| Pipeline | Tag namespace | Workflow file | Produces |
+|---|---|---|---|
+| **Factotem Doctor** (Tauri) | `v*` | `.github/workflows/release.yml` | Signed DMG + Tauri updater payload (`latest.json`, `.tar.gz`, `.sig`) |
+| **NanoClaw Setup** (Electron wizard) | `wizard-v*` | `.github/workflows/release-wizard.yml` | Signed DMG + electron-builder blockmap + `latest-mac.yml` |
+
+Both publish to the same public mirror, `RichardBNel/Factotem`. The
+bulk of this doc is the Doctor's pipeline (the more involved one); the
+[Wizard releases](#wizard-releases) section near the bottom mirrors the
+same structure for the Setup wizard.
 
 > **Just need the 5-minute briefing?** See [DEPLOYMENT_CONVENTIONS.md](DEPLOYMENT_CONVENTIONS.md). It's a short evergreen handoff doc covering the same release flow at higher level — suitable for pasting into a downstream agent's prompt or onboarding a new maintainer. This file is the deeper reference: full asset inventory, per-version upgrade paths, manual downgrade procedure, CI secrets, signing-cert handling.
 
@@ -328,7 +341,68 @@ The mirror repo's commit history isn't synced; only the **release page** is. Fro
 | Component | Update path |
 |---|---|
 | **NanoClaw orchestrator** (`src/`, the dashboard, etc.) | `git pull` + `npm run build` + `launchctl kickstart` — operators customise these by editing the code, so auto-update would silently overwrite local changes. |
-| **claw-setup wizard** | Same — shipped with the repo, operators run `git pull` to upgrade. |
+| **claw-setup CLI wizard** (`cli/claw-setup/`) | Same — shipped with the repo, operators run `git pull` to upgrade. |
+| **NanoClaw Setup GUI wizard** (`cli/claw-setup-gui/`) | Signed DMG distributed via release pipeline (see [Wizard releases](#wizard-releases) below). No in-app updater **yet** — operators redownload from the mirror to upgrade. The `latest-mac.yml` electron-builder manifest *is* shipped as a release artefact, reserved for when an in-app updater is wired in. |
 | **Per-group containers** | `./container/build.sh` after orchestrator changes; the agent-runner cache sync per `CLAUDE.md`. |
 
-Auto-updates apply only to the Doctor menu-bar app — it's a binary distributed as a notarised artefact, with no operator-level customisation expected.
+Auto-updates apply only to the Doctor menu-bar app today. The wizard's `latest-mac.yml` is shipped to make in-app updates a future no-op when we're ready.
+
+## Wizard releases
+
+The NanoClaw Setup wizard (`cli/claw-setup-gui/`) is a parallel pipeline to the Doctor's — different package, different tag namespace, shared Apple secrets + mirror token. The wizard is a single Electron app (no Tauri updater payload, no separate Cargo lockfile), so the flow is simpler than the Doctor's.
+
+### Where to download
+
+The Setup wizard ships to the same public mirror as the Doctor:
+
+> **⬇ [Download NanoClaw Setup for macOS (always-latest)](https://github.com/RichardBNel/Factotem/releases/latest/download/nanoclaw-setup.dmg)**
+
+That URL points at a versionless copy that's reattached to each new release. The versioned filename (`NanoClaw-Setup_X.Y.Z.dmg`) sits next to it for pinning.
+
+### Asset inventory
+
+Each wizard release ships **four files**:
+
+| File | Purpose | Operator downloads this? |
+|---|---|---|
+| **`nanoclaw-setup.dmg`** | Versionless copy of the latest DMG. The stable-URL target. | ✓ For first install. |
+| `NanoClaw-Setup_X.Y.Z.dmg` | Versioned copy. Pin to a specific version when needed. | Optional. |
+| `NanoClaw-Setup_X.Y.Z.dmg.blockmap` | electron-builder differential-update blockmap. | ✗ Never — reserved for future in-app updates. |
+| `latest-mac.yml` | electron-builder release manifest. | ✗ Never — reserved for future in-app updates. |
+
+### Cutting a wizard release
+
+From inside `cli/claw-setup-gui/`:
+
+```bash
+npm run release             # patch  (0.1.0 → 0.1.1)
+npm run release -- minor    # minor  (0.1.0 → 0.2.0)
+npm run release -- major    # major  (0.1.0 → 1.0.0)
+```
+
+`scripts/release.mjs` (1) verifies the working tree is clean, (2) bumps `package.json` + `package-lock.json`, (3) commits + tags as `wizard-vX.Y.Z`, (4) pushes the branch and the tag to `origin`. CI watches for `wizard-v*` tag pushes via `.github/workflows/release-wizard.yml` — the Doctor's `v*` trigger doesn't fire and vice versa.
+
+End-to-end build time: **~8–12 minutes** (npm install + Electron-Vite build + dashboard static-export build + electron-builder DMG packaging + Apple notarisation + cross-repo mirror push).
+
+### Required CI secrets
+
+All shared with the Doctor's pipeline — no new secrets to add:
+
+| Secret | Used by |
+|---|---|
+| `APPLE_CERT_BASE64` | electron-builder's `CSC_LINK` (re-exported in the workflow) |
+| `APPLE_CERT_PASSWORD` | electron-builder's `CSC_KEY_PASSWORD` |
+| `APPLE_ID` | Apple notarytool |
+| `APPLE_PASSWORD` | electron-builder's `APPLE_APP_SPECIFIC_PASSWORD` |
+| `APPLE_TEAM_ID` | Apple notarytool |
+| `MIRROR_REPO_TOKEN` | `gh release create --repo RichardBNel/Factotem` |
+
+### Verifying a wizard release on the mirror
+
+```bash
+gh release view wizard-vX.Y.Z --repo RichardBNel/Factotem \
+  --json tagName,publishedAt,assets \
+  --jq '{tag, published: .publishedAt, asset_count: (.assets | length)}'
+```
+
+Should report `asset_count: 4`.

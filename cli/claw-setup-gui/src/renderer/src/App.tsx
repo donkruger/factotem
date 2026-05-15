@@ -6,7 +6,9 @@ import { WelcomeStep } from './steps/WelcomeStep'
 import { ProfileStep } from './steps/ProfileStep'
 import { EnvCheckStep } from './steps/EnvCheckStep'
 import { InstallStep } from './steps/InstallStep'
-import { OneCLIStep } from './steps/OneCLIStep'
+import { ProviderStep } from './steps/ProviderStep'
+import { CredentialsStep } from './steps/CredentialsStep'
+import { PairingChoiceStep } from './steps/PairingChoiceStep'
 import { MountsStep } from './steps/MountsStep'
 import { ContainerStep } from './steps/ContainerStep'
 import { WhatsAppStep } from './steps/WhatsAppStep'
@@ -56,16 +58,35 @@ export default function App() {
 
   return (
     <>
+      {/* Draggable strip that sits in place of the OS title bar.
+          The window itself runs chrome-less (titleBarStyle hiddenInset
+          on macOS, hidden + overlay on Windows — see main/index.ts),
+          so we provide the drag affordance ourselves and keep the
+          cream wizard panel flush against the window's top edge.
+          Padding reserves the platform-specific button zones (80 px on
+          the left for macOS traffic lights, 140 px on the right for the
+          Windows min/max/close overlay) so any header content placed
+          inside this strip in future cannot collide with them. */}
+      <div className="title-bar" aria-hidden="true" />
+
       {current !== 'welcome' && (
         <StepIndicator steps={steps} labels={labels} current={current} />
       )}
 
       <main className="flex-1 flex flex-col relative z-10 min-h-0 overflow-y-auto">
-        {current === 'welcome' && <WelcomeStep onNext={next} />}
+        {current === 'welcome' && (
+          <WelcomeStep onNext={next} onJump={goTo} />
+        )}
         {current === 'profile' && <ProfileStep onNext={next} onBack={back} />}
         {current === 'envCheck' && <EnvCheckStep onNext={next} onBack={back} />}
         {current === 'install' && <InstallStep onNext={next} onBack={back} />}
-        {current === 'onecli' && <OneCLIStep onNext={next} onBack={back} />}
+        {current === 'provider' && <ProviderStep onNext={next} onBack={back} />}
+        {current === 'credentials' && (
+          <CredentialsStep onNext={next} onJump={goTo} onBack={back} />
+        )}
+        {current === 'pairingChoice' && (
+          <PairingChoiceStep onJump={goTo} onBack={back} />
+        )}
         {current === 'mounts' && <MountsStep onNext={next} onBack={back} />}
         {current === 'container' && <ContainerStep onNext={next} onBack={back} />}
         {current === 'whatsapp' && <WhatsAppStep onNext={next} onBack={back} />}

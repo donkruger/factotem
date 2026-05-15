@@ -210,6 +210,46 @@ label {
   color: var(--color-ink-dim);
 }
 
+/*
+ * Cursor handling for interactive elements.
+ *
+ * Tailwind v4's preflight strips the browser-default `cursor: pointer`
+ * on <button> elements. Without re-applying it, the cursor stays as an
+ * arrow over every CTA — a small but persistent papercut that
+ * non-technical operators read as "this isn't clickable." Restore the
+ * finger pointer on every interactive surface. Disabled state already
+ * gets `cursor: not-allowed` via Tailwind utilities on Button.tsx, so
+ * we exclude `:disabled` here to avoid fighting it.
+ *
+ * Cascading order matches WHATWG defaults: pointer for clickable
+ * widgets, text for inputs/textareas (browser default — re-asserted in
+ * case the preflight scope changes).
+ */
+button:not(:disabled),
+[role='button']:not([aria-disabled='true']),
+a[href],
+label[for],
+summary,
+select:not(:disabled) {
+  cursor: pointer;
+}
+
+input[type='text'],
+input[type='password'],
+input[type='email'],
+input[type='url'],
+input[type='search'],
+input[type='number'],
+textarea {
+  cursor: text;
+}
+
+input[type='checkbox']:not(:disabled),
+input[type='radio']:not(:disabled),
+input[type='range']:not(:disabled) {
+  cursor: pointer;
+}
+
 /* Scrollbar — slim, neutral */
 ::-webkit-scrollbar {
   width: 6px;
@@ -224,4 +264,79 @@ label {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-ink-dim);
+}
+
+/*
+ * Title bar — our own drag strip in place of the OS title bar. The
+ * BrowserWindow is created with titleBarStyle 'hiddenInset' on macOS
+ * (traffic lights inset over the content) and 'hidden' + titleBarOverlay
+ * on Windows (system min/max/close buttons painted on the right). With
+ * the OS title bar gone, the renderer needs to provide the drag
+ * affordance itself, hence -webkit-app-region: drag. The strip is
+ * transparent so the cream body background reads as one continuous
+ * surface from the window's top edge down through the content.
+ *
+ * Padding reserves the platform-specific button zones:
+ *   • 80 px on the left  → macOS traffic lights (three ~14 px buttons
+ *                          with margins, ending around x≈78)
+ *   • 140 px on the right → Windows overlay buttons (three ~46 px wide
+ *                          system buttons, ending around 138 px from
+ *                          the right edge)
+ * Any header content placed inside this strip therefore can never
+ * collide with the OS controls, regardless of platform. On Linux the
+ * padding is wasted space but invisible (transparent strip).
+ *
+ * Interactive controls placed inside .title-bar must opt out of the
+ * drag region via the .no-drag helper below, otherwise clicks are
+ * eaten by the OS-level drag handler.
+ */
+.title-bar {
+  flex: 0 0 36px;
+  height: 36px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0 140px 0 80px;
+  background: transparent;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.title-bar .no-drag,
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/*
+ * Safe centering — `justify-content: safe center` keeps content
+ * vertically centred when it fits, but falls back to `flex-start` when
+ * the content is taller than its flex container. Without the `safe`
+ * keyword, plain `center` clips overflow equally at both ends and the
+ * top portion becomes unreachable by scrolling. WelcomeStep uses this
+ * for its vertical layout: short variant centres on the disk + tagline;
+ * tall variant (e.g. when the "Add another agent" re-entry branch and
+ * the "already running" banner are both visible) starts at the top
+ * and scrolls naturally.
+ *
+ * Browser support: safe alignment keywords have been in Chromium since
+ * 93; Electron 39 ships well past that.
+ */
+.justify-safe-center {
+  justify-content: safe center;
+}
+
+/* Animated brand-mark disk (WelcomeStep). Slight scale-up on hover for a
+ * tactile cue that the mark is alive. transform-origin defaults to the
+ * geometric centre, which is exactly what we want — the disk grows in
+ * place rather than drifting toward one corner. The shared
+ * --duration-state / --ease-apple tokens keep the curve consistent with
+ * the rest of the wizard's micro-interactions, and the
+ * prefers-reduced-motion override at the top of this file collapses the
+ * duration to 0ms so the scale snaps instantly. */
+.hero-disk {
+  transition: transform var(--duration-state) var(--ease-apple);
+  will-change: transform;
+}
+.hero-disk:hover {
+  transform: scale(1.05);
 }

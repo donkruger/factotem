@@ -417,3 +417,66 @@ export function generateAllowlistTemplate(): string {
 
   return JSON.stringify(template, null, 2);
 }
+
+/**
+ * Per-agent allowlist intersection (multi-agent-completion § 5.3).
+ *
+ * When an agent carries `mount_allowlist_override`, the orchestrator
+ * intersects it with the deployment-wide allowlist before mounting.
+ * The intersection is the *narrower* surface — per-agent can only
+ * narrow, never broaden. Roots in the override that aren't in the
+ * deployment allowlist are silently dropped (logged at debug level).
+ *
+ * Blocked-pattern handling: union of both lists (the more cautious
+ * union, not the intersection — a deployment-wide block must apply
+ * to every agent). The `nonMainReadOnly` flag uses OR semantics
+ * (either layer can force read-only).
+ *
+ * When `override` is null/undefined, returns the deployment allowlist
+ * unchanged — the v1.0 / v1.2 path.
+ */
+export function intersectAllowlists(
+  deployment: MountAllowlist,
+  override: MountAllowlist | null | undefined,
+): MountAllowlist {
+  if (!override) return deployment;
+
+  // Index deployment roots by normalised path for O(1) lookup.
+  // Root paths are case-sensitive and exact-match (allowlists already
+  // canonicalise via the wizard's mounts step).
+  const deploymentByPath = new Map<string, AllowedRoot>(
+    deployment.allowedRoots.map((r) => [r.path, r]),
+  );
+
+  const intersectedRoots: AllowedRoot[] = [];
+  for (const overrideRoot of override.allowedRoots) {
+    const deploymentRoot = deploymentByPath.get(overrideRoot.path);
+    if (!deploymentRoot) {
+      // Override adds a root the deployment doesn't allow — drop.
+      logger.debug(
+        { path: overrideRoot.path },
+        'agent allowlist override adds a root absent from deployment allowlist; dropped',
+      );
+      continue;
+    }
+    // For overlapping roots, the *narrower* permission wins:
+    // allowReadWrite = true survives only if both layers grant it.
+    intersectedRoots.push({
+      path: overrideRoot.path,
+      allowReadWrite:
+        deploymentRoot.allowReadWrite === true &&
+        overrideRoot.allowReadWrite === true,
+      description: overrideRoot.description ?? deploymentRoot.description,
+    });
+  }
+
+  return {
+    allowedRoots: intersectedRoots,
+    // Blocked patterns: union — more-cautious wins.
+    blockedPatterns: Array.from(
+      new Set([...deployment.blockedPatterns, ...override.blockedPatterns]),
+    ),
+    // Read-only flag: OR — either layer can force read-only.
+    nonMainReadOnly: deployment.nonMainReadOnly || override.nonMainReadOnly,
+  };
+}

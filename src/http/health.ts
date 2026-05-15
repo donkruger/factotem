@@ -15,7 +15,12 @@ import path from 'path';
 
 import Database from 'better-sqlite3';
 
-import { ONECLI_URL, PROJECT_ROOT, STORE_DIR } from '../config.js';
+import {
+  MAX_CONCURRENT_CONTAINERS,
+  ONECLI_URL,
+  PROJECT_ROOT,
+  STORE_DIR,
+} from '../config.js';
 import { logger } from '../logger.js';
 import { getMachineIdentity, MachineIdentity } from './machine-identity.js';
 
@@ -42,6 +47,13 @@ export interface HealthSnapshot {
     running: boolean;
     containers_active: number;
     image_tag: string | null;
+    /**
+     * Global concurrency ceiling (MAX_CONCURRENT_CONTAINERS).
+     * Surfaced so the dashboard's Activity row can render
+     * `concurrent_at_spawn` as `N / max` rather than a bare integer.
+     * v1.2.1-finish-blueprint § 3.
+     */
+    max_concurrent: number;
   };
   onecli: {
     reachable: boolean;
@@ -49,8 +61,25 @@ export interface HealthSnapshot {
     auth_mode: string | null;
   };
   whatsapp: {
+    /**
+     * Top-level summary — `true` if at least one pairing is authenticated.
+     * Preserved for v1.0 / v1.2 dashboards that read `whatsapp.authenticated`.
+     */
     authenticated: boolean;
     last_message_at: string | null;
+    /**
+     * Per-pairing breakdown (multi-agent-completion-blueprint § 4.1).
+     * Empty array on first boot before the migration runs. The
+     * deployment's shared pairing is the first entry.
+     */
+    pairings: Array<{
+      id: string;
+      display_name: string;
+      authenticated: boolean;
+      last_connected_at: string | null;
+      phone_hint: string | null;
+      is_shared: boolean;
+    }>;
   };
   open_dm: {
     enabled: boolean;
@@ -121,10 +150,16 @@ async function probeDocker(): Promise<HealthSnapshot['docker']> {
       running: true,
       containers_active: containersActive,
       image_tag: imageTag,
+      max_concurrent: MAX_CONCURRENT_CONTAINERS,
     };
   } catch (err) {
     logger.debug({ err }, 'health: docker probe failed');
-    return { running: false, containers_active: 0, image_tag: null };
+    return {
+      running: false,
+      containers_active: 0,
+      image_tag: null,
+      max_concurrent: MAX_CONCURRENT_CONTAINERS,
+    };
   }
 }
 
@@ -173,35 +208,10 @@ function getProbeDb(): Database.Database {
 }
 
 async function probeWhatsApp(): Promise<HealthSnapshot['whatsapp']> {
-  let authenticated = false;
   let lastMessageAt: string | null = null;
   try {
-    // Canonical signal: store/auth/creds.json. Baileys writes this on
-    // successful pair and re-reads it on every connection — its
-    // presence is what makes the agent actually responsive. The
-    // transient store/auth-status.txt was only ever written by the
-    // pairing flow's auth script and isn't kept current post-pair,
-    // so a stale or deleted auth-status.txt produced false negatives
-    // ("Not paired" in the dashboard while the agent was happily
-    // replying in WhatsApp).
-    const credsPath = path.join(STORE_DIR, 'auth', 'creds.json');
-    authenticated = fs.existsSync(credsPath);
-
-    // Defence-in-depth: if creds.json somehow isn't there but the
-    // auth-status hand-off does say 'authenticated', accept that too.
-    if (!authenticated) {
-      const authStatusPath = path.join(STORE_DIR, 'auth-status.txt');
-      if (fs.existsSync(authStatusPath)) {
-        const status = fs.readFileSync(authStatusPath, 'utf-8').trim();
-        authenticated = status === 'authenticated';
-      }
-    }
-  } catch {
-    /* fall through */
-  }
-  try {
-    // Most recent inbound or outbound message timestamp. Cheap query: indexed
-    // by timestamp DESC. messages.timestamp is stored as ISO 8601.
+    // Most recent inbound or outbound message timestamp. Cheap query:
+    // indexed by timestamp DESC. messages.timestamp is stored as ISO 8601.
     const row = getProbeDb()
       .prepare('SELECT timestamp FROM messages ORDER BY timestamp DESC LIMIT 1')
       .get() as { timestamp?: string } | undefined;
@@ -209,7 +219,81 @@ async function probeWhatsApp(): Promise<HealthSnapshot['whatsapp']> {
   } catch (err) {
     logger.debug({ err }, 'health: messages last-timestamp probe failed');
   }
-  return { authenticated, last_message_at: lastMessageAt };
+
+  // Per-pairing status (multi-agent-completion-blueprint § 4.1). Each
+  // pairing's `auth_path` carries its own Baileys creds.json — we
+  // check existence per row. The shared pairing keeps the legacy
+  // `store/auth/` path so v1.0 operators see the same authenticated
+  // state they always did.
+  let pairings: HealthSnapshot['whatsapp']['pairings'] = [];
+  try {
+    const rows = getProbeDb()
+      .prepare(
+        `SELECT id, display_name, auth_path, last_connected_at,
+                phone_hint, is_shared
+           FROM channel_pairings
+          WHERE kind = 'whatsapp'
+          ORDER BY is_shared DESC, created_at ASC`,
+      )
+      .all() as Array<{
+        id: string;
+        display_name: string;
+        auth_path: string;
+        last_connected_at: string | null;
+        phone_hint: string | null;
+        is_shared: number;
+      }>;
+    pairings = rows.map((r) => {
+      let authed = false;
+      try {
+        authed = fs.existsSync(path.join(r.auth_path, 'creds.json'));
+      } catch {
+        /* fall through */
+      }
+      // Defence-in-depth: read the auth-status hand-off for the
+      // shared pairing (legacy compatibility — new pairings don't
+      // use auth-status.txt).
+      if (!authed && r.is_shared === 1) {
+        try {
+          const ap = path.join(STORE_DIR, 'auth-status.txt');
+          if (fs.existsSync(ap)) {
+            authed = fs.readFileSync(ap, 'utf-8').trim() === 'authenticated';
+          }
+        } catch {
+          /* fall through */
+        }
+      }
+      return {
+        id: r.id,
+        display_name: r.display_name,
+        authenticated: authed,
+        last_connected_at: r.last_connected_at,
+        phone_hint: r.phone_hint,
+        is_shared: r.is_shared === 1,
+      };
+    });
+  } catch (err) {
+    logger.debug({ err }, 'health: channel_pairings probe failed');
+  }
+
+  // Top-level summary: true if *any* pairing is authenticated. v1.0 /
+  // v1.2 dashboards read this field; v1.2.1+ surfaces also read the
+  // per-pairing array.
+  const authenticated =
+    pairings.length > 0
+      ? pairings.some((p) => p.authenticated)
+      : (() => {
+          // First-boot path before channel_pairings is populated —
+          // fall back to the legacy creds.json probe so a brand-new
+          // install doesn't report unhealthy.
+          try {
+            return fs.existsSync(path.join(STORE_DIR, 'auth', 'creds.json'));
+          } catch {
+            return false;
+          }
+        })();
+
+  return { authenticated, last_message_at: lastMessageAt, pairings };
 }
 
 async function probeTailscale(): Promise<string | null> {

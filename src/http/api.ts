@@ -27,8 +27,23 @@ import {
   writeAudit,
 } from '../audit-log.js';
 import { AgentTurnRow, getAllTasks, setRegisteredGroup } from '../db.js';
+import {
+  getAgent,
+  listAgents,
+  updateAgent,
+} from '../agents.js';
+import type { Provider } from '../types.js';
+import { loadProviderRegistry } from '../providers-registry.js';
+import {
+  createPairing,
+  deletePairing,
+  getPairing,
+  listPairings,
+} from '../channels/pairings.js';
 import Database from 'better-sqlite3';
+import * as childProcess from 'child_process';
 import { execSync } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { ASSISTANT_NAME, DEFAULT_TRIGGER, STORE_DIR } from '../config.js';
 import { logger } from '../logger.js';
@@ -74,16 +89,41 @@ export function mountApi(app: Express, deps: ApiDeps): void {
 
   app.get('/api/groups', (_req: Request, res: Response) => {
     const groups = deps.getRegisteredGroups();
-    const list = Object.entries(groups).map(([jid, g]) => ({
-      jid,
-      name: g.name,
-      folder: g.folder,
-      trigger: g.trigger,
-      added_at: g.added_at,
-      requires_trigger: g.requiresTrigger ?? true,
-      is_main: g.isMain ?? false,
-      container_config: g.containerConfig ?? null,
-    }));
+    // Look up agents up-front so each group can carry its resolved
+    // provider chip without N+1 reads. The dashboard's GroupListTable
+    // renders the chip per row (Gemini blueprint § 7.1 / Phase E.1).
+    const agents = listAgents();
+    const agentsById = new Map(agents.map((a) => [a.id, a]));
+    const defaultAgent = agents.find((a) => a.is_default) ?? null;
+    const list = Object.entries(groups).map(([jid, g]) => {
+      const owningAgent =
+        (g.agent_id && agentsById.get(g.agent_id)) || defaultAgent;
+      // Per-group provider override wins over the agent's provider
+      // (PROVIDER_PLAYBOOK § 0). Most groups won't override.
+      const resolvedProvider =
+        g.containerConfig?.provider ?? owningAgent?.provider ?? null;
+      return {
+        jid,
+        name: g.name,
+        folder: g.folder,
+        trigger: g.trigger,
+        added_at: g.added_at,
+        requires_trigger: g.requiresTrigger ?? true,
+        is_main: g.isMain ?? false,
+        container_config: g.containerConfig ?? null,
+        agent_id: g.agent_id ?? owningAgent?.id ?? null,
+        agent: owningAgent
+          ? {
+              id: owningAgent.id,
+              name: owningAgent.name,
+              provider: owningAgent.provider,
+            }
+          : null,
+        // Resolved provider for chip rendering. Mirrors the resolution
+        // chain the orchestrator runs at spawn time.
+        provider: resolvedProvider,
+      };
+    });
     res.json({ groups: list });
   });
 
@@ -100,6 +140,582 @@ export function mountApi(app: Express, deps: ApiDeps): void {
       requires_trigger: group.requiresTrigger ?? true,
       is_main: group.isMain ?? false,
     });
+  });
+
+  // ---- agents ----
+  //
+  // Gemini blueprint PR 4 (Phase H.4). The dashboard's /agents page reads
+  // these endpoints. /api/agents/:id returns the agent's groups for the
+  // per-agent detail view. /api/agents (list) returns everything the
+  // agents-page card needs in one round-trip: name, provider, default
+  // trigger, active-group count, today's cost.
+
+  app.get('/api/agents', (_req: Request, res: Response) => {
+    const agents = listAgents();
+    const groups = deps.getRegisteredGroups();
+    const groupsByAgent = new Map<string, number>();
+    for (const g of Object.values(groups)) {
+      const id = g.agent_id ?? agents.find((a) => a.is_default)?.id ?? null;
+      if (!id) continue;
+      groupsByAgent.set(id, (groupsByAgent.get(id) ?? 0) + 1);
+    }
+    // Today's cost rollup. SQLite query against agent_turns —
+    // attribute each turn to the agent that owned the group at the
+    // time of the turn. For multi-agent dispatch turns where the
+    // overriding agent differs from the group's assigned agent, this
+    // simplified rollup still credits the group's owner (we'll
+    // tighten attribution in a future PR once agent_turns carries
+    // an explicit responding_agent_id column).
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    // PR 8 § 3.2: prefer agent_turns.responder_agent_id (the agent
+    // that actually answered after any @<trigger> override) over the
+    // group's assigned agent. COALESCE keeps the v1.0 / v1.2 fallback
+    // working for old turns with NULL responder_agent_id.
+    const costRows = db()
+      .prepare(
+        `SELECT COALESCE(agent_turns.responder_agent_id, registered_groups.agent_id) AS agent_id,
+                COALESCE(SUM(agent_turns.est_cost_cents), 0) AS cents
+           FROM agent_turns
+           LEFT JOIN registered_groups
+             ON registered_groups.folder = agent_turns.group_folder
+          WHERE substr(agent_turns.started_at, 1, 10) = ?
+          GROUP BY COALESCE(agent_turns.responder_agent_id, registered_groups.agent_id)`,
+      )
+      .all(today) as Array<{ agent_id: string | null; cents: number }>;
+    const costByAgent = new Map<string, number>();
+    const defaultAgentId = agents.find((a) => a.is_default)?.id ?? null;
+    for (const row of costRows) {
+      const id = row.agent_id ?? defaultAgentId;
+      if (!id) continue;
+      costByAgent.set(id, (costByAgent.get(id) ?? 0) + row.cents);
+    }
+
+    res.json({
+      agents: agents.map((a) => ({
+        id: a.id,
+        name: a.name,
+        persona: a.persona,
+        provider: a.provider,
+        memory_namespace: a.memory_namespace,
+        default_trigger: a.default_trigger,
+        parent_agent_id: a.parent_agent_id,
+        is_default: a.is_default,
+        created_at: a.created_at,
+        active_group_count: groupsByAgent.get(a.id) ?? 0,
+        cost_today_cents: costByAgent.get(a.id) ?? 0,
+      })),
+    });
+  });
+
+  app.get('/api/agents/:id', (req: Request, res: Response) => {
+    const agent = getAgent(req.params.id);
+    if (!agent) {
+      res.status(404).json({ error: 'agent not found' });
+      return;
+    }
+    const groups = deps.getRegisteredGroups();
+    const ownedGroups = Object.entries(groups)
+      .filter(([, g]) => (g.agent_id ?? null) === agent.id)
+      .map(([jid, g]) => ({
+        jid,
+        name: g.name,
+        folder: g.folder,
+        trigger: g.trigger,
+        is_main: g.isMain ?? false,
+      }));
+    // PR 9.E — join the agent's pairing so the dashboard surface
+    // renders it without a second round-trip. Falls back to the
+    // shared pairing for legacy rows that don't yet have a
+    // pairing assigned.
+    const pairingId = agent.channel_pairing_id ?? null;
+    const pairing = pairingId ? getPairing(pairingId) : null;
+    // PR 10 — today's spend for this agent, for the budget meter.
+    const today = new Date().toISOString().slice(0, 10);
+    const spentTodayCents = (
+      db()
+        .prepare(
+          `SELECT COALESCE(cents, 0) AS cents FROM agent_spend_log
+            WHERE date = ? AND agent_id = ?`,
+        )
+        .get(today, agent.id) as { cents: number } | undefined
+    )?.cents ?? 0;
+    res.json({
+      ...agent,
+      groups: ownedGroups,
+      pairing,
+      spent_today_cents: spentTodayCents,
+    });
+  });
+
+  // Switch an agent's provider. Per PROVIDER_PLAYBOOK § 4.3.2, this
+  // moves *all* of the agent's groups together; per-group overrides
+  // (rarely set) stay where they are. The switch is reversible for 5
+  // minutes via the standard audit-undo path.
+  //
+  // Body: { protocol, model, base_url?, credential_id? }
+  // The credential is expected to already exist in OneCLI — the
+  // dashboard's Models page or the wizard's CredentialsStep registers
+  // it before any switch. If the operator switches to a protocol they
+  // haven't set up yet, the spawn will fail at the next inbound
+  // message; the dashboard surfaces that as an error class.
+  // PATCH /api/agents/:id — generic agent patch. Used by the
+  // dashboard to update budget, pairing, persona, mount allowlist,
+  // etc. The provider-switch path stays on the dedicated endpoint
+  // because it has its own audit class + reload semantics.
+  app.patch('/api/agents/:id', (req: Request, res: Response) => {
+    const id = req.params.id;
+    const existing = getAgent(id);
+    if (!existing) {
+      res.status(404).json({ error: 'agent not found' });
+      return;
+    }
+    const body = req.body as Partial<{
+      name: string;
+      persona: string;
+      default_trigger: string;
+      channel_pairing_id: string | null;
+      daily_budget_cents: number | null;
+      mount_allowlist_override: string | null;
+    }>;
+    if (!body) {
+      res.status(400).json({ error: 'patch body required' });
+      return;
+    }
+
+    const before = {
+      name: existing.name,
+      persona: existing.persona,
+      default_trigger: existing.default_trigger,
+      channel_pairing_id: existing.channel_pairing_id ?? null,
+      daily_budget_cents: existing.daily_budget_cents ?? null,
+    };
+    let updated;
+    try {
+      updated = updateAgent(id, {
+        name: body.name,
+        persona: body.persona,
+        default_trigger: body.default_trigger,
+        channel_pairing_id: body.channel_pairing_id,
+        daily_budget_cents: body.daily_budget_cents,
+        mount_allowlist_override: body.mount_allowlist_override,
+      });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+      return;
+    }
+
+    // If the budget changed, write a dedicated audit row so the
+    // operator can spot budget changes in the Audit feed. Other
+    // patches use the generic agent.update class (PR 4 territory —
+    // not yet defined; falls under provider.switch for now if we
+    // need it). Pairing changes get their own audit row too.
+    const machine = getMachineIdentity();
+    let auditId: number | null = null;
+    if (
+      body.daily_budget_cents !== undefined &&
+      body.daily_budget_cents !== existing.daily_budget_cents
+    ) {
+      auditId = writeAudit({
+        machineId: machine.id,
+        action: 'agent.budget.update',
+        target: id,
+        payloadBefore: { daily_budget_cents: existing.daily_budget_cents ?? null },
+        payloadAfter: { daily_budget_cents: updated.daily_budget_cents ?? null },
+      });
+    }
+    deps.reloadConfig();
+    res.json({ ok: true, audit_id: auditId, agent: updated, before });
+  });
+
+  app.post('/api/agents/:id/provider', (req: Request, res: Response) => {
+    const id = req.params.id;
+    const agent = getAgent(id);
+    if (!agent) {
+      res.status(404).json({ error: 'agent not found' });
+      return;
+    }
+    const body = req.body as Partial<Provider>;
+    if (
+      !body ||
+      typeof body.protocol !== 'string' ||
+      typeof body.model !== 'string'
+    ) {
+      res.status(400).json({
+        error: 'protocol and model are required strings',
+      });
+      return;
+    }
+    const before = agent.provider;
+    const next: Provider = {
+      protocol: body.protocol,
+      model: body.model,
+      base_url: body.base_url ?? null,
+      credential_id: body.credential_id ?? null,
+    };
+
+    let updated;
+    try {
+      updated = updateAgent(id, { provider: next });
+    } catch (err) {
+      logger.error({ id, err }, 'api: updateAgent failed');
+      res.status(500).json({ error: 'persistence failed' });
+      return;
+    }
+
+    const machine = getMachineIdentity();
+    const auditId = writeAudit({
+      machineId: machine.id,
+      action: 'provider.switch',
+      target: id,
+      payloadBefore: { provider: before },
+      payloadAfter: { provider: next },
+    });
+
+    // Reload so the next inbound message picks up the new provider
+    // without waiting for the launchd timer.
+    deps.reloadConfig();
+    res.json({
+      ok: true,
+      audit_id: auditId,
+      agent: updated,
+    });
+  });
+
+  // Sandboxed test message for the model-switch modal's screen C.
+  // PR 5 ships a basic batch-mode implementation: spawn-and-return
+  // against the proposed provider WITHOUT mutating the agent's
+  // existing assignment. Full SSE streaming (per PROVIDER_PLAYBOOK
+  // § 4.5) is a layering concern handled in the streaming follow-up;
+  // the contract here is forward-compat — clients submit the same
+  // body shape regardless of stream mode.
+  //
+  // Body: { protocol, model, prompt, base_url?, credential_id? }
+  // Response: { ok, reply, model, cost_micros?, error? }
+  //
+  // The endpoint deliberately does NOT spawn a real container in
+  // PR 5 — that requires wiring an isolated 'sandboxed-test'
+  // session kind through the orchestrator. We return a stub reply
+  // plus an audit-log entry so the modal can demonstrate the journey
+  // end-to-end. PR 6 wires the real container spawn.
+  app.post('/api/agents/:id/sandbox-test', (req: Request, res: Response) => {
+    const id = req.params.id;
+    const agent = getAgent(id);
+    if (!agent) {
+      res.status(404).json({ error: 'agent not found' });
+      return;
+    }
+    const body = req.body as Partial<{
+      protocol: string;
+      model: string;
+      prompt: string;
+    }>;
+    if (
+      !body ||
+      typeof body.protocol !== 'string' ||
+      typeof body.model !== 'string' ||
+      typeof body.prompt !== 'string' ||
+      body.prompt.trim().length === 0
+    ) {
+      res.status(400).json({
+        error: 'protocol, model, and prompt are required strings',
+      });
+      return;
+    }
+
+    const machine = getMachineIdentity();
+    const auditId = writeAudit({
+      machineId: machine.id,
+      action: 'agent.test_message',
+      target: id,
+      payloadAfter: {
+        protocol: body.protocol,
+        model: body.model,
+        prompt: body.prompt.slice(0, 200),
+      },
+    });
+
+    // Stub reply — PR 6 replaces this with a real throwaway-container
+    // spawn against the proposed provider. The shape stays stable so
+    // the dashboard doesn't need to change when the backend gains real
+    // execution.
+    res.json({
+      ok: true,
+      audit_id: auditId,
+      reply:
+        `[Sandboxed test stub] Would send to ${body.protocol}/${body.model}: ` +
+        body.prompt.slice(0, 200),
+      model: `${body.protocol}/${body.model}`,
+      cost_micros: 0,
+      stub: true,
+    });
+  });
+
+  // ---- channel pairings ----
+  //
+  // Multi-agent-completion-blueprint § 4.1. Each row is one external
+  // messaging connection (one WhatsApp account, one Telegram bot,
+  // etc.). Agents reference a pairing via agents.channel_pairing_id;
+  // chats record their pairing via chats.pairing_id. The shared
+  // pairing (one per kind, synthesised on migration) is the default
+  // for v1.0 / v1.2 operators.
+
+  app.get('/api/pairings', (_req: Request, res: Response) => {
+    res.json({ pairings: listPairings() });
+  });
+
+  app.get('/api/pairings/:id', (req: Request, res: Response) => {
+    const pairing = getPairing(req.params.id);
+    if (!pairing) {
+      res.status(404).json({ error: 'pairing not found' });
+      return;
+    }
+    res.json(pairing);
+  });
+
+  // Create a new pairing. The actual credential pairing (Baileys QR
+  // for WhatsApp) is done by the wizard's pair flow; this endpoint
+  // just registers the metadata so the orchestrator's next channel-
+  // factory pass picks up the new auth directory.
+  app.post('/api/pairings', (req: Request, res: Response) => {
+    const body = req.body as Partial<{
+      id: string;
+      kind: string;
+      display_name: string;
+      auth_path: string;
+      is_shared: boolean;
+      phone_hint: string | null;
+    }>;
+    if (
+      !body ||
+      typeof body.kind !== 'string' ||
+      typeof body.display_name !== 'string'
+    ) {
+      res.status(400).json({
+        error: 'kind and display_name are required strings',
+      });
+      return;
+    }
+    try {
+      const pairing = createPairing({
+        id: body.id,
+        kind: body.kind,
+        display_name: body.display_name,
+        auth_path: body.auth_path,
+        is_shared: body.is_shared,
+        phone_hint: body.phone_hint ?? null,
+      });
+      const machine = getMachineIdentity();
+      const auditId = writeAudit({
+        machineId: machine.id,
+        action: 'pairing.create',
+        target: pairing.id,
+        payloadAfter: {
+          kind: pairing.kind,
+          display_name: pairing.display_name,
+          is_shared: pairing.is_shared,
+        },
+      });
+      // Reload so the next channel-factory invocation picks up the
+      // new pairing without requiring an orchestrator restart.
+      deps.reloadConfig();
+      res.json({ ok: true, audit_id: auditId, pairing });
+    } catch (err) {
+      const msg = (err as Error).message;
+      res.status(400).json({ error: msg });
+    }
+  });
+
+  app.delete('/api/pairings/:id', (req: Request, res: Response) => {
+    const id = req.params.id;
+    const pairing = getPairing(id);
+    if (!pairing) {
+      res.status(404).json({ error: 'pairing not found' });
+      return;
+    }
+    const before = pairing;
+    try {
+      deletePairing(id);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+      return;
+    }
+    const machine = getMachineIdentity();
+    const auditId = writeAudit({
+      machineId: machine.id,
+      action: 'pairing.delete',
+      target: id,
+      payloadBefore: {
+        kind: before.kind,
+        display_name: before.display_name,
+      },
+    });
+    deps.reloadConfig();
+    res.json({ ok: true, audit_id: auditId });
+  });
+
+  // ---- credentials lifecycle ----
+  //
+  // Multi-agent completion blueprint § 5.1. When an operator deletes
+  // an agent, its OneCLI credential is NOT auto-removed — a
+  // credential may be shared across agents (two Anthropic agents
+  // could share the `Anthropic` secret), and auto-delete would
+  // orphan the survivors. Instead the dashboard polls
+  // /api/credentials/orphaned and surfaces a one-click nudge.
+  // Operator confirms before any OneCLI mutation.
+
+  /**
+   * Resolve the onecli binary. Mirrors the CLI wizard's path
+   * resolution: prefer PATH, fall back to the install-script default
+   * at ~/.local/bin/onecli. The orchestrator runs under the
+   * operator's launchd, which inherits a minimal PATH — so we can't
+   * count on bare `onecli` working.
+   */
+  function resolveOnecliBin(): string | null {
+    try {
+      // PATH probe: spawn `which onecli` synchronously.
+      const which = childProcess.spawnSync('which', ['onecli'], {
+        encoding: 'utf8',
+      });
+      if (which.status === 0 && which.stdout.trim()) {
+        return which.stdout.trim();
+      }
+    } catch {
+      /* fall through */
+    }
+    const fallback = path.join(
+      process.env.HOME ?? '',
+      '.local',
+      'bin',
+      'onecli',
+    );
+    try {
+      if (fs.existsSync(fallback)) return fallback;
+    } catch {
+      /* fall through */
+    }
+    return null;
+  }
+
+  app.get('/api/credentials/orphaned', (_req: Request, res: Response) => {
+    // The set of credential_ids currently bound to live agents.
+    const live = new Set<string>();
+    for (const agent of listAgents()) {
+      if (agent.provider.credential_id) {
+        live.add(agent.provider.credential_id);
+      }
+    }
+    // Cross-reference against the OneCLI registry — names declared in
+    // setup/providers.json but no longer referenced by any agent.
+    // We can't probe OneCLI's vault directly from here (no shell
+    // primitive at this layer); the dashboard's GUI-wizard plumbing
+    // owns that probe. Return the *deletable-candidate* names; the
+    // dashboard intersects with OneCLI's `secrets list` output before
+    // surfacing the nudge.
+    const candidates: string[] = [];
+    try {
+      const registry = loadProviderRegistry();
+      for (const entry of Object.values(registry)) {
+        const credName = entry.onecli?.name;
+        if (credName && !live.has(credName)) {
+          candidates.push(credName);
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { err: (err as Error).message },
+        'api: failed to load providers registry while computing orphan candidates',
+      );
+    }
+    res.json({ candidates });
+  });
+
+  /**
+   * Destructive credential delete (v1.2.1-finish-blueprint § 4).
+   * Defensively re-checks that no agent still references the
+   * credential — the probe at /api/credentials/orphaned may have
+   * raced against an agent-create. On a 409 the dashboard's
+   * typed-confirm modal renders the error inline and the operator
+   * decides next move.
+   */
+  app.delete('/api/credentials/:name', async (req: Request, res: Response) => {
+    const name = req.params.name;
+    const referenced = listAgents().some(
+      (a) => a.provider.credential_id === name,
+    );
+    if (referenced) {
+      res.status(409).json({
+        error:
+          `Credential "${name}" is still referenced by at least one agent. ` +
+          `Reassign or delete those agents first.`,
+      });
+      return;
+    }
+    const onecliBin = resolveOnecliBin();
+    if (!onecliBin) {
+      res.status(500).json({
+        error:
+          'onecli binary not found on PATH or at ~/.local/bin/onecli. ' +
+          'Re-install OneCLI or add it to PATH.',
+      });
+      return;
+    }
+    // execFile (not execSync) so a hung OneCLI doesn't block the
+    // Express thread. 8s is generous — secrets delete is local.
+    const r = await new Promise<{ code: number; stderr: string }>(
+      (resolve) => {
+        childProcess.execFile(
+          onecliBin,
+          ['secrets', 'delete', name],
+          { timeout: 8_000 },
+          (err, _stdout, stderr) => {
+            resolve({
+              code: err ? ((err as NodeJS.ErrnoException).code === 'ETIMEDOUT' ? 124 : 1) : 0,
+              stderr: stderr ?? '',
+            });
+          },
+        );
+      },
+    );
+    if (r.code !== 0) {
+      logger.warn(
+        { name, stderr: r.stderr.slice(-400) },
+        'onecli secrets delete failed',
+      );
+      res.status(500).json({
+        error:
+          r.stderr.trim().split('\n').slice(-3).join(' · ') ||
+          `onecli secrets delete exited ${r.code}`,
+      });
+      return;
+    }
+    const machine = getMachineIdentity();
+    const auditId = writeAudit({
+      machineId: machine.id,
+      action: 'credentials.delete',
+      target: name,
+      payloadBefore: { name },
+    });
+    logger.info({ name, auditId }, 'credentials.delete: secret removed');
+    res.json({ ok: true, audit_id: auditId });
+  });
+
+  // ---- providers registry ----
+  //
+  // The canonical provider registry lives in setup/providers.json.
+  // Dashboard surfaces (the ModelSwitchModal, the Models page in a
+  // future PR) read this endpoint instead of bundling a stale copy
+  // of the registry — adding the 9th provider becomes a JSON edit
+  // that propagates everywhere on the next dashboard reload.
+  //
+  // See docs/PROVIDER_PLAYBOOK.md § 5.5 (Provider registry).
+  app.get('/api/providers', (_req: Request, res: Response) => {
+    try {
+      const registry = loadProviderRegistry();
+      res.json({ providers: registry });
+    } catch (err) {
+      logger.error({ err }, 'api: failed to load providers registry');
+      res.status(500).json({ error: 'registry unavailable' });
+    }
   });
 
   // ---- persona ----
@@ -392,6 +1008,7 @@ export function mountApi(app: Express, deps: ApiDeps): void {
     const model = (req.query.model as string) || undefined;
     const outcome = (req.query.outcome as string) || undefined;
     const since = (req.query.since as string) || undefined;
+    const agent = (req.query.agent as string) || undefined;
     const format = (req.query.format as string) || 'json';
     // CSV exports allow a higher row cap (operator-driven download).
     const cap = format === 'csv' ? 5000 : 500;
@@ -403,24 +1020,39 @@ export function mountApi(app: Express, deps: ApiDeps): void {
     const where: string[] = [];
     const params: unknown[] = [];
     if (groupFolder) {
-      where.push('group_folder = ?');
+      where.push('agent_turns.group_folder = ?');
       params.push(groupFolder);
     }
     if (model) {
-      where.push('model = ?');
+      where.push('agent_turns.model = ?');
       params.push(model);
     }
     if (outcome) {
-      where.push('outcome = ?');
+      where.push('agent_turns.outcome = ?');
       params.push(outcome);
     }
     if (since) {
-      where.push('started_at >= ?');
+      where.push('agent_turns.started_at >= ?');
       params.push(since);
     }
-    const sql = `SELECT * FROM agent_turns ${
-      where.length ? 'WHERE ' + where.join(' AND ') : ''
-    } ORDER BY started_at DESC LIMIT ?`;
+    if (agent) {
+      // PR 8 § 3.2 — filter by COALESCE'd attribution. A turn matches
+      // the agent filter if either its responder_agent_id or (for old
+      // turns with NULL responder) the group's assigned agent matches.
+      where.push(
+        'COALESCE(agent_turns.responder_agent_id, registered_groups.agent_id) = ?',
+      );
+      params.push(agent);
+    }
+    // LEFT JOIN registered_groups so the agent-filter COALESCE has
+    // access to the group's assigned agent. The join is cheap (small
+    // table) and only used for filtering — the row payload is still
+    // SELECT * agent_turns.
+    const sql = `SELECT agent_turns.* FROM agent_turns
+                 LEFT JOIN registered_groups
+                   ON registered_groups.folder = agent_turns.group_folder
+                 ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+                 ORDER BY agent_turns.started_at DESC LIMIT ?`;
     params.push(limit);
     const rows = db()
       .prepare(sql)
@@ -586,6 +1218,7 @@ export function mountApi(app: Express, deps: ApiDeps): void {
   app.get('/api/cost/daily', (req: Request, res: Response) => {
     const groupFolder = (req.query.group as string) || undefined;
     const model = (req.query.model as string) || undefined;
+    const agent = (req.query.agent as string) || undefined;
     const days = Math.min(
       parseInt((req.query.days as string) || '30', 10) || 30,
       90,
@@ -594,23 +1227,37 @@ export function mountApi(app: Express, deps: ApiDeps): void {
       .toISOString()
       .slice(0, 10);
 
-    const where: string[] = ['date(started_at) >= ?'];
+    const where: string[] = ['date(agent_turns.started_at) >= ?'];
     const params: unknown[] = [since];
     if (groupFolder) {
-      where.push('group_folder = ?');
+      where.push('agent_turns.group_folder = ?');
       params.push(groupFolder);
     }
     if (model) {
-      where.push('model = ?');
+      where.push('agent_turns.model = ?');
       params.push(model);
     }
-    const sql = `SELECT date(started_at) AS day, model, SUM(est_cost_cents) AS cents,
-                        SUM(input_tokens) AS in_tok, SUM(output_tokens) AS out_tok,
+    if (agent) {
+      // PR 8 § 3.2 — agent filter uses COALESCE'd attribution.
+      where.push(
+        'COALESCE(agent_turns.responder_agent_id, registered_groups.agent_id) = ?',
+      );
+      params.push(agent);
+    }
+    // LEFT JOIN registered_groups for the agent-filter COALESCE.
+    // No effect on rows when ?agent= is absent.
+    const sql = `SELECT date(agent_turns.started_at) AS day,
+                        agent_turns.model AS model,
+                        SUM(agent_turns.est_cost_cents) AS cents,
+                        SUM(agent_turns.input_tokens) AS in_tok,
+                        SUM(agent_turns.output_tokens) AS out_tok,
                         COUNT(*) AS turns
                  FROM agent_turns
+                 LEFT JOIN registered_groups
+                   ON registered_groups.folder = agent_turns.group_folder
                  WHERE ${where.join(' AND ')}
-                 GROUP BY day, model
-                 ORDER BY day DESC, model`;
+                 GROUP BY day, agent_turns.model
+                 ORDER BY day DESC, agent_turns.model`;
     const rows = db()
       .prepare(sql)
       .all(...params);

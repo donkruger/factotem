@@ -6,15 +6,44 @@
 
 export type Profile = 'solo' | 'collaborator-invite' | 'hobbyist'
 
+// Mirrors nanoclaw/src/types.ts Provider and Agent. Whenever you change
+// one, change all three: this file, nanoclaw/src/types.ts, and
+// cli/claw-setup/src/state.ts. See docs/PROVIDER_PLAYBOOK.md § 5.1.
+
+export interface Provider {
+  protocol: string
+  model: string
+  base_url: string | null
+  credential_id: string | null
+}
+
+export interface Agent {
+  id: string
+  name: string
+  persona: string
+  provider: Provider
+  memory_namespace: string
+  default_trigger: string
+  parent_agent_id: string | null
+  is_default: boolean
+  created_at: string
+}
+
 export interface SetupState {
-  version: 1
+  version: 3
   profile: Profile
+  // Legacy single-assistant field — mirrors agents[is_default].name.
+  // Preserved on write so v1/v2 readers still work.
   assistantName: string
   completedSteps: string[]
   currentStep: string | null
   startedAt: string
   lastUpdated: string
   data: Record<string, unknown>
+  agents: Agent[]
+  default_agent_id: string
+  // Mirror of agents[is_default].provider. Preserved for v2 readers.
+  provider_default?: Provider
 }
 
 export interface ProbeResult {
@@ -71,6 +100,59 @@ export interface OneCLIProbe {
   gatewayUp: boolean
   authenticated: boolean
   anthropicSecretRegistered: boolean
+}
+
+// --- Provider registry (Gemini blueprint PR 2/3) ---------------------------
+//
+// Mirrors `setup/providers.json` shape. The wizard reads this via
+// `window.electronAPI.providers.list()` and renders one card per entry.
+
+export interface ProviderRegistryEntry {
+  name: string
+  tagline: string
+  wire_protocol: 'anthropic' | 'openai-compatible'
+  base_url: string
+  auth_kind: 'api-key' | 'none' | 'oauth'
+  default_model: string
+  models_endpoint: string
+  key_signup_url?: string
+  key_format_hint?: string
+  onecli: {
+    name: string
+    host_pattern: string
+    header_name: string
+    value_format: string
+  } | null
+  capabilities: {
+    tool_use: string
+    vision: boolean
+    computer_use: boolean
+    prompt_caching: boolean
+    long_context: boolean
+    local: boolean
+  }
+  container_image: string
+  ships_in: string
+  cost_hint: string
+}
+
+export type ProviderRegistry = Record<string, ProviderRegistryEntry>
+
+export interface ProbeKeyResult {
+  ok: boolean
+  message: string
+  modelCount?: number
+  error_class?:
+    | 'auth.invalid_key'
+    | 'provider.unreachable'
+    | 'quota.rate_limited'
+    | 'unknown'
+}
+
+export interface CreateCredentialResult {
+  success: boolean
+  alreadyExisted?: boolean
+  error?: string
 }
 
 export interface ServiceInstallResult {

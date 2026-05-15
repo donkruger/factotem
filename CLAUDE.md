@@ -1,9 +1,10 @@
 # NanoClaw
 
-Personal Claude assistant — operator-facing brand **Factotem**, orchestrator primitive **NanoClaw** (fork: `donkruger/factotem`, originally forked as `donkruger/benclaw`).
+Personal AI-assistant deployment — operator-facing brand **Factotem**, orchestrator primitive **NanoClaw** (fork: `donkruger/factotem`, originally forked as `donkruger/benclaw`). Multi-agent, multi-provider as of v1.2.
 
 - [docs/VISION.md](docs/VISION.md) — **Long-run trajectory**: five pillars (model agnosticism, human-readable UX, multi-machine fleet over Tailscale, wizard-as-app-wrapper, radical simplification) + non-goals. **Read this before proposing any non-trivial change** — does it move us toward the vision or away from it?
 - [docs/ui-ux-direction.md](docs/ui-ux-direction.md) — **The three user-facing surfaces** (CLI wizard, GUI wizard, dashboard) and the hand-off rules between them. **Read this before changing anything visible** — colour tokens, wizard flow, dashboard layout, anything an operator sees.
+- [docs/PROVIDER_PLAYBOOK.md](docs/PROVIDER_PLAYBOOK.md) — **Agent-first taxonomy + container-per-wire-protocol architecture.** Defines what an agent is (named persona on a specific provider, owning memory + groups), the resolution chain at spawn time, the four contracts every provider must satisfy (container, wizard, dashboard, OneCLI), and the literal checklist for shipping a new one. **Read this before adding any new AI provider or modifying agent-level routing.** Claude is the reference implementation and stays untouched; Gemini ships via the implementation walkthrough at [`docs/implementation/gemini-blueprint.md`](docs/implementation/gemini-blueprint.md).
 - [docs/DEPLOYMENT_CONVENTIONS.md](docs/DEPLOYMENT_CONVENTIONS.md) — **5-minute deployment briefing**: two-repo setup, five-file version bump, tag namespace, what NOT to do, verification commands. **Read this before cutting a release or designing a change that affects how operators receive updates.**
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Full current-state architecture, message flow, security model
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — Philosophy and design decisions
@@ -14,7 +15,7 @@ Personal Claude assistant — operator-facing brand **Factotem**, orchestrator p
 
 ## Quick Context
 
-Single Node.js process with skill-based channel system. Channels (WhatsApp, Telegram, Slack, Discord, Gmail) are skills that self-register at startup. Messages route to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
+Single Node.js process with skill-based channel system. Channels (WhatsApp, Telegram, Slack, Discord, Gmail) are skills that self-register at startup. Messages route to **agents** (named personas, each on its own provider — Claude / Gemini / OpenAI / Ollama / etc.) running in containers (Linux VMs). The container image is chosen by the agent's `provider.wire_protocol`: `nanoclaw-agent` for Anthropic-native, `nanoclaw-agent-oai` for OpenAI-compatible. Each group has isolated filesystem and memory; per-message `@<trigger>` mentions dispatch to the matching agent even when groups are assigned elsewhere. See `src/agents.ts` for the resolution chain.
 
 **Vision-check before non-trivial work:** the project is heading toward LLM model agnosticism, human-readable UX everywhere, multi-machine fleet orchestration over Tailscale, and a single-download app-wrapper installer — all in service of non-technical operators running their own agentic workforce on owned hardware. Every CLI step we add is a future product debt; every error message in raw stderr is a UX failure. See [docs/VISION.md](docs/VISION.md) for the full pillars + non-goals.
 
@@ -29,9 +30,12 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 | `src/ipc.ts` | IPC watcher and task processing |
 | `src/router.ts` | Message formatting and outbound routing |
 | `src/config.ts` | Trigger pattern, paths, intervals |
-| `src/container-runner.ts` | Spawns agent containers with mounts |
+| `src/container-runner.ts` | Spawns agent containers with mounts. Resolves provider via `src/agents.ts` + `src/providers-registry.ts` and picks the wire-protocol-matching image. |
+| `src/agents.ts` | Agent CRUD + trigger-based dispatch (`resolveAgentByTrigger`, `resolveAgentForGroup`, `resolveProviderForGroup`). |
+| `src/providers-registry.ts` | Orchestrator-side reader of `setup/providers.json` — the single source of truth for provider config (wire protocol, base URL, OneCLI host pattern, capabilities). |
+| `setup/providers.json` | Provider registry — adding a new OpenAI-compat provider is a JSON edit, not a code change. |
 | `src/task-scheduler.ts` | Runs scheduled tasks |
-| `src/db.ts` | SQLite operations |
+| `src/db.ts` | SQLite operations. `agents` table is the v3 primary entity; `agent_id` FK on `registered_groups` + `sessions`; backfilled to the default agent on migration. |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
 | `container/skills/` | Skills loaded inside agent containers (browser, status, formatting) |
 | `src/skills/x-handler.ts` | Host-side IPC handler for X (Twitter) integration |

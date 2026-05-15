@@ -1,11 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Button } from '../components/Button'
 import { CommandBlock } from '../components/CommandBlock'
-import { Mascot } from '../components/Mascot'
+import { HeroDisk } from '../components/HeroDisk'
 import { useElectronAPI } from '../hooks/useElectronAPI'
+import type { StepId } from '../hooks/useWizard'
 
 interface Props {
   onNext: () => void
+  /** Optional: jump directly to a non-default step. Used by the
+   *  "Add another agent" affordance to land on `provider` and skip
+   *  envCheck/install/etc. */
+  onJump?: (stepId: StepId) => void
 }
 
 type Availability =
@@ -27,19 +32,54 @@ type Availability =
 // boot-time decideBoot() does the same check and auto-skips when ok,
 // so this UI is mostly for the case where the user forced the wizard
 // (NANOCLAW_FORCE_WIZARD=1) or only the orchestrator half is healthy.
-export function WelcomeStep({ onNext }: Props) {
+export function WelcomeStep({ onNext, onJump }: Props) {
   const api = useElectronAPI()
   const [avail, setAvail] = useState<Availability>({ state: 'checking' })
   const [opening, setOpening] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
+  const [existingAgents, setExistingAgents] = useState<
+    Array<{ id: string; name: string; provider: { protocol: string } }> | null
+  >(null)
 
   useEffect(() => {
     if (!api) return
     void (async () => {
       const r = await api.dashboard.availability()
       setAvail({ state: r.reason })
+      // Read setup-state so we know whether to surface "Add another
+      // agent" alongside "Reconfigure" — Phase H.5 of the Gemini
+      // blueprint. If there's no state yet, this is a first-time
+      // install and the standard "Begin setup" path applies.
+      try {
+        const state = await api.state.read()
+        if (state && state.agents.length >= 1) {
+          setExistingAgents(
+            state.agents.map((a) => ({
+              id: a.id,
+              name: a.name,
+              provider: { protocol: a.provider.protocol }
+            }))
+          )
+        }
+      } catch {
+        /* state file unreadable — treat as first-time install */
+      }
     })()
   }, [api])
+
+  async function addAnotherAgent() {
+    if (!api) return
+    // Drop a hint in setup-state.data that ProviderStep + CredentialsStep
+    // read to know they're creating a *new* agent, not reconfiguring the
+    // default. The flag is cleared once the new agent lands in agents[].
+    const state = await api.state.read()
+    if (state) {
+      await api.state.patch({
+        data: { ...state.data, __mode: 'add-agent' }
+      })
+    }
+    if (onJump) onJump('provider')
+  }
 
   async function openDashboard() {
     if (!api) return
@@ -53,7 +93,7 @@ export function WelcomeStep({ onNext }: Props) {
   }
 
   return (
-    <div className="step-enter flex-1 flex flex-col items-center justify-center px-10 text-center relative z-10">
+    <div className="step-enter flex-1 flex flex-col items-center justify-safe-center px-10 py-8 text-center relative z-10">
       {avail.state === 'ok' && (
         <div
           className="panel-elevated mb-8 px-5 py-3 flex items-center gap-4 max-w-xl w-full text-left"
@@ -123,8 +163,13 @@ export function WelcomeStep({ onNext }: Props) {
         </div>
       )}
 
+      {/* Animated brand-mark disk (Three.js orb + grass-blade ring,
+          ported from the Factotem marketing site). 240 px slot —
+          ≈33 % larger than the previous 180 px sizing, so the ring
+          detail reads comfortably and the hover scale has somewhere
+          to grow into. */}
       <div className="mb-7">
-        <Mascot state="idle" size={140} />
+        <HeroDisk size={240} />
       </div>
 
       <h1
@@ -148,6 +193,16 @@ export function WelcomeStep({ onNext }: Props) {
         Your WhatsApp AI assistant, running on your own machine.
       </p>
       <p
+        className="text-sm mb-2 max-w-md mx-auto"
+        style={{
+          color: 'var(--color-ink-muted)',
+          lineHeight: 1.55
+        }}
+      >
+        Powered by Claude by default — switchable to Gemini, OpenAI, or
+        local models any time from the dashboard.
+      </p>
+      <p
         className="text-sm mb-9 max-w-md mx-auto"
         style={{
           color: 'var(--color-ink-muted)',
@@ -160,22 +215,58 @@ export function WelcomeStep({ onNext }: Props) {
       </p>
 
       <div className="flex flex-col items-center gap-3">
-        <Button size="lg" onClick={onNext}>
-          {avail.state === 'ok' || avail.state === 'dashboard-missing'
-            ? 'Re-run setup anyway'
-            : 'Begin setup'}
-        </Button>
-        <p
-          className="text-xs"
-          style={{
-            color: 'var(--color-ink-dim)',
-            letterSpacing: 'var(--tracking-caption)'
-          }}
-        >
-          {avail.state === 'ok' || avail.state === 'dashboard-missing'
-            ? 'Use this if you want to reconfigure something.'
-            : 'Takes 10–15 minutes. Mostly waiting for downloads.'}
-        </p>
+        {existingAgents && existingAgents.length >= 1 && onJump ? (
+          // PR 3 § H.5: re-entry branch. Operator already has at least
+          // one agent set up — offer "add another" + "reconfigure"
+          // rather than just "re-run setup anyway."
+          <>
+            <p
+              className="text-sm max-w-md mx-auto mb-2"
+              style={{ color: 'var(--color-ink)' }}
+            >
+              You have {existingAgents.length}{' '}
+              {existingAgents.length === 1 ? 'agent' : 'agents'} already (
+              {existingAgents.map((a) => a.name).join(', ')}). Add another
+              agent on a different provider, or reconfigure?
+            </p>
+            <div className="flex flex-row items-center gap-3">
+              <Button size="lg" variant="primary" onClick={addAnotherAgent}>
+                Add another agent
+              </Button>
+              <Button size="lg" variant="ghost" onClick={onNext}>
+                Reconfigure
+              </Button>
+            </div>
+            <p
+              className="text-xs mt-1"
+              style={{
+                color: 'var(--color-ink-dim)',
+                letterSpacing: 'var(--tracking-caption)'
+              }}
+            >
+              Add another agent skips ahead to provider selection.
+            </p>
+          </>
+        ) : (
+          <>
+            <Button size="lg" onClick={onNext}>
+              {avail.state === 'ok' || avail.state === 'dashboard-missing'
+                ? 'Re-run setup anyway'
+                : 'Begin setup'}
+            </Button>
+            <p
+              className="text-xs"
+              style={{
+                color: 'var(--color-ink-dim)',
+                letterSpacing: 'var(--tracking-caption)'
+              }}
+            >
+              {avail.state === 'ok' || avail.state === 'dashboard-missing'
+                ? 'Use this if you want to reconfigure something.'
+                : 'Takes 10–15 minutes. Mostly waiting for downloads.'}
+            </p>
+          </>
+        )}
       </div>
     </div>
   )

@@ -1,18 +1,127 @@
-# Factotem
+<p align="center">
+  <img src="assets/nanoclaw-logo.png" alt="Factotem logo" width="120" />
+</p>
 
-> **Personal AI infrastructure that lives on your machine, owned by you, customised to your life.**
->
-> Factotem brings together messaging channels, containerised Claude agents, and an operator dashboard into a single deployment that you fork, modify, and run yourself. No SaaS to depend on, no central control plane — your agents, your containers, your data, on the hardware you choose.
+<h1 align="center">Factotem</h1>
 
 <p align="center">
+  <strong>Personal AI infrastructure that lives on your machine, owned by you, customised to your life.</strong>
+  <br />
+  Containerised Claude (and Gemini, OpenAI, Ollama, …) agents on the messaging channels you already use — WhatsApp, Telegram, Slack — with an operator dashboard, a cold-start wizard, and a menu-bar diagnostic app. No SaaS, no central control plane: your agents, your containers, your data, your hardware.
+</p>
+
+<p align="center">
+  <!-- Release / version -->
+  <a href="https://github.com/RichardBNel/Factotem/releases/latest">
+    <img alt="Latest release" src="https://img.shields.io/github/v/release/RichardBNel/Factotem?display_name=tag&sort=semver&label=release&color=0071e3" />
+  </a>
+  <!-- License -->
+  <a href="LICENSE">
+    <img alt="License" src="https://img.shields.io/github/license/RichardBNel/Factotem?color=success" />
+  </a>
+  <!-- Node engine -->
+  <a href="package.json">
+    <img alt="Node ≥ 20" src="https://img.shields.io/badge/node-%E2%89%A5%2020-43853d?logo=node.js&logoColor=white" />
+  </a>
+  <!-- CI -->
+  <a href="https://github.com/RichardBNel/Factotem/actions/workflows/ci.yml">
+    <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/RichardBNel/Factotem/ci.yml?branch=main&label=CI" />
+  </a>
+  <!-- Last commit -->
+  <a href="https://github.com/RichardBNel/Factotem/commits/main">
+    <img alt="Last commit" src="https://img.shields.io/github/last-commit/RichardBNel/Factotem?color=informational" />
+  </a>
+  <!-- Stars -->
+  <a href="https://github.com/RichardBNel/Factotem/stargazers">
+    <img alt="GitHub stars" src="https://img.shields.io/github/stars/RichardBNel/Factotem?style=flat&color=yellow" />
+  </a>
+</p>
+
+<p align="center">
+  <!-- Platforms -->
+  <img alt="macOS" src="https://img.shields.io/badge/macOS-supported-000000?logo=apple&logoColor=white" />
+  <img alt="Linux" src="https://img.shields.io/badge/Linux-supported-FCC624?logo=linux&logoColor=black" />
+  <!-- Providers -->
+  <img alt="Anthropic Claude" src="https://img.shields.io/badge/Anthropic-Claude-d97757" />
+  <img alt="Google Gemini" src="https://img.shields.io/badge/Google-Gemini-4285F4?logo=google&logoColor=white" />
+  <img alt="OpenAI" src="https://img.shields.io/badge/OpenAI-compatible-412991?logo=openai&logoColor=white" />
+  <img alt="Ollama" src="https://img.shields.io/badge/Ollama-local-000000" />
+  <!-- Status -->
+  <img alt="Status: beta" src="https://img.shields.io/badge/status-beta-orange" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/RichardBNel/Factotem/releases/latest/download/nanoclaw-setup.dmg">
+    <strong>⬇ Download NanoClaw Setup for macOS</strong>
+  </a>
+  &nbsp;·&nbsp;
   <a href="https://github.com/RichardBNel/Factotem/releases/latest/download/Factotem-Doctor.dmg">
-    <strong>⬇ Download Factotem Doctor for macOS (Apple Silicon)</strong>
+    <strong>⬇ Factotem Doctor</strong>
   </a>
   <br />
-  <sub>Signed + notarised .dmg · ~3 MB · auto-updates on subsequent releases</sub>
+  <sub>Both signed + notarised. Setup walks first-run install end-to-end and lands you on the dashboard. Doctor is the post-install diagnostic app.</sub>
   <br />
-  <sub>Other releases: <a href="https://github.com/RichardBNel/Factotem/releases">all versions</a> · <a href="docs/RELEASES.md">how releases work</a></sub>
+  <sub>All releases: <a href="https://github.com/RichardBNel/Factotem/releases">github.com/RichardBNel/Factotem/releases</a> · <a href="docs/RELEASES.md">how releases work</a></sub>
 </p>
+
+---
+
+## Table of Contents
+
+- [Why Factotem](#why-factotem)
+- [Vision](#vision)
+- [What's in the box](#whats-in-the-box)
+- [Quick start](#quick-start)
+- [Architecture at a glance](#architecture-at-a-glance)
+- [Per-group isolation model](#per-group-isolation-model)
+- [Operator surfaces](#operator-surfaces)
+- [Cold-start flow](#cold-start-flow)
+- [Customising](#customising)
+- [Project structure](#project-structure)
+- [Phase status](#phase-status)
+- [Releases](#releases)
+- [Requirements](#requirements)
+- [Third-party / open-source models](#third-party--open-source-models)
+- [Documentation](#documentation)
+- [Roots & acknowledgments](#roots--acknowledgments)
+- [License](#license)
+
+---
+
+## Why Factotem
+
+| Most AI assistants | Factotem |
+|---|---|
+| Your conversations live in a vendor's database. | Your conversations live in `store/messages.db` on disk you own. |
+| One model behind a single subscription. | Multiple named agents on different providers, addressed by `@<trigger>` in the same group. |
+| Tool calls execute on someone else's servers. | Tool calls execute inside a Linux container on your machine, behind your mount allowlist. |
+| Outages, throttles, deprecation cycles are your problem to absorb. | One Node process you can read, fork, patch. |
+| Configuration via dashboards and YAML. | Configuration via Claude Code asking *"what should change?"* and editing the source. |
+| Single-tenant SaaS pricing. | One Mac, one operator, no monthly bill beyond your model API. |
+
+### The 10-second mental model
+
+```mermaid
+flowchart LR
+    P[Your phone<br/>WhatsApp · Telegram · Slack] -->|message| O[Orchestrator<br/>Node process<br/>on your Mac]
+    O -->|spawn| C[Linux container<br/>isolated agent<br/>scoped mounts]
+    C -->|HTTPS via OneCLI| LLM[Claude · Gemini<br/>OpenAI · Ollama]
+    LLM -->|response| C
+    C -->|reply| O
+    O -->|outbound| P
+    D[Dashboard<br/>:7842 over Tailscale] -.->|reads| O
+
+    classDef host fill:#fff,stroke:#0071e3,stroke-width:2px
+    classDef sandbox fill:#fff,stroke:#ff7a3a,stroke-width:2px
+    classDef operator fill:#fff,stroke:#6a00ff,stroke-width:2px
+    class O host
+    class C sandbox
+    class D operator
+```
+
+A message arrives → the orchestrator picks the right agent (by group assignment or `@trigger`) → spawns a per-group Linux container → the agent calls its provider through OneCLI → reply flows back out the same channel. Your host process never executes agent-suggested code; the container does.
+
+[Skip to the detailed architecture →](#architecture-at-a-glance)
 
 ---
 
@@ -38,13 +147,21 @@ This fork is built on the [NanoClaw](https://github.com/qwibitai/nanoclaw) found
 - **Scheduled tasks** — recurring jobs that wake an agent and message you back.
 - **Operator dashboard** — local web UI on `:7842` over Tailscale. Server health, activity feed, group management, cost tracking, alerts, audit log, persona page (read-only view of the deployment's assistant identity + per-group triggers).
 - **Factotem Doctor** — signed + notarised macOS menu-bar app. Probes Docker / OneCLI / NanoClaw every 5s, surfaces multi-instance state honestly, exposes a typed-confirm `Repair Stack…` action for cold-start recovery.
-- **claw-setup wizard** — twelve-step cold-start that takes a fresh Mac from "nothing" to "agent alive on WhatsApp" without manual config-file editing.
+- **NanoClaw Setup wizard** — twelve-step cold-start that takes a fresh Mac from "nothing" to "agent alive on WhatsApp" without manual config-file editing. Two surfaces over the same setup logic:
+  - **GUI** (signed + notarised .dmg, `cli/claw-setup-gui/`) — drag-into-Applications installer, in-window dashboard handoff on completion, deep-link from the dashboard's status cards back to the relevant setup step.
+  - **CLI** (`cli/claw-setup/`) — the same twelve steps in `@clack/prompts`, for headless / SSH / CI / recovery scenarios. Both wizards share `~/.config/nanoclaw/setup-state.json` so you can switch between them mid-run.
+  - See [`docs/ui-ux-direction.md`](docs/ui-ux-direction.md) for the three-surface architecture.
 - **OneCLI gateway** — local credential proxy at `127.0.0.1:10254`; secrets never reach agent containers directly.
+- **Multi-agent, multi-provider** — name an agent (e.g. `Andy`), pick its provider (`anthropic`, `gemini`, `openai`, `ollama`, …), and the orchestrator routes messages to it. Multiple agents coexist on one deployment; per-message `@<trigger>` mentions dispatch to the right one even when groups are assigned elsewhere. Anthropic Claude (v1.0) and Google Gemini (v1.2) are shipping; OpenAI, OpenRouter, Groq, Together, and Ollama are data-only additions to [`setup/providers.json`](setup/providers.json) (the registry every surface reads). One container image per wire protocol — `nanoclaw-agent` (Anthropic-native) + `nanoclaw-agent-oai` (OpenAI-compatible). The architectural contract is in [`docs/PROVIDER_PLAYBOOK.md`](docs/PROVIDER_PLAYBOOK.md); the Gemini implementation walkthrough is at [`docs/implementation/gemini-blueprint.md`](docs/implementation/gemini-blueprint.md). Operator guide for picking / switching: [`docs/providers/gemini.md`](docs/providers/gemini.md).
 - **Brain integration** — markdown ticket store synced via Google Drive; cross-linked to KanbanPro via `kanbanpro://` URLs.
 
 ---
 
 ## Quick start
+
+**The fastest path** (recommended for non-developers): download **NanoClaw Setup** from the badge at the top of this README, drag it to Applications, launch it. The wizard walks thirteen steps (profile → host prereqs → OneCLI → **pick AI provider** → **enter credentials** → mount allowlist → container build → WhatsApp pairing → launchd install → main group registration → open-DM config → smoke test → handoff). The Provider step lets you pick Claude (default) or Gemini today; OpenAI and others appear here as the registry grows. When everything's running it hands you off to the Factotem dashboard inside the same window. Subsequent launches skip the wizard and land directly on the dashboard.
+
+**The developer path** (fork-and-modify): clone, then drive setup from the Claude Code prompt.
 
 ```bash
 gh repo fork donkruger/factotem --clone
@@ -58,13 +175,13 @@ Then in the Claude Code prompt:
 /setup
 ```
 
-Or run the full guided wizard from a regular terminal:
+**The headless path** (SSH / CI / no GUI): same twelve steps over `@clack/prompts`.
 
 ```bash
 npx claw-setup
 ```
 
-The wizard walks twelve steps (host prereqs → OneCLI → Anthropic auth → mount allowlist → container build → WhatsApp pairing → main group registration → launchd install → smoke test → handoff) and ends by installing the Factotem Doctor to `/Applications/`.
+All three paths share the same state file at `~/.config/nanoclaw/setup-state.json`, so you can resume any of them from any other.
 
 > Commands prefixed with `/` are [Claude Code skills](https://code.claude.com/docs/en/skills) — type them inside the `claude` CLI prompt, not your shell. If you don't have Claude Code, get it at [claude.com/product/claude-code](https://claude.com/product/claude-code).
 
@@ -89,13 +206,20 @@ flowchart TB
         IPC[IPC watcher<br/>data/ipc/]
     end
 
-    subgraph Sandbox[Per-group container — Linux]
-        AGENT[Claude Agent SDK<br/>tool use · MCP]
-        MNT[Mount allowlist<br/>brain · global<br/>per-group memory]
+    subgraph Agents[Agent registry]
+        AID[agents table<br/>Andy · Ben · Echo<br/>each on its own provider]
+        REG2[setup/providers.json<br/>anthropic · gemini · openai<br/>ollama · openrouter · ...]
+    end
+
+    subgraph Sandbox[Per-group / per-agent container — Linux]
+        AGENT_A[nanoclaw-agent<br/>Anthropic native]
+        AGENT_O[nanoclaw-agent-oai<br/>OpenAI-compatible<br/>Gemini · OpenAI · Ollama · ...]
+        MNT[Mount allowlist<br/>brain · global<br/>per-agent memory]
     end
 
     subgraph Operator[Operator surfaces]
-        DASH[Dashboard<br/>:7842 over Tailscale]
+        WIZ[NanoClaw Setup<br/>Electron · macOS]
+        DASH[Dashboard<br/>:7842 over Tailscale<br/>Agents · Errors · Cost · Audit]
         DOC[Factotem Doctor<br/>menu-bar · macOS]
         REC[recovery.html<br/>cold-start panel]
     end
@@ -103,17 +227,22 @@ flowchart TB
     OneCLI[OneCLI gateway<br/>127.0.0.1:10254<br/>credential proxy]
 
     WA & TG & SL & GM -->|messages| REG
+    REG -->|@trigger override| AID
     REG --> Q
     SCHED --> Q
-    Q -->|spawn| AGENT
-    AGENT --> MNT
-    AGENT -->|HTTP| OneCLI
-    OneCLI -->|injected creds| ANTHROPIC[Anthropic API]
-    AGENT -->|reply| Q
+    AID --> REG2
+    REG2 --> Q
+    Q -->|spawn anthropic| AGENT_A
+    Q -->|spawn oai| AGENT_O
+    AGENT_A & AGENT_O --> MNT
+    AGENT_A & AGENT_O -->|HTTP| OneCLI
+    OneCLI -->|inject creds| PROV[Anthropic · Gemini · OpenAI · ...]
+    AGENT_A & AGENT_O -->|reply| Q
     Q -->|outbound| WA
-    AGENT --> DB
-    AGENT --> IPC
+    AGENT_A & AGENT_O --> DB
+    AGENT_A & AGENT_O --> IPC
     DASH --> DB
+    DASH --> AID
     DOC -->|/health probes| Host
     DOC -->|optional| REC
 
@@ -202,7 +331,7 @@ Three places to operate Factotem after it's installed:
 | Surface | Where | What it's for |
 |---|---|---|
 | **Factotem Doctor** | macOS menu bar | Live health probe (Docker / OneCLI / NanoClaw / port :7842), Repair Stack action with typed-confirm gate, Settings, log tail. Always visible — your first read on whether the stack is alive. |
-| **Dashboard** | `http://<host>:7842` over Tailscale | Server health, activity feed, group management, cost tracking, alerts, audit log. Authenticated via Tailscale (single-operator) or `operators.json` (multi-operator). |
+| **Dashboard** | `http://<host>:7842` over Tailscale | Agents page (per-agent rollup, model switch, recent errors), server health, activity feed, group management, cost tracking, alerts, error diagnosis (`/errors`), audit log. Authenticated via Tailscale (single-operator) or `operators.json` (multi-operator). |
 | **Messaging** | The trigger word in any registered channel | Talk to your assistant. Trigger word configurable; default `@Andy` (Don's fork uses `@Ben`). |
 
 Plus two CLIs:
@@ -221,8 +350,10 @@ flowchart TD
     A[Fresh Mac] -->|npx claw-setup| B[00 · profile mode<br/>solo · hobbyist · invite]
     B --> C[01 · prereqs<br/>Node · Docker · Tailscale]
     C --> D[02 · install missing tools]
-    D --> E[03 · OneCLI<br/>Anthropic credential]
-    E --> F[04 · mount allowlist]
+    D --> E[03 · OneCLI gateway<br/>install + auth]
+    E --> E2[03a · pick provider<br/>Claude · Gemini · ...]
+    E2 --> E3[03b · enter credentials<br/>data-driven per provider]
+    E3 --> F[04 · mount allowlist]
     F --> G[05 · build agent container]
     G --> H[06 · pair WhatsApp<br/>QR scan]
     H --> I[07 · register main group]
@@ -233,6 +364,8 @@ flowchart TD
     M --> N[Operational]
 
     style B fill:#fff,stroke:#0071e3
+    style E2 fill:#fff,stroke:#ff7a3a,stroke-width:2px
+    style E3 fill:#fff,stroke:#ff7a3a,stroke-width:2px
     style M fill:#fff,stroke:#ff7a3a,stroke-width:2px
     style N fill:#fff,stroke:#6a00ff,stroke-width:2px
 ```
@@ -322,6 +455,7 @@ Critical files for anyone (human or agent) modifying behaviour:
 | **Phase 2** — Release pipeline + auto-updates | ✓ Shipped | GitHub Actions builds signed + notarised .dmg on `v*` tag push; Doctor auto-detects new releases via Tauri updater, operator approves install |
 | **v0.1.7 — Persona page + real /health probes** | ✓ Shipped (2026-05-08) | Dashboard `/persona` route + `GET /api/persona`. `probeOpenDm` reads real `container_config.openMode`. `nanoclaw.version` sourced from package.json. WhatsApp `connect()` resolve fix (latent bug that hung the orchestrator main loop after Baileys close-reopen). |
 | **v0.1.8 — Pull upstream updates from the Doctor** | ✓ Shipped (2026-05-08) | New tray-menu action that runs preflight (working tree clean, on `main`, no diverged commits) → pull → install + build orchestrator + dashboard → restart. Closes the gap between Doctor auto-update and the previously-manual orchestrator/dashboard upgrade. |
+| **v1.2 — Gemini blueprint (multi-agent, multi-provider)** | ✓ Shipped (2026-05-14) | Seven-PR series: agent-first data model (`agents` table, per-agent memory namespace, `@trigger`-based dispatch); `nanoclaw-agent-oai` container speaking the OpenAI-compatible wire protocol; data-driven wizard (`ProviderStep` + `CredentialsStep`); dashboard's agent-first navigation (Agents page, per-agent detail, ModelSwitchModal three-screen journey, error-diagnosis page). Gemini ships end-to-end; OpenAI / OpenRouter / Groq / Together / Ollama are registry-only additions away. Full rationale: [`docs/PROVIDER_PLAYBOOK.md`](docs/PROVIDER_PLAYBOOK.md). Implementation walkthrough: [`docs/implementation/gemini-blueprint.md`](docs/implementation/gemini-blueprint.md). |
 | **Phase 3** — Multi-deployment federation (v2) | Planned | Aggregator app surveys multiple deployments over Tailscale; per-machine tokens; fleet view |
 | **Phase 4** — Multi-tenant boundary (v3) | Planned | Segment admin permission tier; tenant isolation; productisation |
 
@@ -348,21 +482,37 @@ See [`docs/CHANGE_LOG.md`](docs/CHANGE_LOG.md) for the full timestamped history 
 - **[Claude Code](https://claude.ai/download)**
 - **[Docker Desktop](https://docker.com/products/docker-desktop)** (default) or [Apple Container](https://github.com/apple/container) on macOS
 - **[Tailscale](https://tailscale.com/)** for accessing the dashboard from other devices on your tailnet
-- **An Anthropic API key or subscription OAuth token** (configured into OneCLI; never passed to containers directly)
+- **An API key for at least one supported provider** (Anthropic Claude, Google Gemini, OpenAI, OpenRouter, Groq, Together AI, or local Ollama / vLLM) — configured into OneCLI by the wizard's Credentials step. The container never sees the raw key; OneCLI injects it on outbound HTTPS at the host gateway. Pick which providers you want from the dashboard's **Agents** page or via the wizard's data-driven provider picker.
 - **Apple Developer ID** if you want to sign + notarise your own Doctor build (otherwise build it ad-hoc-signed)
 
 ---
 
 ## Third-party / open-source models
 
-Factotem speaks the Anthropic API format. Set in your `.env`:
+Factotem ships native support for two wire protocols. Adding a provider that speaks either is a JSON edit, not a code change.
 
-```bash
-ANTHROPIC_BASE_URL=https://your-api-endpoint.com
-ANTHROPIC_AUTH_TOKEN=your-token-here
-```
+- **Anthropic-native** — the `nanoclaw-agent` container runs the Anthropic SDK. Default model is Claude. Any endpoint speaking the Anthropic message-shape API works; set `ANTHROPIC_BASE_URL` in your `.env` to point at a custom deployment.
+- **OpenAI-compatible** — the `nanoclaw-agent-oai` container runs the `openai` Node SDK against any `/v1/chat/completions`-shaped endpoint. Today that covers Gemini (via Google's compat layer), OpenAI itself, OpenRouter, Together AI, Groq, Ollama (local), and vLLM (self-hosted). Each gets a row in [`setup/providers.json`](setup/providers.json) carrying its base URL, default model, and OneCLI auth shape — no container rebuild required to add the next one.
 
-This works with [Ollama](https://ollama.ai) via an API proxy, [Together AI](https://together.ai), [Fireworks](https://fireworks.ai), or any custom deployment that speaks the Anthropic format.
+Adding a brand-new wire protocol means a new container image; adding a provider that speaks an existing wire protocol means a `providers.json` edit + an operator-facing doc. See [`docs/PROVIDER_PLAYBOOK.md § 1`](docs/PROVIDER_PLAYBOOK.md#1-core-principle--container-per-provider) for the "container per wire protocol" principle.
+
+---
+
+## Documentation
+
+| Doc | What's in it |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Full system architecture — orchestrator, channels, container runner, queue, IPC, scheduler, mount security, database. The reference. |
+| [`docs/SETUP_WIZARD.md`](docs/SETUP_WIZARD.md) | Wizard step semantics, resume + recovery, add-agent re-entry, PairingChoice screen. |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Day-2 ops — startup chain, health verification, logs, recovery, updates, common issues, agent model env var, Docker disk management, OneCLI management. |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | Trust boundaries, mount allowlist, tool-scope enforcement, audit log, typed-confirm gates. |
+| [`docs/PROVIDER_PLAYBOOK.md`](docs/PROVIDER_PLAYBOOK.md) | Multi-provider contract — `providers.json` registry, container-per-wire-protocol, how to add a 9th provider. |
+| [`docs/RELEASES.md`](docs/RELEASES.md) | Release model — download paths, auto-update, manual downgrade, maintainer tag-and-publish runbook. |
+| [`docs/DEPLOYMENT_CONVENTIONS.md`](docs/DEPLOYMENT_CONVENTIONS.md) | 5-minute briefing for new contributors — two repos, five-file version bump, tag namespace, verification commands. |
+| [`docs/CHANGE_LOG.md`](docs/CHANGE_LOG.md) | Every shipped change, dated, with rationale and recovery tag. |
+| [`docs/VISION.md`](docs/VISION.md) | Long-run trajectory — model agnosticism, multi-deployment federation, multi-tenant boundary. The five pillars every change is checked against. |
+| [`docs/implementation/`](docs/implementation/) | Implementation blueprints (Gemini, multi-agent completion, v1.2.1 finish) and acceptance checklists. |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to contribute — skill-as-branch model, PR conventions, the skills taxonomy. |
 
 ---
 
@@ -379,12 +529,29 @@ What this fork (Factotem) adds on top:
 - **OAuth-workaround auth mode** with launchd watcher for rotating subscription tokens
 - **Audit log + reversible-undo** dashboard surface
 - **`agent_turns`** SDK-faithful telemetry schema (32 columns) for cost tracking
+- **Multi-agent, multi-provider** taxonomy (`agents` table, `providers.json` registry, container-per-wire-protocol routing, ModelSwitchModal, error-diagnosis page) — see [`docs/PROVIDER_PLAYBOOK.md`](docs/PROVIDER_PLAYBOOK.md)
 - A more deliberate **trust boundary** posture (operators.json, scopes, typed-confirm gates) suitable for multi-operator + future multi-tenant evolution
 
 Package name remains `nanoclaw` for backward-compatibility with existing skill branches and the upstream channel ecosystem; the user-facing brand is **Factotem** when referring to the operator surfaces, and **NanoClaw** when referring to the underlying orchestrator.
 
 ---
 
+## Star History
+
+<a href="https://www.star-history.com/#RichardBNel/Factotem&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=RichardBNel/Factotem&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=RichardBNel/Factotem&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=RichardBNel/Factotem&type=Date" />
+  </picture>
+</a>
+
+---
+
 ## License
 
-MIT.
+[MIT](LICENSE). Use it, fork it, modify it, ship it. Attribution appreciated but not required.
+
+<p align="center">
+  <sub>Built on the <a href="https://github.com/qwibitai/nanoclaw">NanoClaw</a> orchestrator primitive · <a href="https://github.com/RichardBNel/Factotem/issues">Report an issue</a> · <a href="docs/VISION.md">Read the vision</a></sub>
+</p>

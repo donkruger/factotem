@@ -28,6 +28,31 @@ vi.mock('../db.js', () => ({
   updateChatName: vi.fn(),
 }));
 
+// Mock pairings module (multi-agent-completion-blueprint § 4.1). The
+// WhatsAppChannel constructor calls getDefaultPairing() to resolve
+// which pairing it represents; tests don't init the DB so we stub
+// the pairing module to return a stable shared-pairing fixture.
+vi.mock('./pairings.js', () => {
+  const sharedPairing = {
+    id: 'whatsapp-shared',
+    kind: 'whatsapp',
+    display_name: 'Shared WhatsApp',
+    auth_path: '/tmp/nanoclaw-test-store/auth',
+    is_shared: true,
+    phone_hint: null,
+    last_connected_at: null,
+    created_at: '2026-05-14T00:00:00Z',
+  };
+  return {
+    getDefaultPairing: vi.fn(() => sharedPairing),
+    getPairing: vi.fn(() => sharedPairing),
+    getPairingForChat: vi.fn(() => null),
+    listPairingsForKind: vi.fn(() => [sharedPairing]),
+    recordChatPairing: vi.fn(),
+    recordPairingConnected: vi.fn(),
+  };
+});
+
 // Mock image module
 vi.mock('../image.js', () => ({
   isImageMessage: vi.fn().mockReturnValue(false),
@@ -1421,9 +1446,15 @@ describe('WhatsAppChannel', () => {
   // --- Channel properties ---
 
   describe('channel properties', () => {
-    it('has name "whatsapp"', () => {
+    it('has name "whatsapp:<pairingId>"', () => {
+      // Multi-agent-completion-blueprint § 4.1: name now carries the
+      // pairing id so the boot loop can host multiple WhatsApp
+      // channels simultaneously. Legacy single-pairing deployments
+      // resolve to `whatsapp:whatsapp-shared`.
       const channel = new WhatsAppChannel(createTestOpts());
-      expect(channel.name).toBe('whatsapp');
+      expect(channel.name).toBe('whatsapp:whatsapp-shared');
+      // Kind-level routers can still match on the prefix.
+      expect(channel.name.startsWith('whatsapp:')).toBe(true);
     });
 
     it('does not expose prefixAssistantName (prefix handled internally)', () => {

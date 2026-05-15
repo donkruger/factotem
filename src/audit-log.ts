@@ -38,7 +38,19 @@ export type AuditAction =
   | 'openMode.update'
   | 'test_message.send'
   | 'restart_stack.invoke'
-  | 'audit.undo';
+  | 'audit.undo'
+  // Gemini blueprint PR 5 (Phase E.4) — agent-level operations.
+  | 'provider.switch'
+  | 'agent.test_message'
+  // Multi-agent-completion-blueprint § 4.1 — channel pairing lifecycle.
+  | 'pairing.create'
+  | 'pairing.delete'
+  // Multi-agent-completion-blueprint § 4.2 — per-agent open-DM budget.
+  | 'agent.budget.update'
+  // v1.2.1-finish-blueprint § 4 — destructive credential removal.
+  // Typed-confirm gates the click; the audit row records who/when
+  // for the operator's after-the-fact reconstruction.
+  | 'credentials.delete';
 
 const REVERSIBILITY_BY_ACTION: Record<AuditAction, number> = {
   // ms — how long the operation can be undone
@@ -51,6 +63,29 @@ const REVERSIBILITY_BY_ACTION: Record<AuditAction, number> = {
   'test_message.send': 0, // not reversible (already sent)
   'restart_stack.invoke': 0, // not reversible (process already killed)
   'audit.undo': 0, // an undo is not itself undoable
+  // 5-minute window for provider switches — long enough for an operator
+  // to notice the new model misbehaves on the first exchange and roll
+  // back, short enough that a meaningfully-different conversation has
+  // happened by the time the window closes. Per PROVIDER_PLAYBOOK § 4.3
+  // (switch is reversible without data loss; container spawns fresh on
+  // the next inbound message).
+  'provider.switch': 5 * 60 * 1000,
+  'agent.test_message': 0, // ephemeral; nothing on disk to revert
+  // Pairing creates: 24h to undo (operator can delete the pairing
+  // from the dashboard). Auth state on disk persists until explicit
+  // delete, so this is just for the convenience-undo case.
+  'pairing.create': 24 * 60 * 60 * 1000,
+  'pairing.delete': 0, // not reversible (auth state is wiped)
+  // Budget updates: 5 min like the provider-switch window. Long
+  // enough for an operator to spot a surprising spend curve and
+  // raise the cap back, short enough to keep the audit list focused.
+  'agent.budget.update': 5 * 60 * 1000,
+  // Credential deletion is destructive — the typed-confirm modal
+  // raises the cost of the click, and the row in the OneCLI vault
+  // is gone after this fires. Operators re-paste the API key via
+  // the wizard if they want it back; nothing to undo from the
+  // audit page.
+  'credentials.delete': 0,
 };
 
 export interface AuditEntry {

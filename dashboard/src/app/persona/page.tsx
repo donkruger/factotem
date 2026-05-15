@@ -1,17 +1,18 @@
-import { Suspense } from 'react';
-
-import { PersonaView } from './PersonaView';
+import { redirect } from 'next/navigation';
 
 /**
- * /persona — read-only snapshot of the deployment's assistant identity.
- * Shows the global ASSISTANT_NAME and per-group trigger_pattern, with
- * copy-pasteable shell commands for changing them. Mutations stay on
- * the existing `setup --step register` and `.env` edit paths.
+ * /persona was the v1.0 surface for a single-assistant deployment.
+ * Multi-agent (v1.2 — Gemini blueprint) made it redundant; the
+ * per-agent detail page at /agents/<id> is now the canonical
+ * identity view.
+ *
+ * We redirect rather than 404 because operators have this URL
+ * bookmarked, deep-linked from older docs, etc. The `/api/persona`
+ * endpoint stays alive for now (operator-side integrations may have
+ * it) — it's marked for removal in v1.3.
+ *
+ * See multi-agent-completion-blueprint.md § 3.3.
  */
 export default function PersonaPage() {
-  return (
-    <Suspense fallback={null}>
-      <PersonaView />
-    </Suspense>
-  );
+  redirect('/agents');
 }

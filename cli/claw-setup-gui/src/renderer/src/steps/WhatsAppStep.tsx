@@ -35,6 +35,16 @@ export function WhatsAppStep({ onNext, onBack }: Props) {
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [lines, setLines] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
+  // Per-pairing context (v1.2.1-finish-blueprint § 2). When the wizard
+  // entered this step via the add-agent → "pair a new WhatsApp number"
+  // branch, PairingChoiceStep stashes a pairingId + auth directory on
+  // setup state.data; we read them once on mount and pass them through
+  // to api.whatsapp.start so the auth script writes to a per-pairing
+  // store/auth-<id>/ directory and store/qr-data-<id>.txt /
+  // store/auth-status-<id>.txt hand-off files. Absent = v1.0 behaviour
+  // (the deployment's shared WhatsApp account into store/auth/).
+  const [pendingPairingId, setPendingPairingId] = useState<string | undefined>(undefined)
+  const [pendingAuthDir, setPendingAuthDir] = useState<string | undefined>(undefined)
   const runIdRef = useRef<string | null>(null)
   const cleanupRef = useRef<Array<() => void>>([])
 
@@ -44,7 +54,14 @@ export function WhatsAppStep({ onNext, onBack }: Props) {
     void api.state.read().then((s) => {
       if (s) {
         setProfile(s.profile)
-        if (s.data['whatsapp_paired_at']) {
+        const pid = s.data['__pending_pairing_id']
+        const adir = s.data['__pending_pairing_auth_dir']
+        if (typeof pid === 'string') setPendingPairingId(pid)
+        if (typeof adir === 'string') setPendingAuthDir(adir)
+        // When a per-pairing context is set we never want to short-circuit
+        // to the "already paired" success state — that flag refers to the
+        // *shared* WhatsApp account, not the new one we're about to pair.
+        if (s.data['whatsapp_paired_at'] && !pid) {
           setPhase('success')
           setStatus('already paired')
         }
@@ -66,7 +83,10 @@ export function WhatsAppStep({ onNext, onBack }: Props) {
     setPhase('starting')
 
     try {
-      const { runId } = await api.whatsapp.start(orchestratorRoot)
+      const { runId } = await api.whatsapp.start(orchestratorRoot, {
+        pairingId: pendingPairingId,
+        authDir: pendingAuthDir
+      })
       runIdRef.current = runId
 
       const offQr = api.whatsapp.onQr(runId, async (qr) => {
@@ -91,9 +111,25 @@ export function WhatsAppStep({ onNext, onBack }: Props) {
         setStatus(s)
         if (s === 'authenticated' || s === 'already_authenticated') {
           setPhase('success')
-          await api.state.patch({
-            data: { whatsapp_paired_at: new Date().toISOString() }
-          })
+          // For a per-pairing run, stash the success against the
+          // pairing id and clear the hand-off flags so a subsequent
+          // wizard pass doesn't re-pair the same number. For a
+          // shared-account run, update the legacy whatsapp_paired_at
+          // flag so existing readers keep working.
+          if (pendingPairingId) {
+            await api.state.patch({
+              data: {
+                [`__pairing_${pendingPairingId}_paired_at`]:
+                  new Date().toISOString(),
+                __pending_pairing_id: undefined,
+                __pending_pairing_auth_dir: undefined
+              }
+            })
+          } else {
+            await api.state.patch({
+              data: { whatsapp_paired_at: new Date().toISOString() }
+            })
+          }
         } else if (s.startsWith('failed:')) {
           setPhase('failed')
           setError(`Pairing failed (${s.slice('failed:'.length)})`)

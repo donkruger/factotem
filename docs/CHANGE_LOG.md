@@ -4,6 +4,242 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ---
 
+## 2026-05-15
+
+### v1.2.1 — finishing the multi-agent surface (PR 12)
+
+Closes the three carry-overs from the multi-agent / multi-provider
+work shipped on 2026-05-14. Spec lives at
+[`docs/implementation/v1.2.1-finish-blueprint.md`](implementation/v1.2.1-finish-blueprint.md).
+No schema changes, no breaking changes — v1.2 deployments upgrade in
+place.
+
+**§ 2 — Per-agent WhatsApp pairing in the wizard.** Add-agent runs
+now route through a new `PairingChoiceStep` between Credentials and
+Mounts. Two radio cards: *Use the shared pairing* (recommended,
+pre-selected — the new agent's `channel_pairing_id` points at the
+deployment default; operators address it by `@<name>` in groups) and
+*Pair a new WhatsApp number* (POSTs `/api/pairings`, jumps into the
+QR step against the per-pairing auth dir, leaves the shared pairing's
+`creds.json` untouched). First-run installs auto-advance past this
+step and see no new chrome. The auth script `src/whatsapp-auth.ts`
+now honours `NANOCLAW_AUTH_DIR` + `NANOCLAW_PAIRING_ID` env vars;
+absent = byte-identical v1.0 behaviour. New thin IPC service
+`cli/claw-setup-gui/src/main/services/pairings.ts` wraps
+`/api/pairings` (list + create) + `PATCH /api/agents/:id` for the
+pairing assignment.
+
+**§ 3 — Queue-wait telemetry.** `agent_turns` rows now carry
+`queue_wait_ms` (ms a message waited in the per-group FIFO before
+container spawn) and `concurrent_at_spawn` (count of containers
+already running when this turn acquired its slot). Capture happens
+inside `GroupQueue` via a `pendingSince` field set when work goes
+onto the pending list and a `consumeQueueWait()` read-and-clear from
+the spawn site — no signature changes through `runAgent` or the
+container-runner. `getActiveCount()` exposes the live count to the
+same call site. `/health.docker.max_concurrent` now surfaces the
+orchestrator's `MAX_CONCURRENT_CONTAINERS` cap so the dashboard can
+contextualise observed concurrency. Surfaced in the dashboard's
+`ActivityRow` detail panel under Timing.
+
+**§ 4 — OneCLI orphan-credential cleanup.** New
+`DELETE /api/credentials/:name` shell-outs to `onecli secrets delete`
+behind a defensive TOCTOU re-check that no agent still references the
+credential (returns 409 if so). Audit row written with
+`credentials.delete` (0ms reversibility — destructive). Dashboard
+gains an `OrphanCredentialsBanner` polled every 30s on the `/agents`
+page; each row gates removal behind a reusable `TypedConfirmModal`
+(operator types the credential name verbatim — same idiom as
+Doctor's Repair Stack). sessionStorage dismissal keeps the banner
+quiet once acknowledged. New `danger` variant on the dashboard
+`Button` component for destructive primary actions.
+
+Cross-package typecheck clean (orchestrator, dashboard, GUI wizard,
+CLI wizard, OAI runner). `docs/implementation/gemini-acceptance.md`
+moves the three items from the "deferred" footer to a struck-through
+"landed" line.
+
+---
+
+## 2026-05-14 (later)
+
+### Gemini blueprint shipped — multi-agent, multi-provider NanoClaw
+
+Implements the seven-PR Gemini blueprint
+([`docs/implementation/gemini-blueprint.md`](implementation/gemini-blueprint.md))
+end-to-end against the architectural contract in
+[`docs/PROVIDER_PLAYBOOK.md`](PROVIDER_PLAYBOOK.md). Net effect: a
+NanoClaw deployment can now run multiple named agents on different
+providers from the same machine, with the operator's mental model
+("Andy is my Claude agent, Ben is my Gemini agent") preserved through
+every surface.
+
+**PR 1 — Agent-first data model.** New `agents` table (`src/db.ts`)
+with `agent_id` FK on `registered_groups` and `sessions`. The first
+orchestrator run on a v1/v2 install synthesises one default agent from
+the existing `ASSISTANT_NAME` + `provider_default` so the migration is
+invisible. CRUD helpers in `src/agents.ts`. Setup-state schema bumped
+to v3 in `cli/claw-setup/src/state.ts` and mirrored in
+`cli/claw-setup-gui/src/main/services/state-store.ts`.
+
+**PR 2 — OAI container + providers.json registry.**
+`container/oai/` ships `nanoclaw-agent-oai` — one image for every
+OpenAI-compatible provider (Gemini, OpenAI, OpenRouter, Together, Groq,
+Ollama, vLLM). The `openai` Node SDK is pointed at the provider's
+compat endpoint via `PROVIDER_BASE_URL`; OneCLI injects credentials on
+the way out for cloud providers, local providers skip OneCLI entirely.
+SSE streaming (`STREAM_MODE=sse`) emits the event taxonomy from
+PROVIDER_PLAYBOOK § 4.5. Provider registry at `setup/providers.json`
+is the single source of truth read by the orchestrator
+(`src/providers-registry.ts`) and the wizard
+(`setup/onecli-providers.ts`).
+
+**PR 3 — Wizard refactor.** GUI `OneCLIStep.tsx` replaced by two
+data-driven steps: `ProviderStep.tsx` (card picker from the registry)
+and `CredentialsStep.tsx` (branches on `auth_kind`). CLI mirror at
+`cli/claw-setup/src/steps/03a-provider.ts` + `03b-credentials.ts`.
+WelcomeStep gains a model-agnosticism tagline and an H.5 re-entry
+branch: when state already has at least one agent, it offers *"Add
+another agent on a different provider, or reconfigure?"* with a
+deep-link straight to provider selection. In add-mode the steps
+append a new non-default agent instead of overwriting the default.
+
+**PR 4 — Multi-agent dispatch + dashboard agents-first nav.**
+`src/index.ts`'s inbound message handler scans for any agent's
+`default_trigger` prefix. A match overrides the group's assigned agent
+for that turn — `@Andy hi` and `@Ben hi` in the same group dispatch to
+different containers. New endpoints `GET /api/agents`,
+`GET /api/agents/:id`, plus `GET /api/groups` extended to join the
+resolved provider. Dashboard `/agents` page becomes the agent-first
+landing route. `GroupListTable` gains an Agent column and the
+per-group provider chip (Phase E.1). Nine new unit tests for
+`resolveAgentByTrigger`: case-insensitivity, word boundaries
+(`@Bender` doesn't match `@Ben`), leading whitespace, etc.
+
+**PR 5 — ModelSwitchModal.** Per-agent detail page at
+`/agents/[id]`. The **Switch model** primary CTA opens a three-screen
+modal: target picker → capability diff (gains/losses highlighted with
+banners for caching-required features) → optional sandboxed test.
+Commit hits `POST /api/agents/:id/provider`, writes a `provider.switch`
+audit entry, reversible for 5 minutes. Post-switch banner persists
+until first successful exchange. Sandboxed-test backend ships as a
+stub in this release; real throwaway-container spawn lands in a
+follow-up PR.
+
+**PR 6 — Error diagnosis.** New `/errors` dashboard page reads
+`/api/turns?outcome=error`, groups by `error_class`, surfaces
+operator-readable diagnosis copy + recovery affordance per
+PROVIDER_PLAYBOOK § 7.5. Seven mapped classes: `auth.invalid_key`,
+`auth.expired_key`, `quota.rate_limited`, `quota.over_budget`,
+`model.not_found`, `provider.unreachable`, `container.crash`.
+Per-provider key-dashboard URLs and status-page URLs hand the
+operator the exact recovery destination. `AgentDetailView` gains a
+recent-errors mini-panel. Transient classes get a muted "Transient"
+pill so operators don't panic on rate-limit blips.
+
+**PR 7 — Documentation + live registry endpoint.**
+[`docs/providers/gemini.md`](providers/gemini.md) is the operator-
+facing guide. [`docs/implementation/gemini-acceptance.md`](implementation/gemini-acceptance.md)
+is the runnable acceptance suite, ticked through CI-runnable
+(typecheck, lint, unit tests) and Don's-Mac-only (Docker, real Gemini
+key, multi-agent dispatch). `GET /api/providers` makes the registry
+live; the dashboard's `getProviderRegistry()` switches from bundled
+fallback to real fetch (the bundle stays as last-resort defence).
+Error-recovery intents wired through a global listener in `AppShell` —
+`switch-model` deep-links to `/agents/<id>`, other intents have
+sensible fallbacks until their target flows ship.
+
+**Forward-compatibility ledger from blueprint § 10.5 — landed:**
+- `agents` table is the primary entity, FK from groups + sessions ✓
+- `agents.parent_agent_id` nullable FK reserved for sub-agents ✓
+- `agents.memory_namespace` path-shaped for tree rendering ✓
+- Container env carries `AGENT_ID`, `ASSISTANT_NAME`, `MEMORY_PATH`,
+  reserved `PARENT_AGENT_ID` ✓
+- Container emits SSE event taxonomy in stream mode ✓
+- Session schema gains `kind ∈ {group, dashboard-cli, sandboxed-test}`
+  + `agent_id` FK ✓
+- `provider.switch` and `agent.test_message` AuditAction classes ✓
+
+**Deferred from blueprint (documented in
+[gemini-acceptance.md](implementation/gemini-acceptance.md) §
+"explicitly deferred"):**
+- Real sandboxed-test backend — currently stubbed; the modal Screen C
+  surfaces this with a notice.
+- `agent_id` column on `agent_turns` for cleaner error attribution.
+- Streaming SSE end-to-end (container emits events; orchestrator
+  forwarding layer + dashboard progressive renderer don't exist yet —
+  unblocks the embedded chat surface in § 11.1).
+- The OAI container's `auth.expired_key` distinction (currently rolls
+  up into `auth.invalid_key` because Gemini doesn't surface a separate
+  401 sub-class).
+
+**Operator impact on a v1.0 install:**
+- First-time install on a clean machine: identical to v1.0 except the
+  setup wizard now shows a provider picker between EnvCheck and Mounts.
+- Existing v1.0 deployment upgrading: zero behaviour change. The
+  schema migration synthesises one default agent from the existing
+  assistant; the orchestrator resolves provider through the new chain
+  but lands on Anthropic + the operator's existing model.
+
+---
+
+## 2026-05-14
+
+### NanoClaw Setup GUI wizard — Electron installer + dashboard integration
+
+Ships a signed + notarised Electron installer at `cli/claw-setup-gui/` that
+walks the same twelve-step setup the CLI wizard does, then hands off into
+the Factotem dashboard inside the same window. On every subsequent launch
+the GUI probes `/health`, resolves a dashboard URL (orchestrator-served at
+:7842 first, `next dev -p 3001` fallback), and — if both succeed — loads
+the dashboard directly without ever showing wizard chrome. The operator
+sees the wizard exactly once.
+
+**Architecture (no logic duplication).** The GUI is a thin React + Electron
+shell around the existing setup primitives in `setup/*.ts`. Both wizards
+share `~/.config/nanoclaw/setup-state.json` (state file) and the same
+canonical step-execution logic — see [`docs/ui-ux-direction.md`](ui-ux-direction.md)
+for the three-surface architecture (CLI wizard, GUI wizard, dashboard) and
+the hand-off rules. The dashboard's `AppShell` adds a `⚙︎ Setup` pill in the
+top-right when running inside Electron; the `WhatsAppCard` adds a
+"Re-pair this device →" link when `whatsapp.authenticated` is false. Both
+deep-link back to the relevant wizard step via a new `wizard:open(stepHint?)`
+IPC channel + a URL-hash navigation contract.
+
+**Bug fix in `src/http/health.ts` (`probeWhatsApp`).** The probe used to
+read `store/auth-status.txt` — a *transient* file the auth script writes
+during pairing and never updates afterward. Once the file went stale, the
+dashboard reported "Not paired" even while the agent was responding in
+WhatsApp. The probe now uses `store/auth/creds.json` existence as the
+primary signal (Baileys writes it on successful pair and reads it on every
+connection — its presence is what makes the agent actually responsive).
+`auth-status.txt` is kept as a defence-in-depth fallback.
+
+**New release pipeline at `.github/workflows/release-wizard.yml`.** Triggers
+on `wizard-v*` tag push (separate namespace from the Doctor's `v*` tags),
+single `macos-14` job that builds + signs + notarises the DMG and publishes
+to `RichardBNel/Factotem` via `MIRROR_REPO_TOKEN`. Reuses the existing
+`APPLE_CERT_BASE64` / `APPLE_CERT_PASSWORD` / `APPLE_PASSWORD` / `APPLE_ID` /
+`APPLE_TEAM_ID` secrets from the Doctor pipeline — no new secrets required.
+The workflow's stable always-latest URL:
+`https://github.com/RichardBNel/Factotem/releases/latest/download/nanoclaw-setup.dmg`.
+
+**Docs.** Added [`docs/ui-ux-direction.md`](ui-ux-direction.md) as the
+canonical reference for the three operator surfaces + design tokens +
+hand-off rules. Updated `README.md`, `docs/DEPLOYMENT_CONVENTIONS.md`,
+`docs/SETUP_WIZARD.md`, `docs/RELEASES.md`, `docs/ARCHITECTURE.md`, and the
+root `CLAUDE.md` to reflect the GUI wizard as a first-class surface
+alongside the CLI wizard, the dashboard, and the Doctor.
+
+**Files.** `cli/claw-setup-gui/` (new package, ~30 source files);
+`.github/workflows/release-wizard.yml` (new); `dashboard/src/lib/electron.ts`,
+`dashboard/src/components/layout/AppShell.tsx`,
+`dashboard/src/components/panels/cards/WhatsAppCard.tsx` (dashboard
+wizard-bridge); `src/http/health.ts` (`probeWhatsApp` fix);
+`docs/ui-ux-direction.md` (new); README + five docs updated.
+
+---
+
 ## 2026-05-08
 
 ### Phase 3 / Doctor v0.1.12 — fix curl-pipe stdin EOF that silently cancelled the wizard

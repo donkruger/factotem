@@ -50,10 +50,16 @@ export async function resolveDashboardUrl(): Promise<string | null> {
 }
 
 // In-window navigation. Loads the resolved dashboard URL into the
-// currently-focused (or first) BrowserWindow. Returns false if no
-// dashboard is reachable so the caller can surface a helpful message
-// instead of a blank "site can't be reached" page.
-export async function loadDashboardInWindow(): Promise<{
+// provided BrowserWindow (or the focused / first window if none is
+// passed). Returns {success:false, error} if no dashboard is reachable
+// so the caller can surface a helpful message instead of a blank
+// "site can't be reached" page.
+//
+// Pass the explicit `targetWin` from `index.ts` whenever the dashboard
+// surface needs to live in a freshly-created BrowserWindow (different
+// title-bar style from the wizard). Relying on `getFocusedWindow()`
+// is racy right after a window swap because focus is asynchronous.
+export async function loadDashboardInWindow(targetWin?: BrowserWindow): Promise<{
   success: boolean
   url?: string
   error?: string
@@ -68,7 +74,8 @@ export async function loadDashboardInWindow(): Promise<{
         'or run `npm run dev` inside the dashboard package for hot-reload.'
     }
   }
-  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  const win =
+    targetWin ?? BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
   if (!win) {
     return { success: false, error: 'No window to load into.' }
   }

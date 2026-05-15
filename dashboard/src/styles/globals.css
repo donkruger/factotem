@@ -30,3 +30,41 @@ html, body {
   font-family: var(--font-sans);
   transition: background-color var(--duration-state) var(--ease-apple), color var(--duration-state) var(--ease-apple);
 }
+
+/*
+ * Cursor handling for interactive elements.
+ *
+ * Tailwind v4's preflight strips the browser-default `cursor: pointer`
+ * on <button> elements. Without this, every CTA in the dashboard shows
+ * an arrow cursor on hover — operators read that as "this isn't
+ * clickable." Restore the finger pointer on every interactive surface.
+ * Disabled / aria-disabled elements keep their `not-allowed` cursor
+ * because we exclude them here.
+ *
+ * Mirrored in cli/claw-setup-gui/src/renderer/src/assets/main.css —
+ * keep in sync.
+ */
+button:not(:disabled),
+[role='button']:not([aria-disabled='true']),
+a[href],
+label[for],
+summary,
+select:not(:disabled) {
+  cursor: pointer;
+}
+
+input[type='text'],
+input[type='password'],
+input[type='email'],
+input[type='url'],
+input[type='search'],
+input[type='number'],
+textarea {
+  cursor: text;
+}
+
+input[type='checkbox']:not(:disabled),
+input[type='radio']:not(:disabled),
+input[type='range']:not(:disabled) {
+  cursor: pointer;
+}

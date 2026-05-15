@@ -37,6 +37,14 @@ import {
   RegisteredGroup,
 } from '../types.js';
 import { secureAuthDir } from './auth-permissions.js';
+import {
+  type ChannelPairing,
+  getDefaultPairing,
+  getPairingForChat,
+  listPairingsForKind,
+  recordChatPairing,
+  recordPairingConnected,
+} from './pairings.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -60,10 +68,36 @@ export interface WhatsAppChannelOpts {
   // below succeeds on the SAME event. Synchronous so re-fetching
   // registeredGroups() afterward sees any new registration.
   tryAutoRegister?: (chatJid: string) => void;
+  /**
+   * The pairing this channel instance represents. The deployment may
+   * run several `WhatsAppChannel`s simultaneously, one per pairing —
+   * each with its own auth directory and Baileys session. Optional
+   * for backward compatibility with code paths that haven't been
+   * updated yet; defaults to the kind's shared pairing.
+   *
+   * See multi-agent-completion-blueprint § 4.1.
+   */
+  pairing?: ChannelPairing;
 }
 
 export class WhatsAppChannel implements Channel {
-  name = 'whatsapp';
+  /**
+   * Channel name is `whatsapp:<pairing_id>`. The deployment can have
+   * multiple WhatsApp channels coexisting — one per pairing. The
+   * legacy single-channel deployment's pairing id is `whatsapp-shared`
+   * (synthesised on migration), so the name resolves to
+   * `whatsapp:whatsapp-shared` after upgrade. Routers that match on
+   * channel name use the full `whatsapp:<id>` form; routers that just
+   * branch on channel kind can split on the `:` prefix.
+   */
+  name: string;
+
+  /** Pairing id this channel instance owns. */
+  private pairingId: string;
+  /** Operator-facing label, surfaced in `/health` + dashboard. */
+  private displayName: string;
+  /** Filesystem path where Baileys writes this pairing's creds. */
+  private authPath: string;
 
   private sock!: WASocket;
   private connected = false;
@@ -80,6 +114,25 @@ export class WhatsAppChannel implements Channel {
 
   constructor(opts: WhatsAppChannelOpts) {
     this.opts = opts;
+    // Resolve the pairing for this instance. Explicit pairing wins;
+    // otherwise read the deployment's shared WhatsApp pairing (which
+    // the migration synthesised from store/auth/ on first boot).
+    const resolved =
+      opts.pairing ?? getDefaultPairing('whatsapp') ?? null;
+    if (resolved) {
+      this.pairingId = resolved.id;
+      this.displayName = resolved.display_name;
+      this.authPath = resolved.auth_path;
+    } else {
+      // Fallback for the genuine first-boot case where the migration
+      // hasn't run yet (pre-v1.2.1 install): use the legacy hardcoded
+      // path so existing operators don't see a re-pair prompt. The
+      // pairing row gets synthesised on the next orchestrator start.
+      this.pairingId = 'whatsapp-shared';
+      this.displayName = 'Shared WhatsApp';
+      this.authPath = path.join(STORE_DIR, 'auth');
+    }
+    this.name = `whatsapp:${this.pairingId}`;
   }
 
   async connect(): Promise<void> {
@@ -89,7 +142,12 @@ export class WhatsAppChannel implements Channel {
   }
 
   private async connectInternal(onFirstOpen?: () => void): Promise<void> {
-    const authDir = path.join(STORE_DIR, 'auth');
+    // Per-pairing auth directory. The shared (legacy) pairing reuses
+    // `store/auth/`; new pairings get their own isolated dirs (e.g.
+    // `store/auth-whatsapp-ben/`). This is the single change that
+    // makes multi-WhatsApp possible — Baileys reads/writes credentials
+    // and session keys from this directory exclusively.
+    const authDir = this.authPath;
     fs.mkdirSync(authDir, { recursive: true });
 
     // Tighten auth file permissions to 0o600 (initial walk + fs.watch).
@@ -166,7 +224,11 @@ export class WhatsAppChannel implements Channel {
         }
       } else if (connection === 'open') {
         this.connected = true;
-        logger.info('Connected to WhatsApp');
+        recordPairingConnected(this.pairingId);
+        logger.info(
+          { pairingId: this.pairingId, displayName: this.displayName },
+          'Connected to WhatsApp',
+        );
 
         // Announce availability so WhatsApp relays subsequent presence updates (typing indicators)
         this.sock.sendPresenceUpdate('available').catch((err) => {
@@ -253,6 +315,14 @@ export class WhatsAppChannel implements Channel {
             'whatsapp',
             isGroup,
           );
+
+          // Multi-pairing arbitration: stamp the chat's pairing_id
+          // so subsequent inbound + outbound routes through this
+          // pairing's channel instance. Idempotent — repeated
+          // inbounds re-confirm the binding without overwriting it
+          // with a different pairing. See
+          // multi-agent-completion-blueprint § 4.1.
+          recordChatPairing(chatJid, this.pairingId);
 
           // Only deliver full message for registered groups.
           // Give the orchestrator a chance to auto-register first
@@ -491,8 +561,46 @@ export class WhatsAppChannel implements Channel {
     return this.connected;
   }
 
+  /**
+   * Pairing id surfaced to the router. Used to disambiguate when
+   * multiple WhatsApp channels are running — the router looks up the
+   * chat's recorded `pairing_id` and matches against this getter.
+   */
+  getPairingId(): string {
+    return this.pairingId;
+  }
+
+  /** Display label for `/health` and dashboard. */
+  getDisplayName(): string {
+    return this.displayName;
+  }
+
   ownsJid(jid: string): boolean {
-    return jid.endsWith('@g.us') || jid.endsWith('@s.whatsapp.net');
+    // Pre-flight JID-shape check — only WhatsApp-shaped JIDs ever
+    // match. Telegram / Slack / Discord channels return false here.
+    if (!jid.endsWith('@g.us') && !jid.endsWith('@s.whatsapp.net')) {
+      return false;
+    }
+    // Single-pairing deployment (the v1.0 / v1.2 default): no
+    // ambiguity, this channel owns every WhatsApp JID.
+    const pairings = listPairingsForKind('whatsapp');
+    if (pairings.length <= 1) return true;
+
+    // Multi-pairing deployment: only the channel whose pairing
+    // matches the chat's recorded pairing owns the JID. The chat row
+    // is stamped by the inbound handler on first message (see
+    // recordChatPairing below). For brand-new JIDs that haven't been
+    // stamped yet, the shared pairing claims ownership so the
+    // existing v1.0 routing path keeps working.
+    const chatPairing = getPairingForChat(jid);
+    if (chatPairing) {
+      return chatPairing.id === this.pairingId;
+    }
+    // Unknown JID — only the shared pairing claims it. This prevents
+    // a non-shared pairing from receiving inbound for a JID it
+    // wasn't paired with.
+    const shared = getDefaultPairing('whatsapp');
+    return shared?.id === this.pairingId;
   }
 
   async disconnect(): Promise<void> {
@@ -622,4 +730,23 @@ export class WhatsAppChannel implements Channel {
   }
 }
 
-registerChannel('whatsapp', (opts: ChannelOpts) => new WhatsAppChannel(opts));
+registerChannel('whatsapp', (opts: ChannelOpts) => {
+  // Multi-agent-completion-blueprint § 4.1: per-pairing instantiation.
+  // The factory returns one WhatsAppChannel per row in
+  // channel_pairings (one for v1.0 deployments, more once operators
+  // add per-agent pairings via the wizard's H.5 flow). The boot loop
+  // normalises the array via normaliseFactoryResult.
+  //
+  // First-boot fallback: if the migration hasn't created the
+  // whatsapp-shared row yet (extremely rare — only on a brand-new DB
+  // before init), instantiate one channel with no pairing arg. The
+  // channel falls back to the legacy `store/auth/` path so the
+  // operator's existing creds keep working.
+  const pairings = listPairingsForKind('whatsapp');
+  if (pairings.length === 0) {
+    return new WhatsAppChannel(opts);
+  }
+  return pairings.map(
+    (pairing) => new WhatsAppChannel({ ...opts, pairing }),
+  );
+});

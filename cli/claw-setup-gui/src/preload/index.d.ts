@@ -1,11 +1,14 @@
 import type { ElectronAPI as ToolkitElectronAPI } from '@electron-toolkit/preload'
 import type {
+  CreateCredentialResult,
   EnvCheckResult,
   HealthSummary,
   MountAllowlist,
   OneCLIProbe,
+  ProbeKeyResult,
   ProfileWriteInput,
   ProfileWriteResult,
+  ProviderRegistry,
   ServiceInstallResult,
   SetupState
 } from '../shared/types'
@@ -83,6 +86,19 @@ interface ElectronAPI {
       secretValue: string
     ) => Promise<{ success: boolean; error?: string }>
   }
+  providers: {
+    list: (orchestratorRoot?: string | null) => Promise<ProviderRegistry>
+    probeKey: (
+      protocol: string,
+      apiKey: string,
+      orchestratorRoot?: string | null
+    ) => Promise<ProbeKeyResult>
+    createCredential: (
+      protocol: string,
+      apiKey: string,
+      orchestratorRoot?: string | null
+    ) => Promise<CreateCredentialResult>
+  }
   service: {
     status: () => Promise<boolean>
     install: (orchestratorRoot: string) => Promise<ServiceInstallResult>
@@ -112,6 +128,46 @@ interface ElectronAPI {
       error?: string
     }>
   }
+  pairings: {
+    list: () => Promise<{
+      pairings: Array<{
+        id: string
+        kind: string
+        display_name: string
+        auth_path: string
+        is_shared: boolean
+        phone_hint: string | null
+        last_connected_at: string | null
+        created_at: string
+      }>
+      error?: string
+    }>
+    create: (input: {
+      id?: string
+      kind: string
+      display_name: string
+      auth_path?: string
+      is_shared?: boolean
+      phone_hint?: string | null
+    }) => Promise<{
+      success: boolean
+      pairing?: {
+        id: string
+        kind: string
+        display_name: string
+        auth_path: string
+        is_shared: boolean
+        phone_hint: string | null
+        last_connected_at: string | null
+        created_at: string
+      }
+      error?: string
+    }>
+    assignAgent: (
+      agentId: string,
+      pairingId: string
+    ) => Promise<{ success: boolean; error?: string }>
+  }
   register: {
     listGroups: (
       orchestratorRoot: string
@@ -129,7 +185,10 @@ interface ElectronAPI {
     ) => Promise<{ success: boolean; sighup: boolean; error?: string }>
   }
   whatsapp: {
-    start: (orchestratorRoot: string) => Promise<{
+    start: (
+      orchestratorRoot: string,
+      opts?: { pairingId?: string; authDir?: string }
+    ) => Promise<{
       runId: string
       qrPath: string
       statusPath: string

@@ -102,11 +102,41 @@ export interface StartResult {
   credsPath: string
 }
 
-export function startWhatsAppAuth(orchestratorRoot: string): StartResult {
+/**
+ * Optional per-pairing arguments (v1.2.1-finish-blueprint § 2). When
+ * absent, the function behaves byte-identically to v1.0: pair the
+ * deployment's shared WhatsApp account into `store/auth/`. When set,
+ * the auth script's NANOCLAW_AUTH_DIR + NANOCLAW_PAIRING_ID env vars
+ * route to a per-pairing auth directory and suffixed hand-off files
+ * so multiple concurrent pair runs (rare but possible) don't
+ * collide.
+ */
+export interface WhatsAppAuthOpts {
+  /** Pairing id — suffixes the QR + status hand-off files. */
+  pairingId?: string
+  /**
+   * Absolute auth directory. The auth script writes Baileys
+   * creds.json here. When omitted, falls back to `store/auth/`
+   * relative to orchestratorRoot.
+   */
+  authDir?: string
+}
+
+export function startWhatsAppAuth(
+  orchestratorRoot: string,
+  opts: WhatsAppAuthOpts = {}
+): StartResult {
   const runId = randomUUID()
-  const qrPath = path.join(orchestratorRoot, 'store', 'qr-data.txt')
-  const statusPath = path.join(orchestratorRoot, 'store', 'auth-status.txt')
-  const credsPath = path.join(orchestratorRoot, 'store', 'auth', 'creds.json')
+  const suffix = opts.pairingId ? `-${opts.pairingId}` : ''
+  const qrPath = path.join(orchestratorRoot, 'store', `qr-data${suffix}.txt`)
+  const statusPath = path.join(
+    orchestratorRoot,
+    'store',
+    `auth-status${suffix}.txt`
+  )
+  const authDir =
+    opts.authDir ?? path.join(orchestratorRoot, 'store', 'auth')
+  const credsPath = path.join(authDir, 'creds.json')
 
   // Clean up stale files from previous runs so polling doesn't
   // immediately emit a leftover authenticated/QR.
@@ -118,9 +148,18 @@ export function startWhatsAppAuth(orchestratorRoot: string): StartResult {
     }
   }
 
+  // Pass per-pairing context to the auth script via env. Absent vars
+  // = legacy behaviour (the script falls back to ./store/auth/ +
+  // unsuffixed hand-off files).
+  const env: NodeJS.ProcessEnv = {
+    ...envWithPath(),
+    ...(opts.pairingId ? { NANOCLAW_PAIRING_ID: opts.pairingId } : {}),
+    ...(opts.authDir ? { NANOCLAW_AUTH_DIR: opts.authDir } : {})
+  }
+
   const child = spawn('npx', ['tsx', 'src/whatsapp-auth.ts'], {
     cwd: orchestratorRoot,
-    env: envWithPath(),
+    env,
     shell: false
   })
 

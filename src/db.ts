@@ -148,6 +148,53 @@ function createSchema(database: Database.Database): void {
       reversible_until TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);
+
+    -- Agent registry. Gemini blueprint PR 1 (Phase H.1) — agents are the
+    -- primary entity an operator manages; groups belong to agents. See
+    -- docs/PROVIDER_PLAYBOOK.md § 0 (Taxonomy) and § 5.2 (Database schema).
+    -- A single-agent deployment (the v1.0 default) has exactly one row
+    -- here, synthesised on first orchestrator startup from the existing
+    -- ASSISTANT_NAME / provider_default in setup-state.json.
+    CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      persona TEXT,
+      provider_protocol TEXT NOT NULL,
+      provider_model TEXT NOT NULL,
+      provider_base_url TEXT,
+      credential_id TEXT,
+      memory_namespace TEXT NOT NULL,
+      default_trigger TEXT NOT NULL,
+      parent_agent_id TEXT REFERENCES agents(id),
+      is_default INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agents_parent ON agents(parent_agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agents_default ON agents(is_default DESC);
+
+    -- Channel pairings (multi-agent-completion blueprint § 4.1).
+    -- Each row represents one external messaging connection — for
+    -- WhatsApp, one Baileys auth state directory; for Telegram, one
+    -- bot token; etc. Agents may share a pairing (the v1.0 default)
+    -- or each carry their own (operator opt-in).
+    --
+    -- The deployment always has at least one row called
+    -- 'whatsapp-shared' synthesised from the legacy store/auth/
+    -- directory on v1.0 / v1.2 upgrade. Every chat and agent points
+    -- at it by default, so the operator's existing behaviour is
+    -- preserved byte-for-byte.
+    CREATE TABLE IF NOT EXISTS channel_pairings (
+      id              TEXT PRIMARY KEY,
+      kind            TEXT NOT NULL,
+      display_name    TEXT NOT NULL,
+      auth_path       TEXT NOT NULL,
+      is_shared       INTEGER NOT NULL DEFAULT 0,
+      phone_hint      TEXT,
+      last_connected_at TEXT,
+      created_at      TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_channel_pairings_kind ON channel_pairings(kind);
+    CREATE INDEX IF NOT EXISTS idx_channel_pairings_shared ON channel_pairings(is_shared DESC);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -212,6 +259,336 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* columns already exist */
   }
+
+  // Gemini blueprint PR 1 — Phase H.1: agent_id FK migration on
+  // registered_groups and sessions. Backfill existing rows to the default
+  // agent so a v1/v2 → v3 upgrade is invisible to the operator.
+  // See docs/PROVIDER_PLAYBOOK.md § 10 (Migration from Anthropic-only).
+
+  // Add agent_id column to registered_groups
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN agent_id TEXT REFERENCES agents(id)`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `CREATE INDEX IF NOT EXISTS idx_registered_groups_agent ON registered_groups(agent_id)`,
+    );
+  } catch {
+    /* index already exists */
+  }
+
+  // Add agent_id column to sessions
+  try {
+    database.exec(
+      `ALTER TABLE sessions ADD COLUMN agent_id TEXT REFERENCES agents(id)`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id)`,
+    );
+  } catch {
+    /* index already exists */
+  }
+
+  // Multi-agent completion blueprint § 3.2 — responder attribution.
+  // Records which agent actually answered a given turn. Differs from
+  // the group's `agent_id` when a per-message @trigger overrode the
+  // group's assigned agent (e.g. @Ben replying in Andy's group).
+  // Nullable + backfilled to NULL: old turns fall through to the
+  // group's agent via COALESCE in the cost-rollup queries.
+  try {
+    database.exec(
+      `ALTER TABLE agent_turns ADD COLUMN responder_agent_id TEXT REFERENCES agents(id)`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `CREATE INDEX IF NOT EXISTS idx_agent_turns_responder ON agent_turns(responder_agent_id, started_at DESC)`,
+    );
+  } catch {
+    /* index already exists */
+  }
+
+  // Multi-agent completion blueprint § 5.2 — concurrency telemetry.
+  // queue_wait_ms: how long a turn sat in the per-group FIFO before
+  // spawning. concurrent_at_spawn: how many containers were already
+  // running when this one spawned. Both nullable — older rows
+  // (pre-v1.2.1) have NULL; the *measurement* wiring in
+  // group-queue.ts is a follow-up PR. The schema lands here so the
+  // future PR is a small append-to-insert change rather than a
+  // schema migration on top of a hot table.
+  try {
+    database.exec(
+      `ALTER TABLE agent_turns ADD COLUMN queue_wait_ms INTEGER`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE agent_turns ADD COLUMN concurrent_at_spawn INTEGER`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Multi-agent completion blueprint § 5.3 — per-agent mount allowlist
+  // override. JSON-shaped (mirrors MountAllowlist from src/types.ts).
+  // NULL = inherit the deployment-wide allowlist (the v1.0/v1.2
+  // default). When set, the orchestrator intersects with the
+  // deployment allowlist before mounting — per-agent can narrow but
+  // never broaden.
+  try {
+    database.exec(
+      `ALTER TABLE agents ADD COLUMN mount_allowlist_override TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Multi-agent-completion-blueprint § 4.2 — per-agent daily budget cap.
+  // Cents per day. NULL = unbounded (the v1.0 / v1.2 default). When
+  // set, the orchestrator's pre-spawn gate denies turns once the
+  // agent's spend for the day exceeds this value. Independent from
+  // the group-level open-DM budget; both apply (either trips).
+  try {
+    database.exec(
+      `ALTER TABLE agents ADD COLUMN daily_budget_cents INTEGER`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Per-agent spend rollup. Atomic INCR on each successful turn so a
+  // burst of concurrent spawns can't double-count. Date keyed
+  // YYYY-MM-DD (UTC) — same convention as open_spend_log.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS agent_spend_log (
+      date       TEXT NOT NULL,
+      agent_id   TEXT NOT NULL REFERENCES agents(id),
+      cents      INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (date, agent_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_spend_date ON agent_spend_log(date DESC);
+  `);
+
+  // Multi-agent completion blueprint § 4.1 — channel pairing FKs.
+  // chats.pairing_id records which pairing the chat was first seen
+  // on; outbound replies route to the channel whose pairing matches.
+  // agents.channel_pairing_id records the agent's preferred pairing
+  // for agent-initiated outbound (scheduled tasks, etc.) — the
+  // common case is "agent uses whichever pairing its chat is on,"
+  // but agent-initiated traffic needs a default.
+  try {
+    database.exec(
+      `ALTER TABLE chats ADD COLUMN pairing_id TEXT REFERENCES channel_pairings(id)`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `CREATE INDEX IF NOT EXISTS idx_chats_pairing ON chats(pairing_id)`,
+    );
+  } catch {
+    /* index already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE agents ADD COLUMN channel_pairing_id TEXT REFERENCES channel_pairings(id)`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `CREATE INDEX IF NOT EXISTS idx_agents_pairing ON agents(channel_pairing_id)`,
+    );
+  } catch {
+    /* index already exists */
+  }
+
+  // Synthesise the shared WhatsApp pairing on first run. On v1.0 /
+  // v1.2 installs, store/auth/creds.json already exists — we point
+  // the synthesised pairing at the same directory. Operators
+  // continue using the existing WhatsApp account with no
+  // re-pairing needed. After the synthesis, every existing chat
+  // gets its pairing_id backfilled to 'whatsapp-shared'; every
+  // existing agent gets channel_pairing_id pointing there too.
+  const existingPairingCount = (
+    database
+      .prepare(`SELECT COUNT(*) AS n FROM channel_pairings`)
+      .get() as { n: number }
+  ).n;
+  if (existingPairingCount === 0) {
+    const sharedPairingId = 'whatsapp-shared';
+    const authPath = path.join(STORE_DIR, 'auth');
+    database
+      .prepare(
+        `INSERT INTO channel_pairings
+           (id, kind, display_name, auth_path, is_shared, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        sharedPairingId,
+        'whatsapp',
+        'Shared WhatsApp',
+        authPath,
+        1,
+        new Date().toISOString(),
+      );
+    logger.info(
+      { pairingId: sharedPairingId, authPath },
+      'Synthesised whatsapp-shared pairing from existing store/auth',
+    );
+  }
+
+  // Backfill any chats / agents that don't yet have a pairing_id.
+  // Picks the deployment's first shared pairing (the synthesised
+  // whatsapp-shared on v1.0 upgrades).
+  const sharedPairingRow = database
+    .prepare(
+      `SELECT id FROM channel_pairings
+        WHERE kind = 'whatsapp' AND is_shared = 1
+        ORDER BY created_at ASC LIMIT 1`,
+    )
+    .get() as { id: string } | undefined;
+  if (sharedPairingRow) {
+    database
+      .prepare(`UPDATE chats SET pairing_id = ? WHERE pairing_id IS NULL`)
+      .run(sharedPairingRow.id);
+    database
+      .prepare(
+        `UPDATE agents SET channel_pairing_id = ? WHERE channel_pairing_id IS NULL`,
+      )
+      .run(sharedPairingRow.id);
+  }
+
+  // Add kind column to sessions (PROVIDER_PLAYBOOK § 5.4 — session kinds).
+  // Reserved values: 'group' (default), 'dashboard-cli' (future embedded
+  // chat), 'sandboxed-test' (model-switch modal's throwaway tests),
+  // 'agent-to-agent' (future agent swarms — see PROVIDER_PLAYBOOK § 11.3).
+  try {
+    database.exec(
+      `ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'group'`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Synthesise the default agent on first run. The agent's name and
+  // provider come from ASSISTANT_NAME and ANTHROPIC_MODEL (with the
+  // existing claude-opus-4.6 fallback that the Claude container already
+  // uses). The agent's id is the lowercased + slugified assistant name.
+  // Operators on a v1/v2 install see no UX change — they keep their
+  // assistant, they just now have a stable agent_id behind it that the
+  // new dashboard can hang per-agent affordances off.
+  const existingAgentCount = (
+    database.prepare(`SELECT COUNT(*) AS n FROM agents`).get() as { n: number }
+  ).n;
+  if (existingAgentCount === 0) {
+    const defaultAgent = synthesiseDefaultAgent();
+    database
+      .prepare(
+        `INSERT INTO agents
+           (id, name, persona, provider_protocol, provider_model,
+            provider_base_url, credential_id, memory_namespace,
+            default_trigger, parent_agent_id, is_default, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        defaultAgent.id,
+        defaultAgent.name,
+        defaultAgent.persona,
+        defaultAgent.provider.protocol,
+        defaultAgent.provider.model,
+        defaultAgent.provider.base_url,
+        defaultAgent.provider.credential_id,
+        defaultAgent.memory_namespace,
+        defaultAgent.default_trigger,
+        defaultAgent.parent_agent_id,
+        defaultAgent.is_default ? 1 : 0,
+        defaultAgent.created_at,
+      );
+    logger.info(
+      { agent: defaultAgent.id, provider: defaultAgent.provider.protocol },
+      'Synthesised default agent from setup-state',
+    );
+  }
+
+  // Backfill agent_id on any rows that don't have one yet (existing v1/v2
+  // installs upgrading to v3). The first agent in the table is the
+  // default; we just inserted it above when the table was empty.
+  const defaultRow = database
+    .prepare(`SELECT id FROM agents WHERE is_default = 1 LIMIT 1`)
+    .get() as { id: string } | undefined;
+  if (defaultRow) {
+    database
+      .prepare(
+        `UPDATE registered_groups SET agent_id = ? WHERE agent_id IS NULL`,
+      )
+      .run(defaultRow.id);
+    database
+      .prepare(`UPDATE sessions SET agent_id = ? WHERE agent_id IS NULL`)
+      .run(defaultRow.id);
+  }
+}
+
+/**
+ * Build the default agent record from existing single-assistant state.
+ * Used on first run of the v3-aware schema to migrate v1/v2 installs
+ * transparently. See PROVIDER_PLAYBOOK § 10.
+ */
+function synthesiseDefaultAgent(): {
+  id: string;
+  name: string;
+  persona: string;
+  provider: { protocol: string; model: string; base_url: string | null; credential_id: string | null };
+  memory_namespace: string;
+  default_trigger: string;
+  parent_agent_id: string | null;
+  is_default: boolean;
+  created_at: string;
+} {
+  const name = ASSISTANT_NAME || 'Andy';
+  // Slug rules match cli/claw-setup/src/state.ts assistant-name regex:
+  // lowercase the display name, replace non-[a-z0-9-] with '-', collapse
+  // runs of '-', trim leading/trailing '-'.
+  const id =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '') || 'andy';
+  // Provider defaults: the existing Claude install today routes through
+  // claude-opus-4.6 unless ANTHROPIC_MODEL overrides it. Mirror that here
+  // so the synthesised agent reflects the current operator's reality.
+  const model = process.env.ANTHROPIC_MODEL || 'claude-opus-4.6';
+  return {
+    id,
+    name,
+    persona: '',
+    provider: {
+      protocol: 'anthropic',
+      model,
+      base_url: null,
+      credential_id: 'Anthropic',
+    },
+    memory_namespace: `agents/${id}`,
+    default_trigger: `@${name}`,
+    parent_agent_id: null,
+    is_default: true,
+    created_at: new Date().toISOString(),
+  };
 }
 
 export function initDatabase(): void {
@@ -234,6 +611,17 @@ export function _initTestDatabase(): void {
 /** @internal - for tests only. */
 export function _closeDatabase(): void {
   db.close();
+}
+
+/**
+ * @internal Used by sibling modules (e.g. `src/agents.ts`) that need direct
+ * statement access without re-exporting every helper through db.ts. New
+ * callers should prefer adding a named helper here; this getter exists so
+ * domain-specific modules (agents, providers) can encapsulate their own
+ * queries without polluting db.ts with per-domain logic.
+ */
+export function getDb(): Database.Database {
+  return db;
 }
 
 /**
@@ -655,6 +1043,7 @@ export function getRegisteredGroup(
         container_config: string | null;
         requires_trigger: number | null;
         is_main: number | null;
+        agent_id: string | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -677,6 +1066,7 @@ export function getRegisteredGroup(
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
     isMain: row.is_main === 1 ? true : undefined,
+    agent_id: row.agent_id ?? null,
   };
 }
 
@@ -709,6 +1099,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     container_config: string | null;
     requires_trigger: number | null;
     is_main: number | null;
+    agent_id: string | null;
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -730,6 +1121,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
       isMain: row.is_main === 1 ? true : undefined,
+      agent_id: row.agent_id ?? null,
     };
   }
   return result;
@@ -783,6 +1175,41 @@ export function recordOpenSpend(date: string, addCents: number): void {
   ).run(date, addCents);
 }
 
+// --- Per-agent spend (multi-agent-completion-blueprint § 4.2) ---
+
+/**
+ * Today's cumulative spend for an agent, in cents. Returns 0 when the
+ * agent has no rows for today. Used by the pre-spawn budget gate.
+ */
+export function getAgentSpendForDate(
+  date: string,
+  agentId: string,
+): number {
+  const row = db
+    .prepare(
+      'SELECT cents FROM agent_spend_log WHERE date = ? AND agent_id = ?',
+    )
+    .get(date, agentId) as { cents: number } | undefined;
+  return row?.cents ?? 0;
+}
+
+/**
+ * Atomic increment of an agent's daily spend. Uses SQL `INCR`
+ * semantics (UPDATE … SET cents = cents + ?) so concurrent turns
+ * don't race. SQLite's WAL mode makes the row-level write
+ * effectively atomic.
+ */
+export function incrementAgentSpend(
+  date: string,
+  agentId: string,
+  addCents: number,
+): void {
+  db.prepare(
+    `INSERT INTO agent_spend_log (date, agent_id, cents) VALUES (?, ?, ?)
+     ON CONFLICT(date, agent_id) DO UPDATE SET cents = cents + excluded.cents`,
+  ).run(date, agentId, addCents);
+}
+
 // --- Agent turns telemetry (T-1778234000000) ---
 
 export interface AgentTurnRow {
@@ -817,6 +1244,25 @@ export interface AgentTurnRow {
   is_scheduled_task?: number;
   attachment_count?: number;
   truncated_output?: number;
+  /**
+   * Agent that actually answered this turn. Nullable for back-compat
+   * with pre-v1.2.1 rows (which fall through the COALESCE in the
+   * cost-rollup query). Differs from the group's `agent_id` when a
+   * per-message @<trigger> override dispatched to a different agent.
+   * See multi-agent-completion-blueprint § 3.2.
+   */
+  responder_agent_id?: string | null;
+  /**
+   * Concurrency telemetry — milliseconds the turn waited in the FIFO
+   * queue before its container spawned. See
+   * multi-agent-completion-blueprint § 5.2.
+   */
+  queue_wait_ms?: number | null;
+  /**
+   * Concurrency telemetry — how many containers were already running
+   * when this turn spawned. Sampled at acquire time.
+   */
+  concurrent_at_spawn?: number | null;
 }
 
 export function insertAgentTurn(row: AgentTurnRow): void {
@@ -827,14 +1273,16 @@ export function insertAgentTurn(row: AgentTurnRow): void {
       est_cost_cents, started_at, finished_at, duration_ms, duration_api_ms, ttft_ms,
       tool_use_count, tool_error_count, retry_count, compaction_count, num_turns,
       exit_code, outcome, error_class, prompt_chars, response_chars, session_id,
-      is_main, is_scheduled_task, attachment_count, truncated_output
+      is_main, is_scheduled_task, attachment_count, truncated_output,
+      responder_agent_id, queue_wait_ms, concurrent_at_spawn
     ) VALUES (
       @turn_id, @machine_id, @group_folder, @group_jid, @agent_profile, @model,
       @input_tokens, @output_tokens, @cache_creation_input_tokens, @cache_read_input_tokens,
       @est_cost_cents, @started_at, @finished_at, @duration_ms, @duration_api_ms, @ttft_ms,
       @tool_use_count, @tool_error_count, @retry_count, @compaction_count, @num_turns,
       @exit_code, @outcome, @error_class, @prompt_chars, @response_chars, @session_id,
-      @is_main, @is_scheduled_task, @attachment_count, @truncated_output
+      @is_main, @is_scheduled_task, @attachment_count, @truncated_output,
+      @responder_agent_id, @queue_wait_ms, @concurrent_at_spawn
     )`,
   ).run({
     ...row,
@@ -861,6 +1309,9 @@ export function insertAgentTurn(row: AgentTurnRow): void {
     is_scheduled_task: row.is_scheduled_task ?? 0,
     attachment_count: row.attachment_count ?? 0,
     truncated_output: row.truncated_output ?? 0,
+    responder_agent_id: row.responder_agent_id ?? null,
+    queue_wait_ms: row.queue_wait_ms ?? null,
+    concurrent_at_spawn: row.concurrent_at_spawn ?? null,
   });
 }
 

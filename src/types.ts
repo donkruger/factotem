@@ -57,6 +57,94 @@ export interface ContainerConfig {
   // Phase 0 of T-1777809840000 — will migrate into a profile.model field
   // once the configuration convention spike lands.
   model?: string;
+  // Per-group provider override (PROVIDER_PLAYBOOK § 5.3 — rare path).
+  // When set, wins over the agent's provider for this group only. Most
+  // operators leave this absent and let groups inherit their agent's
+  // provider. Surfaced in the dashboard under Advanced settings.
+  provider?: Provider;
+}
+
+// --- Agents & providers (Gemini blueprint PR 1 — Phase H.1 + H.2) ---
+
+/**
+ * Wire-protocol identifier. Maps to a container image:
+ *   'anthropic'         → nanoclaw-agent (the legacy/default Claude image)
+ *   'openai-compatible' → nanoclaw-agent-oai (the OpenAI-shaped image used by
+ *                         Gemini, OpenAI, OpenRouter, Together, Groq, Ollama,
+ *                         vLLM, etc.)
+ *
+ * Per PROVIDER_PLAYBOOK § 1, this is "container per wire protocol" — the
+ * provider's protocol identifier still distinguishes them (anthropic vs
+ * gemini vs openai vs ollama) but they share the wire-protocol image when
+ * they share a wire shape.
+ */
+export type WireProtocol = 'anthropic' | 'openai-compatible';
+
+/**
+ * Provider protocol identifier — lowercase, no punctuation. Examples:
+ *   'anthropic', 'openai', 'gemini', 'ollama', 'openrouter', 'groq'
+ *
+ * The full `<protocol>/<model>` string (e.g. `gemini/gemini-2.5-pro`) is the
+ * canonical model reference. See PROVIDER_PLAYBOOK § 12.
+ */
+export type ProviderProtocol = string;
+
+export interface Provider {
+  /** lowercase identifier, e.g. 'anthropic', 'gemini', 'ollama' */
+  protocol: ProviderProtocol;
+  /** model name, e.g. 'claude-opus-4.6' or 'gemini-2.5-pro' */
+  model: string;
+  /** non-null for local providers (Ollama, vLLM); null for cloud providers */
+  base_url: string | null;
+  /** OneCLI secret name; null for local providers with no auth */
+  credential_id: string | null;
+}
+
+/**
+ * An Agent is a named entity that owns a persona, a provider, and a memory
+ * namespace. Groups belong to agents; the same machine can run multiple
+ * agents (Andy on Claude, Ben on Gemini, Echo on Ollama). See
+ * PROVIDER_PLAYBOOK § 0 for the canonical taxonomy.
+ */
+export interface Agent {
+  /** Stable slug; derived from name on creation. Examples: 'andy', 'ben'. */
+  id: string;
+  /** Human-friendly display name. Operators rename via the dashboard. */
+  name: string;
+  /** Free-text persona description (system-prompt fragment). May be empty. */
+  persona: string;
+  /** The wire/model the agent talks to. */
+  provider: Provider;
+  /** Filesystem namespace under groups/, e.g. 'agents/andy'. */
+  memory_namespace: string;
+  /** WhatsApp/Telegram trigger prefix, e.g. '@Andy'. */
+  default_trigger: string;
+  /** Nullable FK; reserved for the organogram (PROVIDER_PLAYBOOK § 11.2). */
+  parent_agent_id: string | null;
+  /** Exactly one agent per deployment has is_default = true. */
+  is_default: boolean;
+  /** ISO-8601 timestamp. */
+  created_at: string;
+  /**
+   * Per-agent mount allowlist override (multi-agent-completion § 5.3).
+   * NULL = inherit deployment allowlist. When set, intersected with
+   * the deployment allowlist before mounting — narrowing-only.
+   */
+  mount_allowlist_override?: MountAllowlist | null;
+  /**
+   * Channel pairing this agent uses by default (multi-agent-completion
+   * § 4.1). When NULL, the agent uses the deployment's shared pairing.
+   * Set via the wizard's H.5 add-agent flow or the dashboard's
+   * agent-detail Settings.
+   */
+  channel_pairing_id?: string | null;
+  /**
+   * Per-agent daily budget cap in cents (multi-agent-completion § 4.2).
+   * NULL = unbounded. When set, the orchestrator's pre-spawn gate
+   * denies turns once the agent's daily spend exceeds this value.
+   * Independent of the group-level open-DM budget; both layers apply.
+   */
+  daily_budget_cents?: number | null;
 }
 
 export interface RegisteredGroup {
@@ -67,6 +155,11 @@ export interface RegisteredGroup {
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
+  // Foreign key into agents(id). Nullable for backward compatibility —
+  // groups without an assignment fall through to the deployment's
+  // default agent. Backfilled to the default agent on schema migration.
+  // See docs/PROVIDER_PLAYBOOK.md § 0 (Taxonomy) and § 5.2.
+  agent_id?: string | null;
 }
 
 export interface NewMessage {

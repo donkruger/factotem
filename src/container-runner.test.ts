@@ -70,6 +70,43 @@ vi.mock('@onecli-sh/sdk', () => ({
   },
 }));
 
+// Mock agents module (Gemini blueprint PR 1). The container-runner tests
+// focus on spawn / IPC / output parsing — the agent + provider resolution
+// layer is unit-tested separately. Returning a stable Anthropic-on-Claude
+// default mirrors the v1.0 install behaviour these tests originally
+// asserted against.
+vi.mock('./agents.js', () => {
+  const defaultAgent = {
+    id: 'andy',
+    name: 'Andy',
+    persona: '',
+    provider: {
+      protocol: 'anthropic',
+      model: 'claude-opus-4.6',
+      base_url: null,
+      credential_id: 'Anthropic',
+    },
+    memory_namespace: 'agents/andy',
+    default_trigger: '@Andy',
+    parent_agent_id: null,
+    is_default: true,
+    created_at: '2026-05-14T00:00:00Z',
+  };
+  return {
+    resolveAgentForGroup: vi.fn(() => defaultAgent),
+    resolveProviderForGroup: vi.fn(() => defaultAgent.provider),
+    getAgent: vi.fn(() => defaultAgent),
+    getDefaultAgent: vi.fn(() => defaultAgent),
+    getAgentOrDefault: vi.fn(() => defaultAgent),
+    listAgents: vi.fn(() => [defaultAgent]),
+    createAgent: vi.fn(),
+    updateAgent: vi.fn(),
+    deleteAgent: vi.fn(),
+    setDefaultAgent: vi.fn(),
+    slugifyAgentId: vi.fn((s: string) => s.toLowerCase()),
+  };
+});
+
 // Create a controllable fake ChildProcess
 function createFakeProcess() {
   const proc = new EventEmitter() as EventEmitter & {

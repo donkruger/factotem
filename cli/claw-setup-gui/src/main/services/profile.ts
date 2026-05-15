@@ -14,6 +14,7 @@ import path from 'path'
 import {
   newState,
   readState,
+  renameDefaultAgent,
   STATE_PATH,
   writeState
 } from './state-store'
@@ -61,7 +62,11 @@ export async function writeProfile(
   // Load existing state if present (resume support), else seed fresh.
   let state: SetupState = (await readState()) ?? newState(input.profile)
   state.profile = input.profile
-  state.assistantName = input.assistantName
+  // Keep the default agent's display name in sync with assistantName so
+  // both the legacy field and agents[0].name reflect the operator's input.
+  // See PROVIDER_PLAYBOOK § 5.1 — assistantName is the legacy mirror;
+  // source of truth is agents[is_default].name.
+  state = renameDefaultAgent(state, input.assistantName)
   if (!state.completedSteps.includes('00-profile-mode')) {
     state.completedSteps = [...state.completedSteps, '00-profile-mode']
   }

@@ -151,11 +151,16 @@ docker rm -f $(docker ps -a --filter "name=nanoclaw-" -q) 2>/dev/null
 
 ### WhatsApp Re-authentication
 
-WhatsApp sessions persist in `store/auth/`. If the session expires or is revoked:
+WhatsApp sessions persist in `store/auth/` (shared deployment
+pairing) and `store/auth-<pairing-id>/` (per-agent pairings,
+v1.2+). If a session expires or is revoked:
 
 ```bash
-# Check auth status
+# Check auth status (shared pairing)
 cat store/auth-status.txt
+
+# Check auth status for a per-agent pairing
+cat store/auth-status-<pairing-id>.txt
 
 # If re-auth needed: stop service, run /setup or /add-whatsapp in Claude Code
 launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
@@ -164,6 +169,27 @@ cd nanoclaw && claude
 ```
 
 Signs of auth failure: log shows `WhatsApp authentication required` followed by process exit.
+
+**Targeting a specific pairing manually.** `src/whatsapp-auth.ts`
+reads two optional env vars (v1.2.1, PR 12 § 2):
+
+| Env var               | Purpose                                                | Default                |
+|-----------------------|--------------------------------------------------------|------------------------|
+| `NANOCLAW_AUTH_DIR`   | Absolute path to the credentials directory             | `./store/auth/`        |
+| `NANOCLAW_PAIRING_ID` | Suffixes the QR + status hand-off files                | (none — unsuffixed)    |
+
+Re-pairing the shared account → `npm run auth` (both vars unset →
+byte-identical v1.0 behaviour). Re-pairing one specific per-agent
+pairing manually:
+
+```bash
+NANOCLAW_AUTH_DIR=$PWD/store/auth-bens-whatsapp \
+NANOCLAW_PAIRING_ID=bens-whatsapp \
+  npx tsx src/whatsapp-auth.ts
+```
+
+The wizard's add-agent flow sets both automatically; you'd only
+reach for this incantation when scripting an out-of-band re-pair.
 
 ### Database Issues
 

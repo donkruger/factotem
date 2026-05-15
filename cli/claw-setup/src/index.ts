@@ -10,6 +10,8 @@ import { step as step00 } from './steps/00-profile-mode.js';
 import { step as step01 } from './steps/01-check-prereqs.js';
 import { step as step02 } from './steps/02-install-prerequisites.js';
 import { step as step03 } from './steps/03-configure-onecli.js';
+import { step as step03a } from './steps/03a-provider.js';
+import { step as step03b } from './steps/03b-credentials.js';
 import { step as step04 } from './steps/04-mounts-allowlist.js';
 import { step as step05 } from './steps/05-build-container.js';
 import { step as step06 } from './steps/06-pair-whatsapp.js';
@@ -100,11 +102,23 @@ function inDocumentsRoot(): boolean {
 // Step IDs are unchanged — only the run order moves. State files keep
 // `completedSteps` as an unordered set so resume from any old state
 // still works.
+// Step ordering — Gemini blueprint PR 3 (Phase D) splits step 03 into
+// three. step03 keeps the OneCLI install / gateway / auth-login work
+// (still needed for every cloud provider — OneCLI is the credential
+// vault). step03a (provider) picks which provider the deployment uses.
+// step03b (credentials) registers that provider's secret with OneCLI.
+//
+// Operators on the legacy Anthropic-only path see no behaviour change:
+// step03 still creates the Anthropic secret (idempotent), then step03a
+// pre-selects Anthropic (idempotent), then step03b is a no-op because
+// the Anthropic secret already exists.
 const STEPS: Step[] = [
   step00,
   step01,
   step02,
   step03,
+  step03a,
+  step03b,
   step04,
   step05,
   step06,

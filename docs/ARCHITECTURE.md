@@ -1,16 +1,97 @@
 # NanoClaw Architecture
 
-Current-state architecture documentation. Last updated: 2026-05-08.
+Current-state architecture documentation. Last updated: 2026-05-14.
 
 > This document describes "today". For where the project is going —
-> multi-machine fleet orchestration over Tailscale, LLM model agnosticism,
+> multi-machine fleet orchestration over Tailscale, agent swarms,
 > wizard-as-app-wrapper — see [VISION.md](VISION.md).
 
 ---
 
+## Agent-first taxonomy (the operator's mental model)
+
+NanoClaw is a deployment that hosts one or more **agents**. Each agent
+is a named persona on a specific provider — Andy on Claude, Ben on
+Gemini, Echo on Ollama. Groups (WhatsApp / Telegram / etc.) belong to
+agents; per-message `@<trigger>` mentions override the group's assigned
+agent for that turn, so two agents can coexist in one chat.
+
+```
+Deployment      one per machine today
+└── Agents      named entities, each with persona + provider + memory
+    ├── Andy    provider: claude · trigger @Andy
+    │   └── Groups assigned to Andy
+    ├── Ben     provider: gemini · trigger @Ben
+    │   └── Groups assigned to Ben
+    └── Echo    provider: ollama (local) · trigger @Echo
+```
+
+The `agents` table in `store/messages.db` is the source of truth. The
+default agent is synthesised from the operator's `ASSISTANT_NAME` on
+first run, so a v1.0 install upgrades transparently. See
+[`docs/PROVIDER_PLAYBOOK.md § 0`](PROVIDER_PLAYBOOK.md#0-taxonomy--deployment--agents--groups)
+for the full taxonomy + § 5.2 for the schema.
+
+## Provider architecture (shipped v1.2)
+
+The orchestrator spawns one container per chat group, but selects the
+**image** by wire protocol rather than provider:
+
+| Image | Wire protocol | Backs |
+|---|---|---|
+| `nanoclaw-agent` | Anthropic-native (Claude Agent SDK) | Claude |
+| `nanoclaw-agent-oai` | OpenAI-compatible (`/v1/chat/completions`) | Gemini · OpenAI · OpenRouter · Together · Groq · Ollama · vLLM |
+
+Adding a brand-new wire protocol means a new container image; adding a
+provider that speaks an existing wire protocol is a data-only addition
+to [`setup/providers.json`](../setup/providers.json) — the orchestrator
+(`src/providers-registry.ts`), the wizard, and the dashboard all read
+that file and pick up the new entry on next reload.
+
+Resolution chain at container-spawn time (`src/container-runner.ts`):
+
+1. `group.container_config.provider` — per-group override (rare).
+2. `group.agent_id` → that agent's `provider`.
+3. Deployment's default agent → its `provider`.
+
+The full playbook — four contracts every provider must satisfy
+(container, wizard, dashboard, OneCLI), the data-driven registry, and a
+phase-by-phase checklist — is in
+[`docs/PROVIDER_PLAYBOOK.md`](PROVIDER_PLAYBOOK.md). The Gemini
+implementation walkthrough is at
+[`docs/implementation/gemini-blueprint.md`](implementation/gemini-blueprint.md).
+Read those before proposing any change that touches model providers.
+
+## Operator surfaces
+
+Three operator-facing surfaces sit on top of the orchestrator. They
+share the same setup state file (`~/.config/nanoclaw/setup-state.json`),
+the same orchestrator HTTP API (`http://127.0.0.1:7842`), and the same
+design tokens. See [`ui-ux-direction.md`](ui-ux-direction.md) for the
+full design system + hand-off rules.
+
+| Surface | Package | Job |
+|---|---|---|
+| **NanoClaw Setup wizard — GUI** | `cli/claw-setup-gui/` | First-run installer (signed `.dmg`). Thirteen-step cold-start (welcome, profile, envCheck, install, **provider, credentials**, mounts, container, whatsapp, service, register, openmode, smoke, ready), then auto-skips to the dashboard on every subsequent launch when the orchestrator is healthy. Re-entry detects existing agents and offers *"Add another agent on a different provider, or reconfigure?"* |
+| **NanoClaw Setup wizard — CLI** | `cli/claw-setup/` | Same flow for headless / SSH / CI / recovery scenarios. `@clack/prompts`. Step 03 splits into `03` (ensure OneCLI) + `03a` (pick provider) + `03b` (collect credentials) — same data-driven shape as the GUI's Provider + Credentials steps. |
+| **Factotem dashboard** | `dashboard/` | Post-setup home. **Agents page** (per-agent rollup, model switch, recent errors) is the primary nav. Server health, activity feed, group management, cost, alerts, audit log, **errors page** (operator-readable diagnosis + recovery affordance per error class). Served at `:7842` by the orchestrator's Express app (production) or at `:3001` via `next dev` (development). |
+| **Factotem Doctor** | `cli/claw-doctor/` | Runtime diagnostic menu-bar app (different role from the setup wizard). Probes Docker / OneCLI / NanoClaw every 5s. Has its own release pipeline + auto-updater. |
+
+Both wizards call the canonical setup primitives in `setup/*.ts`. The
+GUI loads the dashboard at `http://127.0.0.1:7842` directly into its
+own Electron BrowserWindow on completion (or on launch when everything
+is already up), so for an installed operator the wizard surface is
+effectively invisible after first run.
+
 ## System Overview
 
-NanoClaw is a personal Claude assistant that runs as a single Node.js process. It bridges messaging channels to Claude Agent SDK running inside isolated Linux containers. Each registered chat group gets its own filesystem, conversation session, and memory.
+NanoClaw is a personal AI-assistant deployment that runs as a single
+Node.js process. It bridges messaging channels to one or more agent
+containers — each agent on its chosen provider — running inside
+isolated Linux sandboxes. Each registered chat group gets its own
+filesystem, conversation session, and memory; per-message `@<trigger>`
+mentions dispatch to the matching agent even when groups are assigned
+to a different one.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -25,21 +106,28 @@ NanoClaw is a personal Claude assistant that runs as a single Node.js process. I
 │         └────────────────┼───────────────┘                   │
 │                          ▼                                   │
 │              ┌──────────────────────┐                        │
-│              │   Message Loop       │  SQLite (messages.db)  │
-│              │   + Group Queue      │◄──────────────────────►│
-│              │   + Task Scheduler   │                        │
-│              │   + IPC Watcher      │                        │
-│              └──────────┬───────────┘                        │
-│                         │ spawns per message batch            │
-│                         ▼                                    │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │              CONTAINER (Linux)                        │   │
-│  │  Claude Agent SDK + MCP servers + Browser             │   │
-│  │                                                       │   │
-│  │  Voice: whisper.cpp transcription on host (no API)    │   │
-│  │  Mounts: /workspace/group/ (RW), /workspace/extra/ .. │   │
-│  │  Credentials: OneCLI gateway injection                │   │
-│  └──────────────────────────────────────────────────────┘   │
+│              │ Message loop +       │  SQLite (messages.db)  │
+│              │ Group queue +        │  ├─ agents             │
+│              │ Task scheduler +     │◄─┤   andy → anthropic  │
+│              │ Trigger dispatcher   │  │   ben  → gemini     │
+│              │   (resolves agent)   │  └─ registered_groups  │
+│              └──────────┬───────────┘     (agent_id FK)      │
+│                         │ spawns per provider's wire-protocol│
+│             ┌───────────┴────────────┐                       │
+│             ▼                        ▼                       │
+│  ┌────────────────────┐  ┌─────────────────────────┐        │
+│  │ nanoclaw-agent     │  │ nanoclaw-agent-oai      │        │
+│  │ Anthropic SDK      │  │ OpenAI SDK + base_url   │        │
+│  │ + MCP + Browser    │  │ Gemini · OpenAI · ...   │        │
+│  └────────────────────┘  └─────────────────────────┘        │
+│         │                          │                         │
+│         │  HTTP                    │  HTTP                   │
+│         ▼                          ▼                         │
+│   ┌─────────────────────────────────────────┐               │
+│   │ OneCLI gateway (127.0.0.1:10254)        │               │
+│   │ Injects per-provider credentials on the │               │
+│   │ outbound request matching host_pattern. │               │
+│   └─────────────────────────────────────────┘               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -82,6 +170,26 @@ Channels register at import time via `registerChannel()`. The orchestrator itera
 | WhatsApp | `@whiskeysockets/baileys` | `phone@s.whatsapp.net`, `groupid@g.us` | QR code / pairing code |
 | Telegram | `grammy`                  | `tg:{chatId}`                          | Bot token via OneCLI   |
 
+**Channel pairings (multi-pairing, v1.2+).** A channel kind can host
+multiple independent pairings simultaneously — one shared
+deployment-default plus zero or more per-agent pairings. The
+`channel_pairings` table (`src/channels/pairings.ts`) tracks each
+row's `id`, `kind`, `display_name`, `auth_path`, `is_shared`, and
+optional `phone_hint`. Agents reference one via
+`agents.channel_pairing_id`; inbound chats stamp `chats.pairing_id`
+so outbound replies route back through the same pairing. The
+v1.0/v1.2 migration synthesises one `is_shared = true` row per kind
+from existing creds so legacy deployments upgrade transparently.
+
+The WhatsApp pairing auth script (`src/whatsapp-auth.ts`) honours
+two env vars introduced in v1.2.1 (PR 12 § 2): `NANOCLAW_AUTH_DIR`
+overrides the credential directory (default `./store/auth/`), and
+`NANOCLAW_PAIRING_ID` suffixes the QR + status hand-off files
+(`store/qr-data-<id>.txt`, `store/auth-status-<id>.txt`) so
+concurrent pair runs don't collide. The wizard's add-agent branch
+sets both; the `npm run auth` CLI flow leaves them unset and gets
+byte-identical v1.0 behaviour.
+
 **Voice transcription:** WhatsApp voice notes are automatically transcribed on the host using local `whisper.cpp` (via `ffmpeg` + `whisper-cli`). The pipeline converts OGG/Opus → 16kHz mono WAV → text, runs entirely on-device with no API cost. Transcripts are delivered to the agent as `[Voice: <text>]`. See `src/transcription.ts`.
 
 
@@ -95,7 +203,16 @@ Spawns Docker containers for each agent invocation:
 - Streams stdin (prompt JSON) and reads stdout (output markers)
 - Output delimited by `---NANOCLAW_OUTPUT_START---` / `---NANOCLAW_OUTPUT_END---`
 
-**Container image:** `nanoclaw-agent:latest` (node:22-slim + Chromium + Claude Agent SDK)
+**Container image:** chosen per the resolved provider's `wire_protocol`
+in [`setup/providers.json`](../setup/providers.json):
+
+- `anthropic` → `nanoclaw-agent:latest` (node:22-slim + Chromium + Claude Agent SDK)
+- `openai-compatible` → `nanoclaw-agent-oai:latest` (node:22-slim + `openai` SDK; smaller image — no Chromium / PDF tools)
+
+The orchestrator's `src/container-runner.ts#imageForProvider` looks up
+the registry on every spawn; per-message `@<trigger>` overrides set
+`agent_id` on a synthetic group clone before resolution, so a Gemini
+trigger inside Andy's group spawns the OAI image for that turn.
 
 **Default limits:**
 
@@ -111,6 +228,17 @@ Per-group message queuing with global concurrency control:
 - Global semaphore limits total active containers
 - Retry logic with exponential backoff (base 5s, max 5 retries)
 - Idle state tracking per group
+- **Queue-wait telemetry (v1.2.1, PR 12 § 3).** Each `GroupState`
+  carries a `pendingSince` timestamp set the moment work goes onto
+  the pending list (busy or capped paths) and cleared on direct
+  spawn. `consumeQueueWait(groupJid)` is the read-and-clear path
+  called from the spawn site in `src/index.ts`; together with
+  `getActiveCount()` it lets `insertAgentTurn` record
+  `queue_wait_ms` and `concurrent_at_spawn` on every turn with no
+  signature changes through `runAgent` or the container-runner. The
+  dashboard's `/health.docker.max_concurrent` field surfaces the
+  `MAX_CONCURRENT_CONTAINERS` cap so observed concurrency can be
+  contextualised in the UI.
 
 ### 5. IPC System (`src/ipc.ts`)
 

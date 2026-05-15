@@ -1,12 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI as toolkitAPI } from '@electron-toolkit/preload'
 import type {
+  CreateCredentialResult,
   EnvCheckResult,
   HealthSummary,
   MountAllowlist,
   OneCLIProbe,
+  ProbeKeyResult,
   ProfileWriteInput,
   ProfileWriteResult,
+  ProviderRegistry,
   ServiceInstallResult,
   SetupState
 } from '../shared/types'
@@ -115,6 +118,34 @@ const electronAPI = {
     ): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('onecli:register-anthropic', secretValue)
   },
+  providers: {
+    // Data-driven provider plumbing (Gemini blueprint PR 3, Phase D).
+    // The renderer reads the registry, picks a provider, probes the
+    // operator's API key, and registers the credential via OneCLI —
+    // all parameterised by protocol so the 9th provider is a JSON
+    // edit, not new code.
+    list: (
+      orchestratorRoot?: string | null
+    ): Promise<ProviderRegistry> =>
+      ipcRenderer.invoke('providers:list', orchestratorRoot ?? null),
+    probeKey: (
+      protocol: string,
+      apiKey: string,
+      orchestratorRoot?: string | null
+    ): Promise<ProbeKeyResult> =>
+      ipcRenderer.invoke('providers:probe-key', protocol, apiKey, orchestratorRoot ?? null),
+    createCredential: (
+      protocol: string,
+      apiKey: string,
+      orchestratorRoot?: string | null
+    ): Promise<CreateCredentialResult> =>
+      ipcRenderer.invoke(
+        'providers:create-credential',
+        protocol,
+        apiKey,
+        orchestratorRoot ?? null
+      )
+  },
   service: {
     status: (): Promise<boolean> => ipcRenderer.invoke('service:status'),
     install: (orchestratorRoot: string): Promise<ServiceInstallResult> =>
@@ -148,6 +179,51 @@ const electronAPI = {
       error?: string
     }> => ipcRenderer.invoke('openmode:apply', orchestratorRoot, enabled, budgetCents)
   },
+  pairings: {
+    // PairingChoiceStep (v1.2.1-finish-blueprint § 2) talks to the
+    // orchestrator's /api/pairings endpoint via this thin IPC shim so
+    // the renderer doesn't have to know the orchestrator URL or build
+    // its own fetch wrapper.
+    list: (): Promise<{
+      pairings: Array<{
+        id: string
+        kind: string
+        display_name: string
+        auth_path: string
+        is_shared: boolean
+        phone_hint: string | null
+        last_connected_at: string | null
+        created_at: string
+      }>
+      error?: string
+    }> => ipcRenderer.invoke('pairings:list'),
+    create: (input: {
+      id?: string
+      kind: string
+      display_name: string
+      auth_path?: string
+      is_shared?: boolean
+      phone_hint?: string | null
+    }): Promise<{
+      success: boolean
+      pairing?: {
+        id: string
+        kind: string
+        display_name: string
+        auth_path: string
+        is_shared: boolean
+        phone_hint: string | null
+        last_connected_at: string | null
+        created_at: string
+      }
+      error?: string
+    }> => ipcRenderer.invoke('pairings:create', input),
+    assignAgent: (
+      agentId: string,
+      pairingId: string
+    ): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('pairings:assign-agent', agentId, pairingId)
+  },
   register: {
     listGroups: (
       orchestratorRoot: string
@@ -168,13 +244,14 @@ const electronAPI = {
   },
   whatsapp: {
     start: (
-      orchestratorRoot: string
+      orchestratorRoot: string,
+      opts?: { pairingId?: string; authDir?: string }
     ): Promise<{
       runId: string
       qrPath: string
       statusPath: string
       credsPath: string
-    }> => ipcRenderer.invoke('whatsapp:start', orchestratorRoot),
+    }> => ipcRenderer.invoke('whatsapp:start', orchestratorRoot, opts ?? {}),
     cancel: (runId: string): Promise<{ cancelled: boolean }> =>
       ipcRenderer.invoke('whatsapp:cancel', runId),
     onQr: (runId: string, cb: (qr: string) => void): (() => void) => {

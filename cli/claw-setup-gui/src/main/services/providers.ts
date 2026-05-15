@@ -1,0 +1,389 @@
+// Generic provider integration — replaces the Anthropic-only OneCLI
+// service for any new provider work. Reads `setup/providers.json` (PR 2)
+// to know each provider's auth_kind, models endpoint, and OneCLI shape.
+//
+// Three operations:
+//   1. listProviders() — return the registry to the renderer
+//   2. probeKey(protocol, apiKey) — hit the provider's models_endpoint
+//      with the entered credentials. Returns success or a diagnosed
+//      error class. Operators never finish setup against a wrong key.
+//   3. createCredential(protocol, apiKey) — uses the registry's OneCLI
+//      config (host_pattern, header_name, value_format) to create the
+//      provider's named secret.
+//
+// See docs/PROVIDER_PLAYBOOK.md § 4.2 (Wizard contract) + § 4.4
+// (OneCLI contract) + docs/implementation/gemini-blueprint.md § 5
+// (Phase C).
+
+import fs from 'fs'
+import path from 'path'
+import { runCommand } from './subprocess'
+import { findBin } from './path-utils'
+
+// Resolve providers.json relative to the orchestrator root the wizard is
+// configured to manage. The wizard discovers this root via env.check; we
+// fall back to the bundled file if needed. Most operators have the repo
+// cloned to ~/code/nanoclaw or similar — the wizard reads its own
+// __dirname-relative copy if NANOCLAW_ROOT isn't set.
+const PROVIDERS_JSON_REL_PATH = 'setup/providers.json'
+
+export interface ProviderRegistryEntry {
+  name: string
+  tagline: string
+  wire_protocol: 'anthropic' | 'openai-compatible'
+  base_url: string
+  auth_kind: 'api-key' | 'none' | 'oauth'
+  default_model: string
+  models_endpoint: string
+  key_signup_url?: string
+  key_format_hint?: string
+  onecli: {
+    name: string
+    host_pattern: string
+    header_name: string
+    value_format: string
+  } | null
+  capabilities: {
+    tool_use: string
+    vision: boolean
+    computer_use: boolean
+    prompt_caching: boolean
+    long_context: boolean
+    local: boolean
+  }
+  container_image: string
+  ships_in: string
+  cost_hint: string
+}
+
+export interface ProviderRegistry {
+  [protocol: string]: ProviderRegistryEntry
+}
+
+let cachedRegistry: ProviderRegistry | null = null
+
+/**
+ * Resolve providers.json. Tries the orchestrator root (from env or hint)
+ * first; falls back to the wizard's bundled copy.
+ *
+ * For dev runs (`npm run dev` in the GUI) __dirname points at the
+ * source tree; for built apps it points inside the asar bundle. We
+ * accept either.
+ */
+function resolveProvidersJsonPath(orchestratorRoot?: string | null): string {
+  const candidates: string[] = []
+  if (orchestratorRoot) {
+    candidates.push(path.join(orchestratorRoot, PROVIDERS_JSON_REL_PATH))
+  }
+  // Search up from the GUI's own location — covers the dev case where
+  // the GUI is at nanoclaw/cli/claw-setup-gui/.
+  // dist path: /path/to/.../out/main/index.js
+  // src path: /path/to/.../src/main/services/providers.ts (under tsx)
+  const here = __dirname
+  let up = here
+  for (let i = 0; i < 8; i++) {
+    candidates.push(path.join(up, PROVIDERS_JSON_REL_PATH))
+    const parent = path.dirname(up)
+    if (parent === up) break
+    up = parent
+  }
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c
+  }
+  throw new Error(
+    `providers.json not found. Searched: ${candidates.slice(0, 5).join(', ')}…`
+  )
+}
+
+export function loadProviderRegistry(orchestratorRoot?: string | null): ProviderRegistry {
+  if (cachedRegistry) return cachedRegistry
+  const file = resolveProvidersJsonPath(orchestratorRoot)
+  const raw = fs.readFileSync(file, 'utf8')
+  const parsed = JSON.parse(raw) as Record<string, unknown>
+  const out: ProviderRegistry = {}
+  for (const [key, value] of Object.entries(parsed)) {
+    if (key.startsWith('_') || key.startsWith('$')) continue
+    out[key] = value as ProviderRegistryEntry
+  }
+  cachedRegistry = out
+  return out
+}
+
+export function listProviders(
+  orchestratorRoot?: string | null
+): ProviderRegistry {
+  return loadProviderRegistry(orchestratorRoot)
+}
+
+export interface ProbeKeyResult {
+  ok: boolean
+  /** Operator-facing diagnostic message. Always present. */
+  message: string
+  /** Models discovered, when ok = true. */
+  modelCount?: number
+  /** Error class from PROVIDER_PLAYBOOK § 7.5. */
+  error_class?:
+    | 'auth.invalid_key'
+    | 'provider.unreachable'
+    | 'quota.rate_limited'
+    | 'unknown'
+}
+
+/**
+ * Hit the provider's models endpoint with the entered API key to verify
+ * it authenticates and the network path works. Operators see a diagnosed
+ * failure ("That key didn't authenticate" vs "Can't reach <provider>")
+ * not a stack trace.
+ */
+export async function probeKey(
+  protocol: string,
+  apiKey: string,
+  orchestratorRoot?: string | null
+): Promise<ProbeKeyResult> {
+  const registry = loadProviderRegistry(orchestratorRoot)
+  const entry = registry[protocol]
+  if (!entry) {
+    return {
+      ok: false,
+      message: `Unknown provider: ${protocol}`,
+      error_class: 'unknown'
+    }
+  }
+
+  if (entry.auth_kind === 'none') {
+    // Local provider — probe the models endpoint with no auth header.
+    return await probeNoAuth(entry)
+  }
+
+  // Cloud providers send the credential in the format the registry
+  // specifies. {value} is substituted with the entered key.
+  if (!entry.onecli) {
+    return {
+      ok: false,
+      message: `Provider ${protocol} has no onecli config — can't probe`,
+      error_class: 'unknown'
+    }
+  }
+  const headerName = entry.onecli.header_name
+  const headerValue = entry.onecli.value_format.replace('{value}', apiKey)
+  return await probeWithHeader(entry, headerName, headerValue)
+}
+
+async function probeWithHeader(
+  entry: ProviderRegistryEntry,
+  headerName: string,
+  headerValue: string
+): Promise<ProbeKeyResult> {
+  // curl is preferred over fetch here — runs in the main process where
+  // network is unrestricted, and the operator's wizard already shells
+  // out to curl for OneCLI probes. Identical observability.
+  const r = await runCommand('curl', [
+    '-sS',
+    '-o',
+    '-',
+    '-w',
+    '\nHTTP_STATUS:%{http_code}',
+    '-m',
+    '10',
+    '-H',
+    `${headerName}: ${headerValue}`,
+    entry.models_endpoint
+  ])
+  return interpretProbeResult(entry, r)
+}
+
+async function probeNoAuth(entry: ProviderRegistryEntry): Promise<ProbeKeyResult> {
+  const r = await runCommand('curl', [
+    '-sS',
+    '-o',
+    '-',
+    '-w',
+    '\nHTTP_STATUS:%{http_code}',
+    '-m',
+    '5',
+    entry.models_endpoint
+  ])
+  if (r.code !== 0) {
+    return {
+      ok: false,
+      message: `${entry.name} didn't respond. Is the local daemon running?`,
+      error_class: 'provider.unreachable'
+    }
+  }
+  // Count models if the response is parseable. Different local providers
+  // return different shapes — Ollama returns {models:[…]}, OpenAI-compat
+  // returns {data:[…]}.
+  const body = stripHttpStatusFooter(r.stdout)
+  let modelCount: number | undefined
+  try {
+    const parsed = JSON.parse(body) as { models?: unknown[]; data?: unknown[] }
+    if (Array.isArray(parsed.models)) modelCount = parsed.models.length
+    else if (Array.isArray(parsed.data)) modelCount = parsed.data.length
+  } catch {
+    /* not JSON — that's ok, the probe still succeeded */
+  }
+  return {
+    ok: true,
+    message: modelCount
+      ? `${entry.name} is reachable — found ${modelCount} models.`
+      : `${entry.name} is reachable.`,
+    modelCount
+  }
+}
+
+function stripHttpStatusFooter(s: string): string {
+  const idx = s.lastIndexOf('\nHTTP_STATUS:')
+  return idx === -1 ? s : s.slice(0, idx)
+}
+
+function interpretProbeResult(
+  entry: ProviderRegistryEntry,
+  r: { code: number; stdout: string; stderr: string }
+): ProbeKeyResult {
+  if (r.code !== 0) {
+    return {
+      ok: false,
+      message: `Can't reach ${entry.name}. Check your internet connection or ${entry.name}'s status page.`,
+      error_class: 'provider.unreachable'
+    }
+  }
+  // Pull the HTTP status off the tail of curl's output.
+  const match = r.stdout.match(/\nHTTP_STATUS:(\d{3})/)
+  const status = match ? parseInt(match[1], 10) : 0
+  const body = stripHttpStatusFooter(r.stdout)
+
+  if (status >= 200 && status < 300) {
+    let modelCount: number | undefined
+    try {
+      const parsed = JSON.parse(body) as { data?: unknown[]; models?: unknown[] }
+      if (Array.isArray(parsed.data)) modelCount = parsed.data.length
+      else if (Array.isArray(parsed.models)) modelCount = parsed.models.length
+    } catch {
+      /* response wasn't JSON — still authenticated */
+    }
+    return {
+      ok: true,
+      message: modelCount
+        ? `Connected to ${entry.name} — found ${modelCount} models. Defaulting to ${entry.default_model}.`
+        : `Connected to ${entry.name}. Defaulting to ${entry.default_model}.`,
+      modelCount
+    }
+  }
+  if (status === 401 || status === 403) {
+    return {
+      ok: false,
+      message: `That key didn't authenticate. Common causes: typo, key revoked, project deleted.`,
+      error_class: 'auth.invalid_key'
+    }
+  }
+  if (status === 429) {
+    return {
+      ok: false,
+      message: `${entry.name} rate-limited the verification request. Wait a moment and try again.`,
+      error_class: 'quota.rate_limited'
+    }
+  }
+  if (status === 0) {
+    return {
+      ok: false,
+      message: `Can't reach ${entry.name}. Check your internet connection.`,
+      error_class: 'provider.unreachable'
+    }
+  }
+  return {
+    ok: false,
+    message: `${entry.name} returned HTTP ${status}. ${truncate(body, 200)}`,
+    error_class: 'unknown'
+  }
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + '…' : s
+}
+
+export interface CreateCredentialResult {
+  success: boolean
+  alreadyExisted?: boolean
+  error?: string
+}
+
+/**
+ * Register the provider's secret in OneCLI. Uses the registry's
+ * onecli.{host_pattern, header_name, value_format} so adding the 9th
+ * provider is a JSON edit, not a code change.
+ *
+ * Local providers (auth_kind = 'none', onecli = null) short-circuit
+ * with success — no OneCLI secret needed.
+ */
+export async function createCredential(
+  protocol: string,
+  apiKey: string,
+  orchestratorRoot?: string | null
+): Promise<CreateCredentialResult> {
+  const registry = loadProviderRegistry(orchestratorRoot)
+  const entry = registry[protocol]
+  if (!entry) {
+    return { success: false, error: `Unknown provider: ${protocol}` }
+  }
+  if (!entry.onecli) {
+    // Local provider — no OneCLI secret required.
+    return { success: true }
+  }
+
+  const bin = findBin('onecli')
+  if (!bin) {
+    return { success: false, error: 'onecli not found on PATH.' }
+  }
+
+  // Skip create if the secret already exists with the matching host
+  // pattern — same idempotency as the legacy onecli.ts shape.
+  if (await probeSecretExists(bin, entry.onecli.name, entry.onecli.host_pattern)) {
+    return { success: true, alreadyExisted: true }
+  }
+
+  const r = await runCommand(bin, [
+    'secrets',
+    'create',
+    '--name',
+    entry.onecli.name,
+    '--type',
+    'generic',
+    '--value',
+    apiKey,
+    '--host-pattern',
+    entry.onecli.host_pattern,
+    '--path-pattern',
+    '/*',
+    '--header-name',
+    entry.onecli.header_name,
+    '--value-format',
+    entry.onecli.value_format
+  ])
+  if (r.code !== 0) {
+    return {
+      success: false,
+      error:
+        r.stderr.trim().split('\n').slice(-3).join(' · ') ||
+        `onecli secrets create exited ${r.code}`
+    }
+  }
+  return { success: true }
+}
+
+async function probeSecretExists(
+  bin: string,
+  name: string,
+  hostPattern: string
+): Promise<boolean> {
+  const r = await runCommand(bin, ['secrets', 'list'])
+  if (r.code !== 0) return false
+  try {
+    const list = JSON.parse(r.stdout) as Array<{ name?: string; hostPattern?: string }>
+    return (
+      Array.isArray(list) &&
+      list.some((s) => s.name === name && s.hostPattern === hostPattern)
+    )
+  } catch {
+    return false
+  }
+}

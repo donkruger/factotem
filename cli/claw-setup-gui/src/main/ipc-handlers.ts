@@ -3,7 +3,6 @@ import { checkEnv } from './services/env-checker'
 import { readState, STATE_PATH, writeState, newState } from './services/state-store'
 import { writeProfile } from './services/profile'
 import {
-  loadDashboardInWindow,
   openDashboardExternal,
   resolveDashboardUrl,
   waitForDashboard
@@ -16,6 +15,11 @@ import {
   authenticateOneCLI,
   registerAnthropicSecret
 } from './services/onecli'
+import {
+  listProviders,
+  probeKey as probeProviderKey,
+  createCredential as createProviderCredential
+} from './services/providers'
 import {
   installLaunchd,
   isLaunchdLoaded,
@@ -33,6 +37,12 @@ import {
   type RegisterInput
 } from './services/register-group'
 import { applyOpenMode, readMainGroup } from './services/openmode'
+import {
+  listPairings,
+  createPairing,
+  assignAgentPairing,
+  type CreatePairingInput
+} from './services/pairings'
 import type { ProfileWriteInput, SetupState } from '../shared/types'
 
 export function registerIpcHandlers(): void {
@@ -117,12 +127,21 @@ export function registerIpcHandlers(): void {
     await loadWizard(stepHint)
     return { success: true }
   })
-  // dashboard:open is the IN-WINDOW load — the dashboard replaces the
-  // wizard's renderer in the same BrowserWindow. Returns {success, url?,
-  // error?} so the renderer can show a clean fallback if no dashboard is
-  // reachable. dashboard:open-external is kept for the rare case where
-  // we genuinely want the system browser.
-  ipcMain.handle('dashboard:open', () => loadDashboardInWindow())
+  // dashboard:open switches to a *separate* BrowserWindow with the
+  // OS-native title bar before loading the dashboard URL. The wizard
+  // window is chrome-less (titleBarStyle hiddenInset / overlay) so the
+  // cream panel can extend to the window edge; the dashboard isn't
+  // aware of macOS drag regions and needs the system title bar, hence
+  // the swap. Going through `openDashboard` in `./index` (rather than
+  // calling `loadDashboardInWindow` directly here) ensures that swap
+  // happens — and that it's guarded by URL availability, so the
+  // wizard window stays put if there's no dashboard to navigate to.
+  // Returns {success, url?, error?} so the renderer's welcome-step
+  // button can surface the error inline.
+  ipcMain.handle('dashboard:open', async () => {
+    const { openDashboard } = await import('./index')
+    return openDashboard()
+  })
   ipcMain.handle('dashboard:open-external', () => openDashboardExternal())
   ipcMain.handle('dashboard:wait', (_e, timeoutMs?: number) => waitForDashboard(timeoutMs))
 
@@ -133,6 +152,25 @@ export function registerIpcHandlers(): void {
   )
   ipcMain.handle('onecli:register-anthropic', (_e, secretValue: string) =>
     registerAnthropicSecret(secretValue)
+  )
+
+  // ── Providers (data-driven from setup/providers.json) ─────────────────────
+  // Replaces the Anthropic-only OneCLI register handler for new provider
+  // work. The legacy onecli:* handlers stay live for v1.0 install flows.
+  // See docs/PROVIDER_PLAYBOOK.md § 4.2 + § 4.4.
+  ipcMain.handle(
+    'providers:list',
+    (_e, orchestratorRoot?: string | null) => listProviders(orchestratorRoot)
+  )
+  ipcMain.handle(
+    'providers:probe-key',
+    (_e, protocol: string, apiKey: string, orchestratorRoot?: string | null) =>
+      probeProviderKey(protocol, apiKey, orchestratorRoot)
+  )
+  ipcMain.handle(
+    'providers:create-credential',
+    (_e, protocol: string, apiKey: string, orchestratorRoot?: string | null) =>
+      createProviderCredential(protocol, apiKey, orchestratorRoot)
   )
 
   // ── Service (launchd / systemd) ───────────────────────────────────────────
@@ -161,8 +199,13 @@ export function registerIpcHandlers(): void {
   })
 
   // ── WhatsApp pairing (embedded) ───────────────────────────────────────────
-  ipcMain.handle('whatsapp:start', (_e, orchestratorRoot: string) =>
-    startWhatsAppAuth(orchestratorRoot)
+  ipcMain.handle(
+    'whatsapp:start',
+    (
+      _e,
+      orchestratorRoot: string,
+      opts?: { pairingId?: string; authDir?: string }
+    ) => startWhatsAppAuth(orchestratorRoot, opts ?? {})
   )
   ipcMain.handle('whatsapp:cancel', (_e, runId: string) => ({
     cancelled: cancelWhatsAppAuth(runId)
@@ -176,6 +219,17 @@ export function registerIpcHandlers(): void {
     'register:save',
     (_e, orchestratorRoot: string, input: RegisterInput) =>
       registerGroup(orchestratorRoot, input)
+  )
+
+  // ── Pairings (add-agent wizard branch, v1.2.1-finish-blueprint § 2) ───────
+  ipcMain.handle('pairings:list', () => listPairings())
+  ipcMain.handle('pairings:create', (_e, input: CreatePairingInput) =>
+    createPairing(input)
+  )
+  ipcMain.handle(
+    'pairings:assign-agent',
+    (_e, agentId: string, pairingId: string) =>
+      assignAgentPairing(agentId, pairingId)
   )
 
   // ── Open-DM mode (SQLite patch + SIGHUP) ──────────────────────────────────
