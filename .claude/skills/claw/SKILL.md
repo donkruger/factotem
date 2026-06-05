@@ -100,6 +100,41 @@ claw -v "Hello"
 claw --timeout 600 "Run the full analysis"
 ```
 
+## Operator verbs (doctor / status / logs)
+
+Beyond sending prompts, `claw` exposes a small diagnostic verb surface for the
+headless / SSH operator (inspired by `hermes doctor`). These send no prompt and
+reuse NanoClaw's existing probes — they never reimplement them.
+
+```bash
+# Full health check — service, container runtime, credentials, channels, groups.
+# Reuses the setup wizard's own probe (setup/verify.ts) and renders it for humans
+# with a "what to do next" hint per problem. Exits 0 when healthy, nonzero otherwise
+# (CI/cron-friendly). Works even when the orchestrator is down.
+claw doctor
+
+# Quick liveness read from the running orchestrator's /health endpoint
+# (port from $NANOCLAW_HTTP_PORT, default 7842): version, uptime, Docker,
+# OneCLI, WhatsApp. Friendly "not responding → run claw doctor" if it's down.
+claw status
+
+# Recent orchestrator log lines (last ~40); -f to follow.
+claw logs
+claw logs -f
+claw logs --setup        # show the setup log (logs/setup.log) instead
+
+# List the verbs.
+claw help
+```
+
+All three honour `--no-color` and the `NO_COLOR` env var, and suppress colour when
+stdout isn't a TTY. `claw doctor` parses (never modifies) the machine-readable
+`VERIFY` block from `setup/verify.ts`, so the wizard's status contract is untouched.
+
+> Verbs only trigger when the **first** bare token is exactly `doctor` / `status` /
+> `logs` / `help`. A quoted prompt that merely starts with one of those words
+> (`claw "status of the deploy?"`) still goes to the agent as a normal prompt.
+
 ## Troubleshooting
 
 ### "neither 'container' nor 'docker' found"

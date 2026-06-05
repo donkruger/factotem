@@ -270,12 +270,346 @@ def run_container(runtime: str, image: str, payload: dict,
         sys.exit(proc.returncode)
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Operator verbs: doctor / status / logs ───────────────────────────────────
+#
+# A small, discoverable verb surface (inspired by `hermes doctor` / `hermes
+# status` in NousResearch/hermes-agent) layered onto the CLI binary operators
+# already have on PATH. Each verb REUSES an existing NanoClaw primitive rather
+# than reimplementing any probe:
+#
+#   claw doctor → runs the wizard's own health probe (setup/verify.ts) and
+#                 pretty-prints the machine-readable VERIFY block that
+#                 setup/status.ts::emitStatus produces. The block is consumed,
+#                 never modified — the wizard/LLM contract is untouched. Works
+#                 even when the orchestrator is down (the probe reads
+#                 launchd/systemd/disk directly).
+#   claw status → quick liveness read from the orchestrator's /health endpoint
+#                 (src/http/server.ts; JSON shape in src/http/health.ts).
+#   claw logs   → tail logs/nanoclaw.log — the sanctioned replacement for the
+#                 raw `tail -f` the setup handoff used to surface.
+#
+# Dispatch (in main) only triggers when the first bare token is exactly a known
+# verb; any other invocation falls through to the prompt-send path unchanged.
+
+VERBS = ("doctor", "status", "logs", "help")
+
+
+class _Palette:
+    """ANSI colours matching the wizard's vocabulary (cli/claw-setup/src/ui.ts):
+    green ✓, yellow ⚠, red ✗, cyan headers, dim secondary. No-ops when colour
+    is disabled (--no-color, NO_COLOR, or non-TTY stdout)."""
+
+    def __init__(self, enabled: bool):
+        self.enabled = enabled
+
+    def _wrap(self, code: str, s: str) -> str:
+        return f"\033[{code}m{s}\033[0m" if self.enabled else s
+
+    def green(self, s):  return self._wrap("32", s)
+    def yellow(self, s): return self._wrap("33", s)
+    def red(self, s):    return self._wrap("31", s)
+    def cyan(self, s):   return self._wrap("36", s)
+    def bold(self, s):   return self._wrap("1", s)
+    def dim(self, s):    return self._wrap("2", s)
+
+
+def _color_enabled(rest_args: list) -> bool:
+    # Mirrors cli/claw-setup/src/ui.ts::createUI (honours --no-color + NO_COLOR);
+    # additionally suppresses ANSI when stdout isn't a TTY (piped to a file).
+    if "--no-color" in rest_args:
+        return False
+    if os.environ.get("NO_COLOR"):
+        return False
+    return sys.stdout.isatty()
+
+
+def _row(pal: "_Palette", level: str, label: str, value: str, hint: str = "") -> None:
+    glyph = {"ok": pal.green("✓"), "warn": pal.yellow("⚠")}.get(level, pal.red("✗"))
+    print(f"  {glyph} {label}: {value}")
+    if hint:
+        print("      " + pal.dim("→ " + hint))
+
+
+def _human_duration(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    mins, secs = divmod(seconds, 60)
+    if mins < 60:
+        return f"{mins}m {secs}s"
+    hours, mins = divmod(mins, 60)
+    if hours < 24:
+        return f"{hours}h {mins}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
+
+
+def _run_verify_probe() -> tuple:
+    """Run the existing setup/verify.ts step; return (combined_output, returncode).
+
+    `claw` runs in the operator's interactive shell, so `npx tsx` resolves the
+    project-local tsx without the launchd minimal-PATH ENOENT trap that affects
+    the launchd-spawned orchestrator. Sentinel return codes: 127 = couldn't
+    launch, 124 = timed out — the caller renders a friendly line, not a traceback.
+    """
+    cmd = ["npx", "tsx", "setup/index.ts", "--step", "verify"]
+    try:
+        proc = subprocess.run(
+            cmd, cwd=str(NANOCLAW_DIR),
+            capture_output=True, text=True, timeout=120,
+        )
+    except FileNotFoundError:
+        return ("", 127)
+    except subprocess.TimeoutExpired:
+        return ("", 124)
+    return (f"{proc.stdout}\n{proc.stderr}", proc.returncode)
+
+
+def _parse_status_block(text: str, step: str) -> dict:
+    """Extract a `=== NANOCLAW SETUP: <step> === … === END ===` block into a
+    {KEY: value} dict. Splits each row on the FIRST colon so JSON values (which
+    contain colons) survive intact. Returns {} when no block is present."""
+    m = re.search(
+        r"=== NANOCLAW SETUP: " + re.escape(step) + r" ===\n(.*?)\n=== END ===",
+        text, re.DOTALL,
+    )
+    if not m:
+        return {}
+    fields = {}
+    for line in m.group(1).splitlines():
+        if ":" in line:
+            key, _, val = line.partition(":")
+            fields[key.strip()] = val.strip()
+    return fields
+
+
+def cmd_doctor(rest_args: list) -> int:
+    pal = _Palette(_color_enabled(rest_args))
+    print(pal.bold(pal.cyan("NanoClaw health check")))
+    print(pal.dim(f"  probe: setup/verify.ts   dir: {NANOCLAW_DIR}"))
+    print()
+
+    output, rc = _run_verify_probe()
+    if rc == 127:
+        _row(pal, "bad", "Health probe", "couldn't start",
+             "Node/npx not found on PATH. Run from a normal Terminal, or re-run setup.")
+        return 1
+    if rc == 124:
+        _row(pal, "bad", "Health probe", "timed out (120s)",
+             "Host may be busy. Check `claw logs` to see what NanoClaw is doing.")
+        return 1
+
+    f = _parse_status_block(output, "VERIFY")
+    if not f:
+        _row(pal, "bad", "Health probe", "no result",
+             "verify produced no status block. Run "
+             "`npx tsx setup/index.ts --step verify` in the repo to see the raw error.")
+        return 1
+
+    service = f.get("SERVICE", "unknown")
+    if service == "running":
+        _row(pal, "ok", "Service", "running")
+    elif service == "stopped":
+        _row(pal, "bad", "Service", "installed but not running",
+             "Restart: launchctl kickstart -k gui/$(id -u)/com.nanoclaw   "
+             "(Linux: systemctl --user restart nanoclaw)")
+    elif service == "not_found":
+        _row(pal, "bad", "Service", "not installed",
+             "Run the setup wizard from the repo root: npm run claw-setup")
+    else:
+        _row(pal, "warn", "Service", service)
+
+    runtime = f.get("CONTAINER_RUNTIME", "none")
+    if runtime in ("docker", "apple-container"):
+        _row(pal, "ok", "Container runtime", runtime)
+    else:
+        _row(pal, "bad", "Container runtime", "none found",
+             "Start Docker Desktop, or install Apple Container (macOS 15+).")
+
+    creds = f.get("CREDENTIALS", "missing")
+    if creds == "configured":
+        _row(pal, "ok", "Credentials", "configured")
+    else:
+        _row(pal, "bad", "Credentials", "none found",
+             "Re-run setup, or check .env / OneCLI (onecli secrets list).")
+
+    channels = {}
+    raw_auth = f.get("CHANNEL_AUTH", "")
+    if raw_auth:
+        try:
+            channels = json.loads(raw_auth)
+        except json.JSONDecodeError:
+            channels = {}
+    if channels:
+        for name, state in channels.items():
+            _row(pal, "ok", f"Channel · {name}", str(state))
+    elif f.get("CONFIGURED_CHANNELS"):
+        _row(pal, "ok", "Channels", f["CONFIGURED_CHANNELS"])
+    else:
+        _row(pal, "warn", "Channels", "none configured",
+             "Add one: /add-whatsapp, /add-telegram, /add-slack, or /add-discord.")
+
+    groups = f.get("REGISTERED_GROUPS", "0")
+    if groups not in ("0", ""):
+        _row(pal, "ok", "Registered groups", groups)
+    else:
+        _row(pal, "warn", "Registered groups", "none yet",
+             "Register your main chat during setup, or DM the agent to onboard.")
+
+    mounts = f.get("MOUNT_ALLOWLIST", "missing")
+    if mounts == "configured":
+        _row(pal, "ok", "Mount allowlist", "configured")
+    else:
+        _row(pal, "warn", "Mount allowlist", "not set",
+             "Optional — folders the agent may read/write. Configured during setup.")
+
+    print()
+    if f.get("STATUS") == "success":
+        print("  " + pal.green(pal.bold("✓ Everything looks healthy.")))
+        return 0
+    log = f.get("LOG", "logs/setup.log")
+    print("  " + pal.red(pal.bold("✗ NanoClaw isn't fully healthy.")))
+    print("  " + pal.dim(f"Fix the ✗ items above, then re-run `claw doctor`.  "
+                         f"Live log: claw logs -f    setup log: {log}"))
+    return 1
+
+
+def cmd_status(rest_args: list) -> int:
+    import urllib.error
+    import urllib.request
+
+    pal = _Palette(_color_enabled(rest_args))
+    port = os.environ.get("NANOCLAW_HTTP_PORT", "7842")
+    url = f"http://localhost:{port}/health"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, OSError, ValueError):
+        print(pal.yellow(f"⚠ NanoClaw isn't responding on :{port}/health"))
+        print(pal.dim("  The orchestrator may be down. Run `claw doctor` for a full diagnosis."))
+        return 1
+
+    try:
+        h = json.loads(raw)
+    except json.JSONDecodeError:
+        print(raw)
+        return 0
+
+    print(pal.bold(pal.cyan(f"NanoClaw status   :{port}/health")))
+    nc = h.get("nanoclaw", {})
+    _row(pal, "ok", "NanoClaw",
+         f"running   v{nc.get('version', '?')}   "
+         f"up {_human_duration(int(nc.get('uptime_seconds', 0) or 0))}")
+
+    dk = h.get("docker", {})
+    if dk.get("running"):
+        _row(pal, "ok", "Docker",
+             f"{dk.get('containers_active', 0)} / {dk.get('max_concurrent', '?')} agent containers active")
+    else:
+        _row(pal, "bad", "Docker", "engine not responding",
+             "Start Docker Desktop (or Apple Container).")
+
+    oc = h.get("onecli", {})
+    if oc.get("reachable"):
+        _row(pal, "ok", "OneCLI",
+             f"reachable ({oc.get('latency_ms')}ms)   auth: {oc.get('auth_mode') or 'unknown'}")
+    else:
+        _row(pal, "bad", "OneCLI", "unreachable",
+             "Credential gateway is down — agents can't authenticate. See `claw doctor`.")
+
+    wa = h.get("whatsapp", {})
+    pairings = wa.get("pairings") or []
+    if wa.get("authenticated"):
+        last = wa.get("last_message_at") or "no messages yet"
+        suffix = f"   {len(pairings)} pairing(s)" if pairings else ""
+        _row(pal, "ok", "WhatsApp", f"authenticated   last msg: {last}{suffix}")
+    else:
+        _row(pal, "warn", "WhatsApp", "not authenticated",
+             "Pair a phone during setup, or re-pair with `npm run claw-setup -- --force`.")
+
+    od = h.get("open_dm", {})
+    if od.get("enabled"):
+        budget = od.get("daily_budget_cents")
+        cap = f" / {budget}¢ cap" if budget is not None else ""
+        _row(pal, "ok", "Open-DM", f"on   ({od.get('today_spent_cents', 0)}¢ spent today{cap})")
+
+    return 0
+
+
+def cmd_logs(rest_args: list) -> int:
+    pal = _Palette(_color_enabled(rest_args))
+    follow = "-f" in rest_args or "--follow" in rest_args
+    which = "setup.log" if "--setup" in rest_args else "nanoclaw.log"
+    log_path = NANOCLAW_DIR / "logs" / which
+
+    if not log_path.exists():
+        print(pal.yellow(f"⚠ No log yet at {log_path}"))
+        print(pal.dim("  Has setup run? Try `claw doctor`."))
+        return 1
+
+    if follow:
+        try:
+            return subprocess.run(["tail", "-f", str(log_path)]).returncode
+        except KeyboardInterrupt:
+            return 0
+        except FileNotFoundError:
+            print(pal.yellow("⚠ `tail` not found; showing the tail once instead."))
+
+    try:
+        proc = subprocess.run(["tail", "-n", "40", str(log_path)],
+                              capture_output=True, text=True)
+        sys.stdout.write(proc.stdout)
+        return proc.returncode
+    except FileNotFoundError:
+        print("\n".join(log_path.read_text(errors="replace").splitlines()[-40:]))
+        return 0
+
+
+def _print_verb_help() -> None:
+    print(
+        "claw — NanoClaw CLI\n\n"
+        "Send a prompt to an agent:\n"
+        "  claw \"What's on my calendar today?\"\n"
+        "  claw -g family \"Remind everyone about dinner\"\n"
+        "  claw --list-groups\n"
+        "  (full prompt options: claw --help)\n\n"
+        "Operator verbs (diagnostics — no prompt sent):\n"
+        "  claw doctor          full health check (service, runtime, creds, channels)\n"
+        "  claw status          quick liveness read from the orchestrator's /health\n"
+        "  claw logs [-f]       recent orchestrator log lines (-f to follow)\n"
+        "  claw logs --setup    show the setup log instead\n"
+    )
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    # Operator-verb dispatch (claw doctor / status / logs / help). Only fires
+    # when the first bare token is exactly a known verb; every other invocation
+    # — including a quoted prompt that merely starts with the word — falls
+    # through to the prompt-send path below, unchanged.
+    raw_argv = sys.argv[1:]
+    if raw_argv and raw_argv[0] in VERBS:
+        verb, rest = raw_argv[0], raw_argv[1:]
+        if verb == "help":
+            _print_verb_help()
+            return
+        if verb == "doctor":
+            sys.exit(cmd_doctor(rest))
+        if verb == "status":
+            sys.exit(cmd_status(rest))
+        if verb == "logs":
+            sys.exit(cmd_logs(rest))
+
     parser = argparse.ArgumentParser(
         prog="claw",
         description="Run a NanoClaw agent from the command line.",
+        epilog=(
+            "operator verbs (diagnostics, no prompt sent):\n"
+            "  claw doctor        full health check (reuses setup/verify.ts)\n"
+            "  claw status        quick /health liveness read\n"
+            "  claw logs [-f]     recent orchestrator log lines (-f follows)\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("prompt", nargs="?", help="Prompt to send")
     parser.add_argument("-g", "--group", help="Group name or folder (fuzzy match)")

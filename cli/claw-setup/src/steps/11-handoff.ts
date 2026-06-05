@@ -61,6 +61,13 @@ export const step: Step = {
     const region = machine.region ?? '<unknown>';
     const operator = os.userInfo().username;
 
+    // Whether the `claw` operator CLI is installed (~/bin/claw per the /claw
+    // skill). When present, the debug cheat-sheet below leads with friendly
+    // `claw` verbs (doctor/status/logs); when absent, it falls back to the raw
+    // curl/launchctl/tail incantations. Best-effort — same guard style as the
+    // doctorInstalled / recoveryInstalled checks above.
+    const clawInstalled = fs.existsSync(path.join(os.homedir(), 'bin', 'claw'));
+
     const dashboardUrl = `http://${hostname}:7842`;
     const healthUrl = `http://${hostname}:7842/health`;
 
@@ -186,9 +193,17 @@ export const step: Step = {
           ]
         : []),
       'If you ever need to debug from Terminal:',
-      `  curl ${healthUrl} | jq      (health JSON)`,
-      '  launchctl list | grep com.nanoclaw     (is the service running?)',
-      '  tail -f logs/nanoclaw.log              (live log stream)',
+      ...(clawInstalled
+        ? [
+            '  claw doctor          (full health check + what to do next)',
+            '  claw status          (is NanoClaw up right now?)',
+            '  claw logs -f         (live log stream)',
+          ]
+        : [
+            `  curl ${healthUrl} | jq      (health JSON)`,
+            '  launchctl list | grep com.nanoclaw     (is the service running?)',
+            '  tail -f logs/nanoclaw.log              (live log stream)',
+          ]),
     ].join('\n');
 
     ui.note('Handoff', cheatSheet);
