@@ -390,6 +390,7 @@ in `cli/claw-setup-gui/src/renderer/src/steps/`:
 | OneCLI secret config | The `host-pattern`, `header-name`, and `value-format` the wizard passes to `onecli secrets create`. Encoded in the provider's `providers.json` entry, not in the React component. |
 | Model picker | Auto-populates from the provider's model-list endpoint where possible; falls back to a freeform input. **Always pre-select the recommended default.** |
 | Default model | A sensible recommendation that gets pre-selected. |
+| Subscription option (optional) | Providers that can also route through a consumer subscription declare a `subscription_auth` block in `providers.json` (`label`, `tagline`, `setup_command`, `token_format_hint`, `docs_note`, `supports_keychain_rotation`). When present, the credentials step renders an "API key vs subscription" choice; the subscription path collects a long-lived token from `setup_command` and validates it through the OneCLI proxy (`POST /v1/messages`), not the api-key `/v1/models` probe. Only Anthropic uses this today (`claude setup-token`). |
 
 **UI pattern — the provider picker.** Layout the cards in a 2-column
 grid (or 1-column on narrow viewports). Recommended provider sits

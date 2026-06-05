@@ -582,6 +582,18 @@ The toggle script performs all side effects atomically (marker update, OneCLI se
 
 Safety: the watcher (`~/.local/bin/nanoclaw-oauth-refresh.sh`) self-checks the marker at the top of every run and exits silently if the mode is not `oauth-workaround`. This means an accidentally-loaded watcher cannot damage `api-key` mode.
 
+#### Subscription via `claude setup-token` (preferred over the keychain watcher)
+
+There are **two ways** to route through a Claude Pro/Max subscription, and they are mutually exclusive:
+
+1. **Paste a long-lived token (recommended).** Run `claude setup-token` once (any machine with a browser); it mints a **~1-year** `sk-ant-oat01-…` token. Register it into OneCLI (the Setup GUI's Anthropic → "Claude subscription" → "Paste a long-lived token" does this; or `onecli secrets update --id <id> --value <token>`). Leave the marker at `api-key` and **do not** load the watcher. This is the steadier path: the token is dedicated and does not ride the interactive Claude Code refresh-rotation cycle, so concurrent `claude`/Claude Desktop sessions on the host don't invalidate it (the root cause of the 2026-04-21/04-25 outages; cf. anthropics/claude-code #24317).
+
+2. **Keychain auto-rotation (`oauth-workaround`).** The watcher syncs OneCLI from the macOS keychain every 60s. Use only when you can't mint a setup-token. It's macOS-only and **less reliable** — a single subscription credential shared across several Claude Code sessions gets invalidated by the others.
+
+Do not combine them: if you paste a setup-token AND load the watcher, the watcher will overwrite your pasted token with the keychain value on its next tick. The GUI persists which method was chosen in `setup-state.json` (`data.anthropic_token_source` = `setup-token` | `keychain-watcher`).
+
+Either way the OneCLI injection shape is identical — `x-api-key` (see below); both `sk-ant-api…` and `sk-ant-oat…` work through it.
+
 ### Per-Group Agent Architecture
 
 NanoClaw uses **per-group OneCLI agents** (see `src/container-runner.ts`):

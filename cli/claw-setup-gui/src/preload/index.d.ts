@@ -6,10 +6,12 @@ import type {
   MountAllowlist,
   OneCLIProbe,
   ProbeKeyResult,
+  ProbeSubscriptionResult,
   ProfileWriteInput,
   ProfileWriteResult,
   ProviderRegistry,
   ServiceInstallResult,
+  SetAuthModeResult,
   SetupState
 } from '../shared/types'
 
@@ -98,6 +100,22 @@ interface ElectronAPI {
       apiKey: string,
       orchestratorRoot?: string | null
     ) => Promise<CreateCredentialResult>
+    updateCredential: (
+      protocol: string,
+      value: string,
+      orchestratorRoot?: string | null
+    ) => Promise<CreateCredentialResult>
+    probeSubscription: (
+      protocol: string,
+      token: string,
+      orchestratorRoot?: string | null
+    ) => Promise<ProbeSubscriptionResult>
+  }
+  auth: {
+    setMode: (
+      mode: 'oauth-workaround' | 'api-key',
+      orchestratorRoot: string | null
+    ) => Promise<SetAuthModeResult>
   }
   service: {
     status: () => Promise<boolean>

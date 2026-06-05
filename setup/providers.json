@@ -21,6 +21,17 @@
       "header_name": "x-api-key",
       "value_format": "{value}"
     },
+    "probe_headers": {
+      "anthropic-version": "2023-06-01"
+    },
+    "subscription_auth": {
+      "label": "Use my Claude Pro/Max subscription",
+      "tagline": "Mint a long-lived token from your Claude subscription — no metered API key.",
+      "setup_command": "claude setup-token",
+      "token_format_hint": "Starts with sk-ant-oat",
+      "docs_note": "Uses your own Claude subscription via Anthropic's official `claude setup-token` (the same mechanism Claude Code uses). The token is long-lived (about a year) and does not auto-rotate — re-run the command to renew it. Treat it like a password. Note: from 2026-06-15, Agent SDK usage on subscription plans draws from a capped monthly credit.",
+      "supports_keychain_rotation": true
+    },
     "capabilities": {
       "tool_use": "best",
       "vision": true,

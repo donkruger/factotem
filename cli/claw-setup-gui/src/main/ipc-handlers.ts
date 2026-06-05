@@ -18,8 +18,11 @@ import {
 import {
   listProviders,
   probeKey as probeProviderKey,
-  createCredential as createProviderCredential
+  createCredential as createProviderCredential,
+  updateOrCreateCredential as updateProviderCredential,
+  probeSubscriptionToken as probeProviderSubscription
 } from './services/providers'
+import { setAuthMode } from './services/auth-mode'
 import {
   installLaunchd,
   isLaunchdLoaded,
@@ -171,6 +174,28 @@ export function registerIpcHandlers(): void {
     'providers:create-credential',
     (_e, protocol: string, apiKey: string, orchestratorRoot?: string | null) =>
       createProviderCredential(protocol, apiKey, orchestratorRoot)
+  )
+  // Update-or-create: overwrites an existing named secret's value (the
+  // create handler no-ops when the secret exists). Used by the subscription
+  // path and by API-key reconfigure/rotation.
+  ipcMain.handle(
+    'providers:update-credential',
+    (_e, protocol: string, value: string, orchestratorRoot?: string | null) =>
+      updateProviderCredential(protocol, value, orchestratorRoot)
+  )
+  // Validate a Claude subscription (sk-ant-oat) token via the OneCLI proxy
+  // (POST /v1/messages), not the api-key models probe.
+  ipcMain.handle(
+    'providers:probe-subscription',
+    (_e, protocol: string, token: string, orchestratorRoot?: string | null) =>
+      probeProviderSubscription(protocol, token, orchestratorRoot)
+  )
+
+  // ── Auth mode (macOS keychain auto-rotation; optional subscription path) ──
+  ipcMain.handle(
+    'auth:set-mode',
+    (_e, mode: 'oauth-workaround' | 'api-key', orchestratorRoot: string | null) =>
+      setAuthMode(mode, orchestratorRoot)
   )
 
   // ── Service (launchd / systemd) ───────────────────────────────────────────

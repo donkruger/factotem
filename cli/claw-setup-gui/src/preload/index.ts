@@ -7,10 +7,12 @@ import type {
   MountAllowlist,
   OneCLIProbe,
   ProbeKeyResult,
+  ProbeSubscriptionResult,
   ProfileWriteInput,
   ProfileWriteResult,
   ProviderRegistry,
   ServiceInstallResult,
+  SetAuthModeResult,
   SetupState
 } from '../shared/types'
 
@@ -144,7 +146,36 @@ const electronAPI = {
         protocol,
         apiKey,
         orchestratorRoot ?? null
+      ),
+    updateCredential: (
+      protocol: string,
+      value: string,
+      orchestratorRoot?: string | null
+    ): Promise<CreateCredentialResult> =>
+      ipcRenderer.invoke(
+        'providers:update-credential',
+        protocol,
+        value,
+        orchestratorRoot ?? null
+      ),
+    probeSubscription: (
+      protocol: string,
+      token: string,
+      orchestratorRoot?: string | null
+    ): Promise<ProbeSubscriptionResult> =>
+      ipcRenderer.invoke(
+        'providers:probe-subscription',
+        protocol,
+        token,
+        orchestratorRoot ?? null
       )
+  },
+  auth: {
+    setMode: (
+      mode: 'oauth-workaround' | 'api-key',
+      orchestratorRoot: string | null
+    ): Promise<SetAuthModeResult> =>
+      ipcRenderer.invoke('auth:set-mode', mode, orchestratorRoot ?? null)
   },
   service: {
     status: (): Promise<boolean> => ipcRenderer.invoke('service:status'),

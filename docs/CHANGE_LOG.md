@@ -6,6 +6,52 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ## 2026-06-05
 
+### Setup GUI — Claude leg offers API key OR Claude Pro/Max subscription
+
+The GUI wizard's Credentials step (`cli/claw-setup-gui/.../CredentialsStep.tsx`)
+previously collected an Anthropic **API key** only (OAuth was a "coming soon"
+stub). It now offers a choice on the Anthropic provider:
+
+- **API key** (recommended, unchanged path) — `sk-ant-api…`, metered, no rotation.
+- **Claude subscription** — two sourcing methods ("offer both"):
+  - **Paste a `claude setup-token` token** (recommended, cross-platform): a
+    long-lived (~1yr) `sk-ant-oat…` token registered into OneCLI. This is the
+    official, supported subscription mechanism and the **robust default** — it
+    sidesteps the volatile, shared rotating keychain token that caused the
+    2026-04-21/04-25 connection-consistency outages (a dedicated long-lived
+    token isn't invalidated by Don's concurrent interactive Claude Code/Desktop
+    sessions; cf. anthropics/claude-code #24317, #48786).
+  - **macOS keychain auto-rotation** (gated to macOS): drives the existing
+    `scripts/set-auth-mode.sh oauth-workaround` + `com.nanoclaw.oauth-refresh`
+    watcher. Clearly marked less reliable (shared-token invalidation).
+
+**Registry-driven** (`setup/providers.json`): an optional `subscription_auth`
+block on the `anthropic` entry gates the choice; the renderer stays data-driven
+and other providers are untouched. New shared type `subscription_auth?` on
+`ProviderRegistryEntry` (mirrored in GUI `shared/types.ts` + service
+`providers.ts`).
+
+**IPC (three-file contract):** new `providers:update-credential`
+(`updateOrCreateCredential` — overwrites an existing OneCLI secret's value,
+fixing the `createCredential` no-op-on-exists bug so reconfigure/rotation
+actually takes), `providers:probe-subscription` (`probeSubscriptionToken` —
+validates an `sk-ant-oat` token through the OneCLI proxy via `POST /v1/messages`,
+NOT the api-key `GET /v1/models` probe, which rejects OAuth tokens), and
+`auth:set-mode` (wraps `set-auth-mode.sh` for the macOS path). State records
+`data.anthropic_auth_mode` + `data.anthropic_token_source`.
+
+**Header decision (resolved from OPERATIONS § Auth Mode):** both `sk-ant-api…`
+and `sk-ant-oat…` are injected via `x-api-key`. Injecting OAuth as
+`Authorization: Bearer` is NOT viable here — the container sends
+`x-api-key: placeholder`, which Anthropic evaluates before `Authorization`, so
+the Bearer header is never read. The plan's B2 (Bearer) is therefore dropped.
+
+Verified: `npm run typecheck` (node + web) + `npm run build` clean. Live
+subscription probe + GUI click-through require a Mac with OneCLI running and a
+real `setup-token` token (not exercisable in CI). Follow-ups (separate
+increment): B3 event-driven token refresh + stale-container reaping on the
+agent-runner's auth-error path; B5 watcher observability on the dashboard.
+
 ### setup/verify — distinguish an unreadable groups DB from zero groups
 
 The registered-groups probe in `setup/verify.ts` wrapped the better-sqlite3

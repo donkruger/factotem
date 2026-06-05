@@ -123,6 +123,29 @@ export interface ProviderRegistryEntry {
     header_name: string
     value_format: string
   } | null
+  /**
+   * Optional headers required by the provider's models-endpoint probe
+   * but NOT by the OneCLI credential injection. Anthropic, for
+   * example, rejects requests missing `anthropic-version`; the runtime
+   * SDK sets it automatically inside the agent container but our
+   * wizard's curl-based probe has to send it explicitly.
+   */
+  probe_headers?: Record<string, string>
+  /**
+   * Present only on providers that can also route through a consumer
+   * subscription (Anthropic/Claude). When set, the Credentials step offers
+   * an "API key vs subscription" choice; the subscription path collects a
+   * long-lived token minted by `setup_command` (`claude setup-token`).
+   */
+  subscription_auth?: {
+    label: string
+    tagline: string
+    setup_command: string
+    token_format_hint: string
+    docs_note: string
+    /** macOS-only: also offer the keychain auto-rotation watcher. */
+    supports_keychain_rotation?: boolean
+  }
   capabilities: {
     tool_use: string
     vision: boolean
@@ -152,6 +175,31 @@ export interface ProbeKeyResult {
 export interface CreateCredentialResult {
   success: boolean
   alreadyExisted?: boolean
+  error?: string
+}
+
+// Result of validating a Claude subscription (OAuth) token. The API-key
+// probe can't be reused: GET /v1/models + x-api-key rejects sk-ant-oat
+// tokens, so we format-gate the prefix and (when the OneCLI proxy is up)
+// round-trip a tiny POST /v1/messages through it. See providers.ts
+// probeSubscriptionToken + scripts/set-auth-mode.sh probe_auth.
+export interface ProbeSubscriptionResult {
+  ok: boolean
+  message: string
+  /** 'format' = passed prefix check only (proxy not reachable yet);
+   *  'live' = the OneCLI proxy round-tripped a real message to Anthropic. */
+  verified: 'format' | 'live'
+  error_class?:
+    | 'auth.invalid_token'
+    | 'provider.unreachable'
+    | 'onecli.not_injected'
+    | 'unknown'
+}
+
+// Result of driving scripts/set-auth-mode.sh (macOS keychain auto-rotation).
+export interface SetAuthModeResult {
+  success: boolean
+  output?: string
   error?: string
 }
 

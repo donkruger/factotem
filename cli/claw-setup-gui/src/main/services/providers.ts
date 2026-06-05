@@ -43,6 +43,21 @@ export interface ProviderRegistryEntry {
     header_name: string
     value_format: string
   } | null
+  // Optional non-auth headers the models-endpoint probe requires
+  // (e.g. anthropic-version on Anthropic). Runtime SDKs set these
+  // automatically inside the container; the wizard's curl probe has
+  // to send them explicitly.
+  probe_headers?: Record<string, string>
+  // Present only on providers that can route through a consumer
+  // subscription (Anthropic/Claude). Mirror of the shared-types shape.
+  subscription_auth?: {
+    label: string
+    tagline: string
+    setup_command: string
+    token_format_hint: string
+    docs_note: string
+    supports_keychain_rotation?: boolean
+  }
   capabilities: {
     tool_use: string
     vision: boolean
@@ -177,6 +192,21 @@ async function probeWithHeader(
   // curl is preferred over fetch here — runs in the main process where
   // network is unrestricted, and the operator's wizard already shells
   // out to curl for OneCLI probes. Identical observability.
+  //
+  // Some providers reject a request that's missing a provider-specific
+  // header even when the auth header is correct — Anthropic's
+  // /v1/models returns HTTP 400 ("anthropic-version: header is
+  // required") unless we send `anthropic-version: 2023-06-01`. The
+  // runtime SDK inside the agent container sets these automatically;
+  // the wizard's probe has to send them explicitly. `probe_headers`
+  // on the registry entry lists the extras; absent = no extras (the
+  // OpenAI-compatible providers don't need any).
+  const extraHeaderArgs: string[] = []
+  if (entry.probe_headers) {
+    for (const [name, value] of Object.entries(entry.probe_headers)) {
+      extraHeaderArgs.push('-H', `${name}: ${value}`)
+    }
+  }
   const r = await runCommand('curl', [
     '-sS',
     '-o',
@@ -187,6 +217,7 @@ async function probeWithHeader(
     '10',
     '-H',
     `${headerName}: ${headerValue}`,
+    ...extraHeaderArgs,
     entry.models_endpoint
   ])
   return interpretProbeResult(entry, r)
@@ -385,5 +416,253 @@ async function probeSecretExists(
     )
   } catch {
     return false
+  }
+}
+
+/**
+ * Resolve the OneCLI secret id for a (name, hostPattern) pair so we can
+ * `secrets update --id`. The exact JSON key OneCLI uses for the id isn't
+ * documented here, so accept the common spellings. Returns null when the
+ * secret is absent or its id can't be determined.
+ */
+async function findSecretId(
+  bin: string,
+  name: string,
+  hostPattern: string
+): Promise<string | null> {
+  const r = await runCommand(bin, ['secrets', 'list'])
+  if (r.code !== 0) return null
+  try {
+    const list = JSON.parse(r.stdout) as Array<{
+      name?: string
+      hostPattern?: string
+      id?: string
+      secretId?: string
+      uuid?: string
+    }>
+    if (!Array.isArray(list)) return null
+    const hit = list.find((s) => s.name === name && s.hostPattern === hostPattern)
+    if (!hit) return null
+    return hit.id ?? hit.secretId ?? hit.uuid ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Register OR overwrite the provider's OneCLI secret value.
+ *
+ * Unlike createCredential (which no-ops when the named secret already
+ * exists), this UPDATES the value of an existing secret — required when an
+ * operator switches the Anthropic secret between an API key and a
+ * subscription token, or rotates either. The injection config (header,
+ * value_format, host pattern) comes from the registry on *create* and is
+ * left untouched on *update* (only `--value` changes), matching
+ * scripts/set-auth-mode.sh push_secret.
+ *
+ * For Anthropic both an `sk-ant-api…` key and an `sk-ant-oat…` subscription
+ * token share the same `x-api-key` injection (the path the orchestrator's
+ * OneCLI proxy already uses for both). Switching that header to
+ * `Authorization: Bearer` for OAuth (plan item B2) is a verified follow-up.
+ */
+export async function updateOrCreateCredential(
+  protocol: string,
+  value: string,
+  orchestratorRoot?: string | null
+): Promise<CreateCredentialResult> {
+  const registry = loadProviderRegistry(orchestratorRoot)
+  const entry = registry[protocol]
+  if (!entry) {
+    return { success: false, error: `Unknown provider: ${protocol}` }
+  }
+  if (!entry.onecli) {
+    // Local provider — no OneCLI secret required.
+    return { success: true }
+  }
+
+  const bin = findBin('onecli')
+  if (!bin) {
+    return { success: false, error: 'onecli not found on PATH.' }
+  }
+
+  const id = await findSecretId(bin, entry.onecli.name, entry.onecli.host_pattern)
+  if (id) {
+    const r = await runCommand(bin, ['secrets', 'update', '--id', id, '--value', value])
+    if (r.code !== 0) {
+      return {
+        success: false,
+        error:
+          r.stderr.trim().split('\n').slice(-3).join(' · ') ||
+          `onecli secrets update exited ${r.code}`
+      }
+    }
+    return { success: true, alreadyExisted: true }
+  }
+
+  // No existing secret — create it with the registry's injection config.
+  const r = await runCommand(bin, [
+    'secrets',
+    'create',
+    '--name',
+    entry.onecli.name,
+    '--type',
+    'generic',
+    '--value',
+    value,
+    '--host-pattern',
+    entry.onecli.host_pattern,
+    '--path-pattern',
+    '/*',
+    '--header-name',
+    entry.onecli.header_name,
+    '--value-format',
+    entry.onecli.value_format
+  ])
+  if (r.code !== 0) {
+    return {
+      success: false,
+      error:
+        r.stderr.trim().split('\n').slice(-3).join(' · ') ||
+        `onecli secrets create exited ${r.code}`
+    }
+  }
+  return { success: true }
+}
+
+export interface ProbeSubscriptionResult {
+  ok: boolean
+  message: string
+  /** 'format' = passed prefix check only; 'live' = proxy accepted a message. */
+  verified: 'format' | 'live'
+  error_class?:
+    | 'auth.invalid_token'
+    | 'provider.unreachable'
+    | 'onecli.not_injected'
+    | 'unknown'
+}
+
+/**
+ * Validate a Claude subscription (OAuth) token.
+ *
+ * The API-key probe (GET /v1/models + x-api-key) REJECTS sk-ant-oat tokens,
+ * so we never route a subscription token through probeKey. Instead:
+ *   1. Format-gate the `sk-ant-oat` prefix.
+ *   2. If the OneCLI proxy + a default agent are up, replicate
+ *      scripts/set-auth-mode.sh's probe: a tiny POST /v1/messages THROUGH
+ *      the proxy (which injects the *stored* secret) and read the response.
+ *
+ * Call this AFTER updateOrCreateCredential has stored the token — the probe
+ * exercises whatever OneCLI currently holds. When the proxy isn't reachable
+ * yet (first-run, before the service is installed) we soft-pass with
+ * verified:'format'; the credential is stored and will be exercised on the
+ * first real message.
+ */
+export async function probeSubscriptionToken(
+  protocol: string,
+  token: string,
+  orchestratorRoot?: string | null
+): Promise<ProbeSubscriptionResult> {
+  const registry = loadProviderRegistry(orchestratorRoot)
+  const entry = registry[protocol]
+  if (!entry?.subscription_auth) {
+    return {
+      ok: false,
+      message: `${protocol} has no subscription option.`,
+      verified: 'format',
+      error_class: 'unknown'
+    }
+  }
+  if (!token.startsWith('sk-ant-oat')) {
+    return {
+      ok: false,
+      verified: 'format',
+      message: `That doesn't look like a subscription token (${entry.subscription_auth.token_format_hint}). Run \`${entry.subscription_auth.setup_command}\` and paste the value it prints.`,
+      error_class: 'auth.invalid_token'
+    }
+  }
+
+  const bin = findBin('onecli')
+  if (!bin) {
+    return {
+      ok: true,
+      verified: 'format',
+      message: 'Token saved. OneCLI was not found here — it will be verified on the first message.'
+    }
+  }
+
+  // Default-agent token for the proxy's basic-auth, and the proxy CA cert.
+  const agentsList = await runCommand(bin, ['agents', 'list'])
+  let agentToken = ''
+  try {
+    const agents = JSON.parse(agentsList.stdout) as Array<{
+      isDefault?: boolean
+      accessToken?: string
+    }>
+    if (Array.isArray(agents)) {
+      agentToken = agents.find((a) => a.isDefault)?.accessToken ?? ''
+    }
+  } catch {
+    /* no agents yet */
+  }
+  const caLookup = await runCommand('/bin/sh', [
+    '-c',
+    'ls /var/folders/*/*/T/onecli-proxy-ca.pem 2>/dev/null | head -1'
+  ])
+  const ca = caLookup.stdout.trim()
+  if (!agentToken || !ca) {
+    return {
+      ok: true,
+      verified: 'format',
+      message:
+        "Token saved. OneCLI's proxy isn't running yet — we'll confirm it on the first message."
+    }
+  }
+
+  const probe = await runCommand('curl', [
+    '-sS',
+    '-m',
+    '8',
+    '-x',
+    `http://x:${agentToken}@localhost:10255`,
+    '--cacert',
+    ca,
+    '-H',
+    'x-api-key: placeholder',
+    '-H',
+    'Content-Type: application/json',
+    '-H',
+    'anthropic-version: 2023-06-01',
+    '-d',
+    '{"model":"claude-sonnet-4-6","max_tokens":1,"messages":[{"role":"user","content":"."}]}',
+    'https://api.anthropic.com/v1/messages'
+  ])
+  const body = probe.stdout
+  if (body.includes('"id":"msg_') || body.includes('rate_limit_error')) {
+    return { ok: true, verified: 'live', message: 'Connected via your Claude subscription.' }
+  }
+  if (body.includes('authentication_error') || body.includes('invalid x-api-key')) {
+    return {
+      ok: false,
+      verified: 'live',
+      message:
+        'Anthropic rejected that token. Re-run `claude setup-token` and paste the fresh value.',
+      error_class: 'auth.invalid_token'
+    }
+  }
+  if (body.includes('credential_not_found')) {
+    return {
+      ok: false,
+      verified: 'live',
+      message: 'OneCLI could not inject the credential. Check `onecli secrets list`.',
+      error_class: 'onecli.not_injected'
+    }
+  }
+  // Unknown response — the token format was valid and it is stored; don't
+  // hard-fail. It will be exercised on the first real message.
+  return {
+    ok: true,
+    verified: 'format',
+    message:
+      'Token saved. Could not fully verify through the proxy; it will be exercised on the first message.'
   }
 }
