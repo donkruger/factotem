@@ -2,18 +2,18 @@
  * Step: verify — End-to-end health check of the full installation.
  * Replaces 09-verify.sh
  *
- * Uses better-sqlite3 directly (no sqlite3 CLI), platform-aware service checks.
+ * Reads the groups DB via setup/db-probe (better-sqlite3, no sqlite3 CLI) and
+ * does platform-aware service checks.
  */
 import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import Database from 'better-sqlite3';
-
 import { STORE_DIR } from '../src/config.js';
 import { readEnvFile } from '../src/env.js';
 import { logger } from '../src/logger.js';
+import { dbErrorHint, readRegisteredGroupCount } from './db-probe.js';
 import {
   getPlatform,
   getServiceManager,
@@ -21,6 +21,31 @@ import {
   isRoot,
 } from './platform.js';
 import { emitStatus } from './status.js';
+
+/**
+ * Decide overall verify status from the individual signals.
+ *
+ * Group-count semantics: `null` = unknown (the DB could not be read). Unknown
+ * is NON-blocking — a transient/ABI DB-read failure must not by itself fail an
+ * otherwise-healthy deployment (the historical false-negative this guards). A
+ * known count of 0 (DB read fine, no groups registered) still fails: that is
+ * genuinely incomplete setup.
+ */
+export function decideVerifyStatus(signals: {
+  service: string;
+  credentials: string;
+  anyChannelConfigured: boolean;
+  groupCount: number | null;
+}): 'success' | 'failed' {
+  const groupsHealthy =
+    signals.groupCount === null || signals.groupCount > 0;
+  return signals.service === 'running' &&
+    signals.credentials !== 'missing' &&
+    signals.anyChannelConfigured &&
+    groupsHealthy
+    ? 'success'
+    : 'failed';
+}
 
 export async function run(_args: string[]): Promise<void> {
   const projectRoot = process.cwd();
@@ -139,20 +164,18 @@ export async function run(_args: string[]): Promise<void> {
   const configuredChannels = Object.keys(channelAuth);
   const anyChannelConfigured = configuredChannels.length > 0;
 
-  // 5. Check registered groups (using better-sqlite3, not sqlite3 CLI)
-  let registeredGroups = 0;
+  // 5. Check registered groups (using better-sqlite3, not sqlite3 CLI).
+  // `count === null` means the DB existed but could not be read (e.g. a
+  // better-sqlite3 ABI mismatch). That is "unknown", NOT "0 groups" — see
+  // db-probe.ts. We log the error rather than swallowing it, and below it is
+  // treated as non-blocking for overall status.
   const dbPath = path.join(STORE_DIR, 'messages.db');
-  if (fs.existsSync(dbPath)) {
-    try {
-      const db = new Database(dbPath, { readonly: true });
-      const row = db
-        .prepare('SELECT COUNT(*) as count FROM registered_groups')
-        .get() as { count: number };
-      registeredGroups = row.count;
-      db.close();
-    } catch {
-      // Table might not exist
-    }
+  const groupsProbe = readRegisteredGroupCount(dbPath);
+  if (groupsProbe.error) {
+    logger.error(
+      { dbPath, error: groupsProbe.error },
+      'Could not read registered_groups; group count is unknown (not zero)',
+    );
   }
 
   // 6. Check mount allowlist
@@ -165,28 +188,41 @@ export async function run(_args: string[]): Promise<void> {
     mountAllowlist = 'configured';
   }
 
-  // Determine overall status
-  const status =
-    service === 'running' &&
-    credentials !== 'missing' &&
-    anyChannelConfigured &&
-    registeredGroups > 0
-      ? 'success'
-      : 'failed';
+  // Determine overall status (see decideVerifyStatus — an unknown group count
+  // from a failed DB read is non-blocking, a known 0 still fails).
+  const status = decideVerifyStatus({
+    service,
+    credentials,
+    anyChannelConfigured,
+    groupCount: groupsProbe.count,
+  });
 
-  logger.info({ status, channelAuth }, 'Verification complete');
+  logger.info(
+    { status, channelAuth, registeredGroups: groupsProbe.count },
+    'Verification complete',
+  );
 
-  emitStatus('VERIFY', {
+  const fields: Record<string, string | number | boolean> = {
     SERVICE: service,
     CONTAINER_RUNTIME: containerRuntime,
     CREDENTIALS: credentials,
     CONFIGURED_CHANNELS: configuredChannels.join(','),
     CHANNEL_AUTH: JSON.stringify(channelAuth),
-    REGISTERED_GROUPS: registeredGroups,
+    REGISTERED_GROUPS:
+      groupsProbe.count === null ? 'unknown' : groupsProbe.count,
     MOUNT_ALLOWLIST: mountAllowlist,
     STATUS: status,
     LOG: 'logs/setup.log',
-  });
+  };
+  // Surface a failed DB read as distinct fields so consumers (CLI wizard, GUI
+  // doctor, `claw doctor`) can tell "couldn't read the DB" apart from "0 groups"
+  // instead of rendering a misleading zero.
+  if (groupsProbe.error) {
+    fields.DB_ERROR = groupsProbe.error;
+    fields.DB_ERROR_HINT = dbErrorHint(groupsProbe.error);
+  }
+
+  emitStatus('VERIFY', fields);
 
   if (status === 'failed') process.exit(1);
 }

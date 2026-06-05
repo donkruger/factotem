@@ -449,7 +449,17 @@ def cmd_doctor(rest_args: list) -> int:
              "Add one: /add-whatsapp, /add-telegram, /add-slack, or /add-discord.")
 
     groups = f.get("REGISTERED_GROUPS", "0")
-    if groups not in ("0", ""):
+    db_error = f.get("DB_ERROR")
+    if groups == "unknown" or db_error:
+        # A failed DB read (commonly a better-sqlite3 ABI mismatch) is NOT zero
+        # groups — verify.ts emits REGISTERED_GROUPS: unknown + DB_ERROR for it.
+        # Render a warning with the actionable hint, never a green ✓ on a bogus
+        # count. Doesn't gate overall health (STATUS already accounts for it).
+        hint = f.get("DB_ERROR_HINT") or (
+            "Couldn't read store/messages.db. Run `claw doctor` from the same "
+            "Node as the service, or `npm rebuild better-sqlite3`.")
+        _row(pal, "warn", "Registered groups", "couldn't read database", hint)
+    elif groups not in ("0", ""):
         _row(pal, "ok", "Registered groups", groups)
     else:
         _row(pal, "warn", "Registered groups", "none yet",

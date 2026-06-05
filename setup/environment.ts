@@ -5,10 +5,9 @@
 import fs from 'fs';
 import path from 'path';
 
-import Database from 'better-sqlite3';
-
 import { STORE_DIR } from '../src/config.js';
 import { logger } from '../src/logger.js';
+import { readRegisteredGroupCount } from './db-probe.js';
 import { commandExists, getPlatform, isHeadless, isWSL } from './platform.js';
 import { emitStatus } from './status.js';
 
@@ -50,19 +49,18 @@ export async function run(_args: string[]): Promise<void> {
   if (fs.existsSync(path.join(projectRoot, 'data', 'registered_groups.json'))) {
     hasRegisteredGroups = true;
   } else {
-    // Check SQLite directly using better-sqlite3 (no sqlite3 CLI needed)
+    // Check SQLite via the shared probe (no sqlite3 CLI needed). A failed read
+    // (e.g. a better-sqlite3 ABI mismatch) is logged rather than swallowed, and
+    // leaves hasRegisteredGroups false — we could not confirm existing groups.
     const dbPath = path.join(STORE_DIR, 'messages.db');
-    if (fs.existsSync(dbPath)) {
-      try {
-        const db = new Database(dbPath, { readonly: true });
-        const row = db
-          .prepare('SELECT COUNT(*) as count FROM registered_groups')
-          .get() as { count: number };
-        if (row.count > 0) hasRegisteredGroups = true;
-        db.close();
-      } catch {
-        // Table might not exist yet
-      }
+    const groupsProbe = readRegisteredGroupCount(dbPath);
+    if (groupsProbe.error) {
+      logger.error(
+        { dbPath, error: groupsProbe.error },
+        'Could not read registered_groups during environment check',
+      );
+    } else if ((groupsProbe.count ?? 0) > 0) {
+      hasRegisteredGroups = true;
     }
   }
 

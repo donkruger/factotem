@@ -4,6 +4,60 @@ Timestamped record of significant changes to this BenClaw fork.
 
 ---
 
+## 2026-06-05
+
+### setup/verify — distinguish an unreadable groups DB from zero groups
+
+The registered-groups probe in `setup/verify.ts` wrapped the better-sqlite3
+read in a bare `catch {}` and let a **failed read** fall through as
+`registeredGroups = 0`. Because the overall-status gate required
+`registeredGroups > 0`, any DB-read error produced a misleading
+`REGISTERED_GROUPS: 0` + `STATUS: failed` on a perfectly healthy install — and
+that false-negative propagated to the CLI wizard, the GUI Doctor's recovery
+chain, and `claw doctor`.
+
+Reproduced 2026-06-05: `store/messages.db` had 10 registered groups (confirmed
+via the `sqlite3` CLI), but `npx tsx setup/index.ts --step verify` reported
+`REGISTERED_GROUPS: 0` / `STATUS: failed`. Root cause was a better-sqlite3 ABI
+mismatch — the addon was built for `NODE_MODULE_VERSION 141`
+(`/opt/homebrew/bin/node`, the launchd service's Node) but the interactive
+`npx tsx` path resolved a Node requiring `NODE_MODULE_VERSION 127`. The silent
+catch hid it entirely.
+
+**Changes:**
+
+- New `setup/db-probe.ts` — single source for the DB read. Returns
+  `{ count: number | null, error: string | null }`: a throw yields
+  `count: null` ("unknown"), **never** `0`. Also exports `isAbiMismatch()` and
+  `dbErrorHint()` (ABI mismatches get specific, actionable guidance). Errors are
+  collapsed to a single line so they survive the `KEY: value` status block.
+- `setup/verify.ts` — uses the probe; logs the error via `logger.error` instead
+  of swallowing it; emits `REGISTERED_GROUPS: unknown` plus `DB_ERROR` /
+  `DB_ERROR_HINT` fields on a read failure. Status logic extracted to the
+  testable `decideVerifyStatus()`: an **unknown** count is non-blocking (a
+  transient/ABI read failure no longer fails an otherwise-healthy deployment),
+  while a **known** `0` still fails (genuinely incomplete setup).
+- `setup/environment.ts` — routed through the same probe so its identical silent
+  swallow now logs the error too (emitted `HAS_REGISTERED_GROUPS` contract
+  unchanged). Addresses the systemic risk that the same mismatch breaks any
+  setup step touching the DB.
+- `.claude/skills/claw/scripts/claw` — `doctor` now renders `unknown` /
+  `DB_ERROR` as a ⚠ warning ("couldn't read database") with the hint, instead of
+  a green ✓ on a bogus count or a wrong "register your main chat" suggestion.
+- `.claude/skills/setup/SKILL.md` — documents the `unknown` / `DB_ERROR` state so
+  the wizard doesn't "fix" a read error by re-registering groups.
+- `docs/OPERATIONS.md` — new "better-sqlite3 ABI mismatch" troubleshooting
+  section: diagnose with `process.versions.modules`, prefer running setup with
+  the service's Node, rebuild only after standardising on one Node.
+- Tests: `setup/verify.test.ts` covers the status gate (unknown is non-blocking,
+  known-0 fails) and all three probe branches (absent DB → 0, clean read → real
+  count, unreadable file → `count: null` + error), plus the ABI hint logic.
+
+Verified end-to-end on the repro host: under the mismatched Node the probe emits
+`REGISTERED_GROUPS: unknown` + `DB_ERROR` (logged, not swallowed); under the
+service's Node it reports the real count (`10`); `npx tsc --noEmit` clean; 19
+setup tests pass.
+
 ## 2026-05-15
 
 ### v1.2.1 — finishing the multi-agent surface (PR 12)

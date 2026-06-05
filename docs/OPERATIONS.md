@@ -205,6 +205,49 @@ mv store/messages.db store/messages.db.bak
 # NanoClaw will create a fresh database on next start
 ```
 
+### better-sqlite3 ABI mismatch (`NODE_MODULE_VERSION`)
+
+**Symptom.** A setup step that reads the DB reports `REGISTERED_GROUPS: unknown`
+with a `DB_ERROR` / `DB_ERROR_HINT` mentioning `NODE_MODULE_VERSION` (e.g. in
+`claw doctor`: `⚠ Registered groups: couldn't read database`). The orchestrator
+itself is fine — only the DB read from *this shell* fails.
+
+**Root cause.** `node_modules/better-sqlite3` ships a native addon compiled for
+one Node.js ABI. If the Node running the command differs from the Node that
+built the addon, `new Database()` throws. This is common because the two paths
+use different Node installs:
+
+- The **launchd/systemd service** runs a pinned Node — on this host
+  `/opt/homebrew/bin/node` (see `ProgramArguments[0]` in
+  `~/Library/LaunchAgents/com.nanoclaw.plist`). The addon is built for *its* ABI.
+- The **interactive `npx tsx` path** resolves whatever `node` is first on the
+  shell `PATH` (e.g. `~/.local/bin/node`), which may be a different major.
+
+```bash
+# Diagnose: compare the two Nodes' ABI ("modules") versions — they must match.
+node -p "process.versions.modules"                 # the shell's Node
+/opt/homebrew/bin/node -p "process.versions.modules"  # the service's Node
+```
+
+**Fix — make the Node consistent (preferred over a blind rebuild):**
+
+```bash
+# Run setup/verify with the SAME Node the service uses (prepend its dir):
+PATH=/opt/homebrew/bin:$PATH npx tsx setup/index.ts --step verify
+```
+
+Only `npm rebuild` if you have *standardised* on one Node everywhere — and run
+it with that same Node, or you just move the mismatch to the other environment:
+
+```bash
+PATH=/opt/homebrew/bin:$PATH npm rebuild better-sqlite3   # rebuild for the service's Node
+```
+
+Since the [2026-06-05 fix](CHANGE_LOG.md), a DB-read failure no longer forces
+`STATUS: failed`: the count is reported as `unknown` (not a misleading `0`) and
+is non-blocking for overall health. The same guard covers every setup step that
+reads the DB (`verify`, `environment`).
+
 ### Stale Agent-Runner Cache
 
 After modifying `container/agent-runner/src/`, cached copies override the baked-in container code:

@@ -290,6 +290,8 @@ Run `npx tsx setup/index.ts --step verify` and parse the status block.
 - REGISTERED_GROUPS=0 → re-invoke the channel skills from step 5
 - MOUNT_ALLOWLIST=missing → `npx tsx setup/index.ts --step mounts -- --empty`
 
+**Note — REGISTERED_GROUPS=unknown (a `DB_ERROR` field is also present):** the groups DB could **not be read**; this is NOT zero groups and does not by itself set STATUS=failed. It is almost always a better-sqlite3 ABI mismatch — the Node running `npx tsx` differs from the Node that built `node_modules` / runs the service. Follow `DB_ERROR_HINT`: re-run verify with the service's Node (prepend its dir to PATH) or `npm rebuild better-sqlite3` with that Node. Do **not** "fix" this by re-registering groups.
+
 Tell user to test: send a message in their registered chat. Show: `tail -f logs/nanoclaw.log`
 
 ## Troubleshooting
