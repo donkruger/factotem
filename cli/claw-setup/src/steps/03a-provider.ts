@@ -37,6 +37,9 @@ interface ProviderRegistryEntry {
     header_name: string;
     value_format: string;
   } | null;
+  // Optional headers required by the models-endpoint probe but not by
+  // OneCLI credential injection (e.g. anthropic-version on Anthropic).
+  probe_headers?: Record<string, string>;
   capabilities: {
     tool_use: string;
     vision: boolean;

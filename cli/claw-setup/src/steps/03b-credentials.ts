@@ -117,7 +117,19 @@ export const step: Step = {
     // Probe the provider's models_endpoint to verify the key works
     // before we register it with OneCLI. Same diagnostics shape the
     // GUI surfaces.
+    //
+    // Some providers reject probes missing a provider-specific header
+    // even when auth is correct (Anthropic needs anthropic-version).
+    // The runtime SDK inside the container sets these automatically;
+    // we have to mirror them here for the curl-based probe. Listed on
+    // the registry entry as `probe_headers`; absent means no extras.
     const headerValue = entry.onecli.value_format.replace('{value}', apiKey);
+    const extraHeaderArgs: string[] = [];
+    if (entry.probe_headers) {
+      for (const [name, value] of Object.entries(entry.probe_headers)) {
+        extraHeaderArgs.push('-H', `${name}: ${value}`);
+      }
+    }
     const probe = await ui.runCommand('curl', [
       '-sS',
       '-o',
@@ -128,6 +140,7 @@ export const step: Step = {
       '10',
       '-H',
       `${entry.onecli.header_name}: ${headerValue}`,
+      ...extraHeaderArgs,
       entry.models_endpoint,
     ]);
     const status = parseInt(probe.stdout.trim(), 10) || 0;

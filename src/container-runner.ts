@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  AUTH_MODE_PATH,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
@@ -35,6 +36,32 @@ import {
 } from './providers-registry.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
+
+/**
+ * Whether the Anthropic credential currently held by OneCLI is an OAuth
+ * subscription token (sk-ant-oat…) rather than an API key (sk-ant-api…).
+ *
+ * This matters because Anthropic only accepts OAuth tokens via the
+ * `Authorization: Bearer` header — it rejects them on `x-api-key` (the
+ * placeholder `ANTHROPIC_API_KEY` OneCLI injects makes the SDK send
+ * `x-api-key`, which Anthropic evaluates first and rejects with
+ * `authentication_error: invalid x-api-key`). When in a subscription mode
+ * we therefore route the container through `ANTHROPIC_AUTH_TOKEN`, which
+ * makes the Claude SDK send `Authorization: Bearer` and NOT `x-api-key`,
+ * so OneCLI's `Authorization` injection lands cleanly.
+ *
+ * Source of truth is the shared auth-mode marker (see config.AUTH_MODE_PATH
+ * and scripts/set-auth-mode.sh). Defaults to API-key behaviour (the stable
+ * long-term state) when the marker is absent or unreadable.
+ */
+function anthropicUsesBearerAuth(): boolean {
+  try {
+    const mode = fs.readFileSync(AUTH_MODE_PATH, 'utf8').trim();
+    return mode === 'subscription' || mode === 'oauth-workaround';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Map a provider's protocol → wire protocol → container image. Reads from
@@ -465,6 +492,26 @@ async function buildContainerArgs(
       agent: agentIdentifier,
     });
     if (onecliApplied) {
+      // OneCLI injects `ANTHROPIC_API_KEY=placeholder`, so the Claude SDK
+      // sends `x-api-key: placeholder`. For an OAuth subscription token that
+      // header poisons the request (Anthropic rejects it before reading the
+      // injected `Authorization: Bearer`). Rewrite the injected env to
+      // `ANTHROPIC_AUTH_TOKEN` so the SDK sends `Authorization` (and no
+      // `x-api-key`), letting OneCLI's Bearer injection take effect.
+      if (
+        providerCtx.provider.protocol === 'anthropic' &&
+        anthropicUsesBearerAuth()
+      ) {
+        const idx = args.findIndex((a) => a.startsWith('ANTHROPIC_API_KEY='));
+        if (idx !== -1) {
+          const value = args[idx].slice('ANTHROPIC_API_KEY='.length);
+          args[idx] = `ANTHROPIC_AUTH_TOKEN=${value}`;
+          logger.info(
+            { containerName },
+            'Anthropic subscription mode: routing container auth via ANTHROPIC_AUTH_TOKEN (Authorization: Bearer)',
+          );
+        }
+      }
       logger.info(
         { containerName, credential: providerCtx.provider.credential_id },
         'OneCLI gateway config applied',
@@ -546,7 +593,7 @@ export async function runContainerAgent(
   //   3. deployment default agent's provider (fallback when group is
   //      unassigned, which is the v1/v2 install state on upgrade)
   // On a v1.0 install the resolved provider is always Anthropic with
-  // claude-opus-4.6 — identical behaviour to before this change.
+  // claude-opus-4-6 — identical behaviour to before this change.
   const resolvedAgent = resolveAgentForGroup(group);
   const resolvedProvider = resolveProviderForGroup(group);
   const providerCtx: ProviderContext = {

@@ -49,6 +49,7 @@ export function normaliseFactoryResult(
   result: ChannelFactoryResult,
 ): Channel[] {
   if (result == null) return [];
-  if (Array.isArray(result)) return result.filter((c): c is Channel => c != null);
+  if (Array.isArray(result))
+    return result.filter((c): c is Channel => c != null);
   return [result];
 }

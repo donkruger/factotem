@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI as toolkitAPI } from '@electron-toolkit/preload'
 import type {
+  ClaudeDetectResult,
   CreateCredentialResult,
   EnvCheckResult,
   HealthSummary,
@@ -12,6 +13,7 @@ import type {
   ProfileWriteResult,
   ProviderRegistry,
   ServiceInstallResult,
+  ServiceStartResult,
   SetAuthModeResult,
   SetupState
 } from '../shared/types'
@@ -177,10 +179,18 @@ const electronAPI = {
     ): Promise<SetAuthModeResult> =>
       ipcRenderer.invoke('auth:set-mode', mode, orchestratorRoot ?? null)
   },
+  claude: {
+    // Is the Claude Code CLI installed (for the subscription auto-run path)?
+    // Minting runs through the subprocess:* channels with the returned path.
+    detect: (): Promise<ClaudeDetectResult> => ipcRenderer.invoke('claude:detect')
+  },
   service: {
     status: (): Promise<boolean> => ipcRenderer.invoke('service:status'),
     install: (orchestratorRoot: string): Promise<ServiceInstallResult> =>
       ipcRenderer.invoke('service:install', orchestratorRoot),
+    // One-click "start the orchestrator" for the service-down remediation
+    // panel (renderer/components/OrchestratorUnreachable.tsx).
+    start: (): Promise<ServiceStartResult> => ipcRenderer.invoke('service:start'),
     unload: (): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('service:unload')
   },

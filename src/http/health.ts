@@ -236,13 +236,13 @@ async function probeWhatsApp(): Promise<HealthSnapshot['whatsapp']> {
           ORDER BY is_shared DESC, created_at ASC`,
       )
       .all() as Array<{
-        id: string;
-        display_name: string;
-        auth_path: string;
-        last_connected_at: string | null;
-        phone_hint: string | null;
-        is_shared: number;
-      }>;
+      id: string;
+      display_name: string;
+      auth_path: string;
+      last_connected_at: string | null;
+      phone_hint: string | null;
+      is_shared: number;
+    }>;
     pairings = rows.map((r) => {
       let authed = false;
       try {

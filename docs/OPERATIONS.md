@@ -563,12 +563,13 @@ cd ~/.onecli && docker compose down && docker compose up -d
 
 ### Auth Mode
 
-NanoClaw has two supported auth modes, tracked by a single marker file at `~/.config/nanoclaw/auth-mode` (outside Documents/ — the launchd-spawned watcher cannot traverse TCC-protected folders; see the 2026-04-24 lesson below). `api-key` is the stable long-term state; `oauth-workaround` is retained as a reversible fallback.
+NanoClaw has three auth modes, tracked by a single marker file at `~/.config/nanoclaw/auth-mode` (outside Documents/ — the launchd-spawned watcher cannot traverse TCC-protected folders; see the 2026-04-24 lesson below). The marker is **load-bearing**: the orchestrator reads it at container-spawn time to decide whether the agent container authenticates with `x-api-key` (API key) or `Authorization: Bearer` (OAuth token) — see "Anthropic Secret — Known-Working Config".
 
-| Mode | When to use | What's active |
-|------|-------------|---------------|
-| `api-key` | OneCLI holds a non-rotating Anthropic API key (`sk-ant-api...`). This is the stable long-term state. | Nothing auth-specific — credential sits in OneCLI, no watchers, no rotation required. |
-| `oauth-workaround` | OneCLI holds a rotating subscription OAuth token (`sk-ant-oat01-...`) — typically because the host is authenticated via `claude` CLI and you haven't minted an API key yet. | launchd watcher `com.nanoclaw.oauth-refresh` polls the macOS keychain every 60s and re-pushes fresh tokens into OneCLI. See "Applicable only in oauth-workaround mode" below. |
+| Mode | When to use | Injection | What's active |
+|------|-------------|-----------|---------------|
+| `api-key` | OneCLI holds a non-rotating Anthropic API key (`sk-ant-api...`). The simplest, most reliable state for an always-on agent. | `x-api-key: {value}` (container uses `ANTHROPIC_API_KEY`). | Nothing auth-specific — credential sits in OneCLI, no watchers, no rotation required. |
+| `subscription` | OneCLI holds a long-lived `sk-ant-oat01-…` token minted by `claude setup-token` (~1 year, dedicated, does not auto-rotate). The recommended subscription path. | `Authorization: Bearer {value}` (container uses `ANTHROPIC_AUTH_TOKEN`). | Nothing auto-running — the token is static. Re-run `claude setup-token` to renew. **No watcher.** |
+| `oauth-workaround` | OneCLI holds a keychain-rotated `sk-ant-oat01-...` token — use only when you can't mint a setup-token. Less reliable. | `Authorization: Bearer {value}` (container uses `ANTHROPIC_AUTH_TOKEN`). | launchd watcher `com.nanoclaw.oauth-refresh` polls the macOS keychain every 60s and re-pushes fresh tokens into OneCLI. See "Applicable only in oauth-workaround mode" below. |
 
 Check and switch with the toggle script:
 
@@ -586,13 +587,13 @@ Safety: the watcher (`~/.local/bin/nanoclaw-oauth-refresh.sh`) self-checks the m
 
 There are **two ways** to route through a Claude Pro/Max subscription, and they are mutually exclusive:
 
-1. **Paste a long-lived token (recommended).** Run `claude setup-token` once (any machine with a browser); it mints a **~1-year** `sk-ant-oat01-…` token. Register it into OneCLI (the Setup GUI's Anthropic → "Claude subscription" → "Paste a long-lived token" does this; or `onecli secrets update --id <id> --value <token>`). Leave the marker at `api-key` and **do not** load the watcher. This is the steadier path: the token is dedicated and does not ride the interactive Claude Code refresh-rotation cycle, so concurrent `claude`/Claude Desktop sessions on the host don't invalidate it (the root cause of the 2026-04-21/04-25 outages; cf. anthropics/claude-code #24317).
+1. **Paste a long-lived token (recommended).** Run `claude setup-token` once (any machine with a browser); it mints a **~1-year** `sk-ant-oat01-…` token. Register it into OneCLI with **`Authorization: Bearer` injection** — the Setup GUI's Anthropic → "Claude subscription" → "Paste a long-lived token" does this (and sets the marker to `subscription`), or do it manually: `onecli secrets update --id <id> --value <token> --header-name Authorization --value-format 'Bearer {value}'`. Set the marker to `subscription` and **do not** load the watcher. This is the steadier path: the token is dedicated and does not ride the interactive Claude Code refresh-rotation cycle, so concurrent `claude`/Claude Desktop sessions on the host don't invalidate it (the root cause of the 2026-04-21/04-25 outages; cf. anthropics/claude-code #24317).
 
-2. **Keychain auto-rotation (`oauth-workaround`).** The watcher syncs OneCLI from the macOS keychain every 60s. Use only when you can't mint a setup-token. It's macOS-only and **less reliable** — a single subscription credential shared across several Claude Code sessions gets invalidated by the others.
+2. **Keychain auto-rotation (`oauth-workaround`).** The watcher syncs OneCLI from the macOS keychain every 60s. Use only when you can't mint a setup-token. It's macOS-only and **less reliable** — a single subscription credential shared across several Claude Code sessions gets invalidated by the others. Same `Authorization: Bearer` injection as the setup-token path (both hold an `sk-ant-oat…` token).
 
 Do not combine them: if you paste a setup-token AND load the watcher, the watcher will overwrite your pasted token with the keychain value on its next tick. The GUI persists which method was chosen in `setup-state.json` (`data.anthropic_token_source` = `setup-token` | `keychain-watcher`).
 
-Either way the OneCLI injection shape is identical — `x-api-key` (see below); both `sk-ant-api…` and `sk-ant-oat…` work through it.
+The injection shape is **not** identical across credential types — it depends on whether the value is an API key or an OAuth token (see "Anthropic Secret — Known-Working Config" below). The orchestrator reads the `~/.config/nanoclaw/auth-mode` marker (`api-key` | `subscription` | `oauth-workaround`) at container-spawn time to route the container's auth header accordingly.
 
 ### Per-Group Agent Architecture
 
@@ -610,24 +611,36 @@ This asymmetry is the source of most credential-related incidents: a change that
 
 ### Anthropic Secret — Known-Working Config
 
-`--type anthropic` does not work in current OneCLI versions (returns `credential_not_found` at the proxy layer). Use `--type generic` with the `x-api-key` header override instead:
+`--type anthropic` does not work in current OneCLI versions (returns `credential_not_found` at the proxy layer). Use `--type generic`. **The injection shape depends on the credential type** — Anthropic accepts an API key on `x-api-key`, but an OAuth/subscription token (`sk-ant-oat…`) **only** on `Authorization: Bearer`.
+
+**API key (`sk-ant-api…`) — `x-api-key`:**
 
 ```bash
 onecli secrets create --name Anthropic --type generic \
-  --value 'sk-ant-...' \
+  --value 'sk-ant-api...' \
   --host-pattern 'api.anthropic.com' \
   --path-pattern '/*' \
   --header-name 'x-api-key' \
   --value-format '{value}'
 ```
 
-Why this specific shape:
+**Subscription/OAuth token (`sk-ant-oat…`) — `Authorization: Bearer`:**
 
-- The container is spawned with `ANTHROPIC_API_KEY=placeholder`, so the SDK sends `x-api-key: placeholder`. OneCLI generic injection with the **same** header name (`x-api-key`) overrides the value, swapping in the real credential.
-- `--value-format 'Bearer {value}'` (an older suggestion) does not work — Anthropic evaluates `x-api-key` before `Authorization`, sees the placeholder, and rejects the request before reading the Bearer header. The container then replies with the literal string `Invalid API key · Fix external API key`.
+```bash
+onecli secrets update --id <id> \
+  --value 'sk-ant-oat01-...' \
+  --header-name 'Authorization' \
+  --value-format 'Bearer {value}'
+# and set the marker so the orchestrator routes the container correctly:
+printf 'subscription\n' > ~/.config/nanoclaw/auth-mode
+```
+
+Why this matters (verified 2026-06-09 — supersedes the earlier "x-api-key works for both" claim):
+
+- The container is spawned by OneCLI with `ANTHROPIC_API_KEY=placeholder`, so by default the Claude SDK sends `x-api-key: placeholder`. For an **API key**, OneCLI's `x-api-key` injection overrides that placeholder with the real value — works.
+- For an **OAuth token**, `x-api-key` is rejected outright: `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`. Anthropic now requires `Authorization: Bearer` for `sk-ant-oat…` tokens.
+- You cannot just add `Authorization: Bearer` on top of the placeholder `x-api-key` — Anthropic evaluates `x-api-key` first and rejects before reading the Bearer header. The container therefore must **not** send `x-api-key` at all. In `subscription`/`oauth-workaround` mode, `src/container-runner.ts` rewrites the injected `ANTHROPIC_API_KEY` env to `ANTHROPIC_AUTH_TOKEN`, which makes the SDK send `Authorization: Bearer` and omit `x-api-key`; OneCLI's `Authorization` injection then supplies the real token. The `~/.config/nanoclaw/auth-mode` marker drives that routing (the Setup GUI writes it; `sk-ant-oat…` → `subscription`).
 - `--path-pattern '/*'` is required — a `null` pattern does not match `/v1/messages`.
-
-Anthropic accepts subscription OAuth tokens (`sk-ant-oat01-...`) via `x-api-key`, not only API keys. The injection shape above is correct for both.
 
 #### Applicable only in oauth-workaround mode
 

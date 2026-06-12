@@ -23,9 +23,11 @@ import {
   probeSubscriptionToken as probeProviderSubscription
 } from './services/providers'
 import { setAuthMode } from './services/auth-mode'
+import { detectClaudeCli } from './services/claude-auth'
 import {
   installLaunchd,
   isLaunchdLoaded,
+  startOrchestrator,
   unloadLaunchd
 } from './services/service'
 import { readMountAllowlist, writeMountAllowlist } from './services/mounts'
@@ -198,11 +200,17 @@ export function registerIpcHandlers(): void {
       setAuthMode(mode, orchestratorRoot)
   )
 
+  // ── Claude Code CLI detection (subscription auto-run capture path) ────────
+  // The renderer mints the token by spawning `<path> setup-token` through the
+  // streaming subprocess:* IPC; this only answers "is it installed, and where".
+  ipcMain.handle('claude:detect', () => detectClaudeCli())
+
   // ── Service (launchd / systemd) ───────────────────────────────────────────
   ipcMain.handle('service:status', () => isLaunchdLoaded())
   ipcMain.handle('service:install', (_e, orchestratorRoot: string) =>
     installLaunchd(orchestratorRoot)
   )
+  ipcMain.handle('service:start', () => startOrchestrator())
   ipcMain.handle('service:unload', () => unloadLaunchd())
 
   // ── Mounts allowlist ──────────────────────────────────────────────────────

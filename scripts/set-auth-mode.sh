@@ -1,21 +1,29 @@
 #!/bin/zsh
 set -euo pipefail
 
-# set-auth-mode.sh — switch NanoClaw between oauth-workaround and api-key modes.
+# set-auth-mode.sh — switch NanoClaw's Anthropic auth mode.
 #
-# Modes:
-#   oauth-workaround  — OneCLI holds a rotating subscription OAuth token;
-#                       the launchd watcher `com.nanoclaw.oauth-refresh` keeps
-#                       it in sync with the macOS keychain. Temporary.
-#   api-key           — OneCLI holds a non-rotating Anthropic API key; watcher
-#                       must be absent or it will overwrite the key.
+# Modes (the injection header DIFFERS by credential type — Anthropic accepts
+# an API key on x-api-key, but an OAuth token ONLY on Authorization: Bearer):
+#   api-key           — OneCLI holds a non-rotating Anthropic API key
+#                       (sk-ant-api…), injected as `x-api-key: {value}`.
+#                       Watcher must be absent or it will overwrite the key.
+#   subscription      — OneCLI holds a long-lived `claude setup-token` OAuth
+#                       token (sk-ant-oat…), injected as
+#                       `Authorization: Bearer {value}`. Static (~1yr), no
+#                       watcher. The recommended subscription path.
+#   oauth-workaround  — OneCLI holds a keychain-rotated OAuth token
+#                       (sk-ant-oat…), injected as `Authorization: Bearer
+#                       {value}`; the launchd watcher `com.nanoclaw.oauth-
+#                       refresh` keeps it in sync with the macOS keychain.
 #
 # Usage:
 #   scripts/set-auth-mode.sh status
 #   scripts/set-auth-mode.sh api-key [--value sk-ant-api...]
+#   scripts/set-auth-mode.sh subscription --value sk-ant-oat...
 #   scripts/set-auth-mode.sh oauth-workaround
 #
-# Source of truth: nanoclaw/.auth-mode (plain text, one line).
+# Source of truth: ~/.config/nanoclaw/auth-mode (plain text, one line).
 
 # NOTE: this constant is duplicated in ~/.local/bin/nanoclaw-oauth-refresh.sh.
 # If you rotate the OneCLI secret's UUID, update both.
@@ -71,15 +79,20 @@ probe_auth() {
     echo "  probe skipped (no CA cert or default-agent token)"
     return 0
   fi
+  # Send NO auth header — let OneCLI inject whatever the stored secret
+  # configures (x-api-key for an API key, Authorization: Bearer for an OAuth
+  # token). A placeholder `x-api-key` here would poison a Bearer-injected
+  # OAuth token: Anthropic evaluates x-api-key first and rejects with
+  # "invalid x-api-key" even though the Bearer token is valid (2026-06-09).
   local response
   response=$(curl -sS -m 5 -x "http://x:${agent_token}@localhost:10255" --cacert "$ca" \
-    -H 'x-api-key: placeholder' -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' \
+    -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' \
     -d '{"model":"claude-sonnet-4-6","max_tokens":1,"messages":[{"role":"user","content":"."}]}' \
     https://api.anthropic.com/v1/messages 2>/dev/null)
   if [[ "$response" == *'"rate_limit_error"'* || "$response" == *'"id":"msg_'* ]]; then
     echo "  probe: auth is live (Anthropic accepted the stored credential)"
-  elif [[ "$response" == *'"invalid x-api-key"'* ]]; then
-    echo "  probe: FAIL — Anthropic rejected the stored credential (invalid x-api-key)"
+  elif [[ "$response" == *'"invalid x-api-key"'* || "$response" == *'"authentication_error"'* ]]; then
+    echo "  probe: FAIL — Anthropic rejected the stored credential (authentication_error)"
   elif [[ "$response" == *'"credential_not_found"'* ]]; then
     echo "  probe: FAIL — OneCLI could not inject (credential_not_found)"
   else
@@ -113,9 +126,20 @@ unload_watcher() {
 }
 
 push_secret() {
-  local value="$1"
-  "$ONECLI_BIN" secrets update --id "$ONECLI_SECRET_ID" --value "$value" >/dev/null
-  echo "  onecli secrets update: pushed new value to $ONECLI_SECRET_ID"
+  # push_secret <value> [header-name value-format]
+  # When a header-name + value-format are given, the injection config is
+  # updated alongside the value — required when switching between an API key
+  # (x-api-key) and an OAuth token (Authorization: Bearer), since Anthropic
+  # rejects an OAuth token sent on x-api-key.
+  local value="$1"; shift
+  if [[ $# -ge 2 ]]; then
+    "$ONECLI_BIN" secrets update --id "$ONECLI_SECRET_ID" --value "$value" \
+      --header-name "$1" --value-format "$2" >/dev/null
+    echo "  onecli secrets update: pushed value + injection ($1: $2) to $ONECLI_SECRET_ID"
+  else
+    "$ONECLI_BIN" secrets update --id "$ONECLI_SECRET_ID" --value "$value" >/dev/null
+    echo "  onecli secrets update: pushed new value to $ONECLI_SECRET_ID"
+  fi
 }
 
 cmd_status() {
@@ -147,12 +171,43 @@ cmd_api_key() {
   echo "  marker: api-key"
   unload_watcher
   if [[ -n "$new_value" ]]; then
-    push_secret "$new_value"
+    push_secret "$new_value" x-api-key '{value}'
     rm -f "$WATCHER_CACHE" /tmp/nanoclaw-oauth-refresh.health
     echo "  watcher cache + health file cleared"
   else
     echo "  NOTE: no --value supplied; OneCLI still holds the previous credential"
+    echo "  WARNING: injection NOT reset to x-api-key — if the previous"
+    echo "           credential was an OAuth token, re-run with --value sk-ant-api..."
   fi
+  stop_containers
+  probe_auth
+  echo "Done. Log the switchover in ben-log/ per project CLAUDE.md."
+}
+
+cmd_subscription() {
+  local new_value=""
+  if [[ $# -ge 1 && "$1" == "--value" ]]; then
+    shift
+    [[ $# -ge 1 ]] || { echo "ERROR: --value requires an argument" >&2; exit 2; }
+    new_value="$1"
+  fi
+  [[ -n "$new_value" ]] || {
+    echo "ERROR: subscription mode requires --value sk-ant-oat... (from 'claude setup-token')" >&2
+    exit 2
+  }
+  case "$new_value" in
+    sk-ant-oat*) ;;
+    *) echo "ERROR: --value must be an OAuth token (sk-ant-oat...). Use 'api-key' for sk-ant-api keys." >&2; exit 2 ;;
+  esac
+
+  echo "Switching to subscription mode (long-lived setup-token)"
+  write_mode "subscription"
+  echo "  marker: subscription"
+  # The watcher would overwrite a pasted setup-token with the keychain value.
+  unload_watcher
+  push_secret "$new_value" Authorization 'Bearer {value}'
+  rm -f "$WATCHER_CACHE" /tmp/nanoclaw-oauth-refresh.health
+  echo "  watcher cache + health file cleared"
   stop_containers
   probe_auth
   echo "Done. Log the switchover in ben-log/ per project CLAUDE.md."
@@ -168,7 +223,7 @@ cmd_oauth_workaround() {
     echo "  ERROR: could not read OAuth token from keychain; aborting" >&2
     exit 1
   fi
-  push_secret "$token"
+  push_secret "$token" Authorization 'Bearer {value}'
   printf '%s' "$token" > "$WATCHER_CACHE"
   chmod 600 "$WATCHER_CACHE"
   echo "  watcher cache seeded with current keychain token"
@@ -183,9 +238,10 @@ main() {
   case "$action" in
     status) cmd_status ;;
     api-key) shift; cmd_api_key "$@" ;;
+    subscription) shift; cmd_subscription "$@" ;;
     oauth-workaround) cmd_oauth_workaround ;;
     ""|-h|--help)
-      sed -n '3,18p' "$0"
+      sed -n '4,25p' "$0"
       exit 0
       ;;
     *)

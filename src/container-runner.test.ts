@@ -82,7 +82,7 @@ vi.mock('./agents.js', () => {
     persona: '',
     provider: {
       protocol: 'anthropic',
-      model: 'claude-opus-4.6',
+      model: 'claude-opus-4-6',
       base_url: null,
       credential_id: 'Anthropic',
     },

@@ -415,7 +415,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         groupAgent: group.agent_id ?? null,
         triggeredAgent: agentOverride.id,
       },
-      'Per-message agent trigger overrode the group\'s assigned agent',
+      "Per-message agent trigger overrode the group's assigned agent",
     );
   }
 
@@ -1100,6 +1100,35 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
+  // Start the HTTP server FIRST — before connecting any channels — so the
+  // Factotem dashboard's /health and /api/* routes (including the setup +
+  // pairing endpoints) bind regardless of channel state. A logged-out or
+  // unpaired WhatsApp channel must never take down the orchestrator API:
+  // the operator needs the API up precisely so the wizard can re-pair it
+  // (see ben-log 2026-06-05 — one logged-out channel crash-looped the whole
+  // service 29k times and the wizard's PairingChoiceStep could not load).
+  // Tailscale-local; no app-level auth in v1.
+  // T-1778233000000 (Phase 0.1) + T-1778236000000 (Phase 0.5).
+  startHttpServer({
+    getRegisteredGroups: () => registeredGroups,
+    reloadConfig: () => {
+      try {
+        process.kill(process.pid, 'SIGHUP');
+      } catch (err) {
+        logger.warn({ err }, 'reloadConfig: failed to send SIGHUP to self');
+      }
+    },
+    injectIpcMessage: (groupFolder, text) => {
+      const ipcInputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
+      fs.mkdirSync(ipcInputDir, { recursive: true });
+      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+      const tempPath = path.join(ipcInputDir, `${filename}.tmp`);
+      const finalPath = path.join(ipcInputDir, filename);
+      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
+      fs.renameSync(tempPath, finalPath);
+    },
+  });
+
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, OR one
@@ -1186,28 +1215,9 @@ async function main(): Promise<void> {
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
 
-  // Start the HTTP server for the Factotem dashboard's /health and
-  // /api/* routes. Tailscale-local; no app-level auth in v1.
-  // T-1778233000000 (Phase 0.1) + T-1778236000000 (Phase 0.5).
-  startHttpServer({
-    getRegisteredGroups: () => registeredGroups,
-    reloadConfig: () => {
-      try {
-        process.kill(process.pid, 'SIGHUP');
-      } catch (err) {
-        logger.warn({ err }, 'reloadConfig: failed to send SIGHUP to self');
-      }
-    },
-    injectIpcMessage: (groupFolder, text) => {
-      const ipcInputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
-      fs.mkdirSync(ipcInputDir, { recursive: true });
-      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
-      const tempPath = path.join(ipcInputDir, `${filename}.tmp`);
-      const finalPath = path.join(ipcInputDir, filename);
-      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
-      fs.renameSync(tempPath, finalPath);
-    },
-  });
+  // NOTE: the HTTP server (/health + /api/*) is started earlier, before the
+  // channel-connect loop, so the API binds even when a channel is logged
+  // out or unpaired. See the startHttpServer call above.
 
   // SIGHUP handler — reload registeredGroups from DB without a full
   // service restart. Triggered by the dashboard API after a PATCH to

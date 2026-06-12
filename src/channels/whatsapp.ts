@@ -101,6 +101,14 @@ export class WhatsAppChannel implements Channel {
 
   private sock!: WASocket;
   private connected = false;
+  /**
+   * Set when WhatsApp reports this pairing is logged out or needs a fresh
+   * QR/pairing-code link. The orchestrator stays alive (it must — the API
+   * and setup/pairing endpoints are how the operator re-links); this flag
+   * lets /health and the dashboard surface "needs re-pair" instead of the
+   * service silently crash-looping (ben-log 2026-06-05).
+   */
+  private needsReauth = false;
   private lidToPhoneMap: Record<string, string> = {};
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
@@ -117,8 +125,7 @@ export class WhatsAppChannel implements Channel {
     // Resolve the pairing for this instance. Explicit pairing wins;
     // otherwise read the deployment's shared WhatsApp pairing (which
     // the migration synthesised from store/auth/ on first boot).
-    const resolved =
-      opts.pairing ?? getDefaultPairing('whatsapp') ?? null;
+    const resolved = opts.pairing ?? getDefaultPairing('whatsapp') ?? null;
     if (resolved) {
       this.pairingId = resolved.id;
       this.displayName = resolved.display_name;
@@ -192,13 +199,21 @@ export class WhatsAppChannel implements Channel {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        const msg =
-          'WhatsApp authentication required. Run /setup in Claude Code.';
-        logger.error(msg);
+        const msg = 'WhatsApp authentication required. Run /setup to re-pair.';
+        logger.error({ pairingId: this.pairingId }, msg);
         exec(
           `osascript -e 'display notification "${msg}" with title "NanoClaw" sound name "Basso"'`,
         );
-        setTimeout(() => process.exit(1), 1000);
+        // Do NOT exit the process. The orchestrator must stay up so the
+        // HTTP API + setup/pairing endpoints remain reachable for the
+        // operator to re-link (ben-log 2026-06-05). Mark needs-reauth and
+        // settle connect() so the rest of main() (HTTP server, scheduler)
+        // proceeds instead of hanging on the unresolved connect promise.
+        this.needsReauth = true;
+        if (onFirstOpen) {
+          onFirstOpen();
+          onFirstOpen = undefined;
+        }
       }
 
       if (connection === 'close') {
@@ -219,8 +234,23 @@ export class WhatsAppChannel implements Channel {
         if (shouldReconnect) {
           this.scheduleReconnect(1, onFirstOpen);
         } else {
-          logger.info('Logged out. Run /setup to re-authenticate.');
-          process.exit(0);
+          // Logged out (401). Previously this called process.exit(0), which
+          // under launchd KeepAlive crash-looped the entire orchestrator —
+          // taking down the HTTP API the operator needs to re-pair, and
+          // spamming the logs (ben-log 2026-06-05: 29k "Logged out" lines).
+          // Instead: keep the process alive, flag needs-reauth, and settle
+          // connect() so main() can finish starting the HTTP server etc.
+          // Re-pairing happens via /setup; no automatic reconnect (a
+          // logged-out session can only be fixed by a fresh link).
+          logger.warn(
+            { pairingId: this.pairingId },
+            'WhatsApp logged out — run /setup to re-pair. Orchestrator staying up so the API/pairing endpoints remain reachable.',
+          );
+          this.needsReauth = true;
+          if (onFirstOpen) {
+            onFirstOpen();
+            onFirstOpen = undefined;
+          }
         }
       } else if (connection === 'open') {
         this.connected = true;
@@ -746,7 +776,5 @@ registerChannel('whatsapp', (opts: ChannelOpts) => {
   if (pairings.length === 0) {
     return new WhatsAppChannel(opts);
   }
-  return pairings.map(
-    (pairing) => new WhatsAppChannel({ ...opts, pairing }),
-  );
+  return pairings.map((pairing) => new WhatsAppChannel({ ...opts, pairing }));
 });

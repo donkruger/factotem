@@ -16,9 +16,53 @@
 // (Phase C).
 
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { runCommand } from './subprocess'
 import { findBin } from './path-utils'
+
+/**
+ * Anthropic credential injection depends on the credential TYPE:
+ *   - API key (sk-ant-api…): Anthropic accepts it on `x-api-key`.
+ *   - Subscription/OAuth token (sk-ant-oat…): Anthropic REJECTS `x-api-key`
+ *     ("invalid x-api-key") and only accepts `Authorization: Bearer`.
+ * The registry's static `onecli` config can't capture this, so for
+ * Anthropic we pick the injection shape from the value at registration
+ * time. (ben-log 2026-06-09: the previously-documented "x-api-key works
+ * for both" is no longer true — Anthropic changed OAuth handling.)
+ */
+function isAnthropicSubscriptionToken(value: string): boolean {
+  return value.startsWith('sk-ant-oat')
+}
+
+interface OneCLIInjection {
+  headerName: string
+  valueFormat: string
+}
+
+function anthropicInjectionFor(value: string): OneCLIInjection {
+  return isAnthropicSubscriptionToken(value)
+    ? { headerName: 'Authorization', valueFormat: 'Bearer {value}' }
+    : { headerName: 'x-api-key', valueFormat: '{value}' }
+}
+
+/**
+ * Persist the Anthropic auth-mode marker the orchestrator reads at
+ * container-spawn time (see nanoclaw/src/container-runner.ts and
+ * config.AUTH_MODE_PATH). `subscription` makes the runtime route the
+ * container via ANTHROPIC_AUTH_TOKEN (Authorization: Bearer); `api-key`
+ * keeps the x-api-key path. The keychain-rotation path writes
+ * `oauth-workaround` via scripts/set-auth-mode.sh and is left untouched.
+ */
+function writeAuthModeMarker(mode: 'api-key' | 'subscription'): void {
+  try {
+    const dir = path.join(os.homedir(), '.config', 'nanoclaw')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'auth-mode'), `${mode}\n`)
+  } catch {
+    /* non-fatal: the secret is still registered; routing falls back to api-key */
+  }
+}
 
 // Resolve providers.json relative to the orchestrator root the wizard is
 // configured to manage. The wizard discovers this root via env.check; we
@@ -372,6 +416,13 @@ export async function createCredential(
     return { success: true, alreadyExisted: true }
   }
 
+  // For Anthropic, the injection shape depends on the credential type
+  // (API key → x-api-key; OAuth/subscription token → Authorization: Bearer).
+  const injection =
+    protocol === 'anthropic'
+      ? anthropicInjectionFor(apiKey)
+      : { headerName: entry.onecli.header_name, valueFormat: entry.onecli.value_format }
+
   const r = await runCommand(bin, [
     'secrets',
     'create',
@@ -386,9 +437,9 @@ export async function createCredential(
     '--path-pattern',
     '/*',
     '--header-name',
-    entry.onecli.header_name,
+    injection.headerName,
     '--value-format',
-    entry.onecli.value_format
+    injection.valueFormat
   ])
   if (r.code !== 0) {
     return {
@@ -397,6 +448,9 @@ export async function createCredential(
         r.stderr.trim().split('\n').slice(-3).join(' · ') ||
         `onecli secrets create exited ${r.code}`
     }
+  }
+  if (protocol === 'anthropic') {
+    writeAuthModeMarker(isAnthropicSubscriptionToken(apiKey) ? 'subscription' : 'api-key')
   }
   return { success: true }
 }
@@ -485,9 +539,29 @@ export async function updateOrCreateCredential(
     return { success: false, error: 'onecli not found on PATH.' }
   }
 
+  // For Anthropic the injection shape is value-dependent (API key →
+  // x-api-key; OAuth/subscription token → Authorization: Bearer). We must
+  // therefore update header-name/value-format too — not just the value —
+  // when an operator switches between an API key and a subscription token.
+  const injection =
+    protocol === 'anthropic'
+      ? anthropicInjectionFor(value)
+      : { headerName: entry.onecli.header_name, valueFormat: entry.onecli.value_format }
+
   const id = await findSecretId(bin, entry.onecli.name, entry.onecli.host_pattern)
   if (id) {
-    const r = await runCommand(bin, ['secrets', 'update', '--id', id, '--value', value])
+    const r = await runCommand(bin, [
+      'secrets',
+      'update',
+      '--id',
+      id,
+      '--value',
+      value,
+      '--header-name',
+      injection.headerName,
+      '--value-format',
+      injection.valueFormat
+    ])
     if (r.code !== 0) {
       return {
         success: false,
@@ -496,10 +570,13 @@ export async function updateOrCreateCredential(
           `onecli secrets update exited ${r.code}`
       }
     }
+    if (protocol === 'anthropic') {
+      writeAuthModeMarker(isAnthropicSubscriptionToken(value) ? 'subscription' : 'api-key')
+    }
     return { success: true, alreadyExisted: true }
   }
 
-  // No existing secret — create it with the registry's injection config.
+  // No existing secret — create it with the resolved injection config.
   const r = await runCommand(bin, [
     'secrets',
     'create',
@@ -514,9 +591,9 @@ export async function updateOrCreateCredential(
     '--path-pattern',
     '/*',
     '--header-name',
-    entry.onecli.header_name,
+    injection.headerName,
     '--value-format',
-    entry.onecli.value_format
+    injection.valueFormat
   ])
   if (r.code !== 0) {
     return {
@@ -525,6 +602,9 @@ export async function updateOrCreateCredential(
         r.stderr.trim().split('\n').slice(-3).join(' · ') ||
         `onecli secrets create exited ${r.code}`
     }
+  }
+  if (protocol === 'anthropic') {
+    writeAuthModeMarker(isAnthropicSubscriptionToken(value) ? 'subscription' : 'api-key')
   }
   return { success: true }
 }
@@ -618,6 +698,11 @@ export async function probeSubscriptionToken(
     }
   }
 
+  // Do NOT send `x-api-key` here. The stored subscription token injects on
+  // `Authorization: Bearer`, and Anthropic evaluates `x-api-key` first — a
+  // placeholder x-api-key makes it reject the request with "invalid
+  // x-api-key" even though the Bearer token is valid (ben-log 2026-06-09).
+  // Omitting it lets OneCLI's Authorization injection stand alone.
   const probe = await runCommand('curl', [
     '-sS',
     '-m',
@@ -626,8 +711,6 @@ export async function probeSubscriptionToken(
     `http://x:${agentToken}@localhost:10255`,
     '--cacert',
     ca,
-    '-H',
-    'x-api-key: placeholder',
     '-H',
     'Content-Type: application/json',
     '-H',

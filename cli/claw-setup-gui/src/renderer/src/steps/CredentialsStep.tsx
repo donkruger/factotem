@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Button } from '../components/Button'
 import { CommandBlock } from '../components/CommandBlock'
 import { useElectronAPI } from '../hooks/useElectronAPI'
@@ -259,15 +259,18 @@ function AnthropicAuthBranch({
   onBack: () => void
 }) {
   const api = useElectronAPI()
-  const [method, setMethod] = useState<CredMethod>('api-key')
+  // Subscription is the preferred default — most operators connect their
+  // existing Claude plan rather than provision a metered API key. Switchable.
+  const [method, setMethod] = useState<CredMethod>('subscription')
 
-  // Pre-select whichever method the operator chose on a previous run.
+  // Honour an explicit prior choice of API key on a re-run; otherwise the
+  // subscription default stands.
   useEffect(() => {
     if (!api) return
     void (async () => {
       const s = await api.state.read()
-      if ((s?.data['anthropic_auth_mode'] as string | undefined) === 'subscription') {
-        setMethod('subscription')
+      if ((s?.data['anthropic_auth_mode'] as string | undefined) === 'api-key') {
+        setMethod('api-key')
       }
     })()
   }, [api])
@@ -277,20 +280,23 @@ function AnthropicAuthBranch({
       <div className="flex flex-col gap-2.5 mb-5">
         <MethodCard
           name="cred-method"
-          value="api-key"
-          active={method === 'api-key'}
-          onSelect={() => setMethod('api-key')}
-          title="API key"
-          badge="Recommended"
-          detail="Billed per token from the Anthropic Console. Most reliable for an always-on agent — keys don't expire or rotate."
-        />
-        <MethodCard
-          name="cred-method"
           value="subscription"
           active={method === 'subscription'}
           onSelect={() => setMethod('subscription')}
           title={entry.subscription_auth?.label ?? 'Use my Claude subscription'}
-          detail={entry.subscription_auth?.tagline ?? ''}
+          badge="Recommended"
+          detail={
+            entry.subscription_auth?.tagline ??
+            'Connect your existing Claude Pro/Max plan — no separate API key.'
+          }
+        />
+        <MethodCard
+          name="cred-method"
+          value="api-key"
+          active={method === 'api-key'}
+          onSelect={() => setMethod('api-key')}
+          title="Use a metered API key instead"
+          detail="Billed per token from the Anthropic Console. Choose this if you don't have a Claude subscription, or want usage billed to an API account."
         />
       </div>
 
@@ -564,6 +570,29 @@ function ApiKeyForm({
 
 type SubSource = 'setup-token' | 'keychain'
 
+/** Redact any subscription token so the streamed mint log never shows it. */
+function redactToken(line: string): string {
+  return line.replace(/sk-ant-oat[A-Za-z0-9_-]+/g, 'sk-ant-oat••••••••')
+}
+
+/** Concise honesty note shown under the subscription option. */
+function HonestyNote({ note }: { note?: string }) {
+  return (
+    <div
+      className="flex items-start gap-2 px-3 py-2.5 rounded mb-3"
+      style={{ background: 'var(--color-bg-subtle)' }}
+    >
+      <span aria-hidden style={{ color: 'var(--color-ink-muted)' }}>
+        ⓘ
+      </span>
+      <p className="text-[11px]" style={{ color: 'var(--color-ink-muted)', lineHeight: 1.5 }}>
+        {note ??
+          'Uses the same official mechanism as Claude Code (`claude setup-token`). The token is long-lived (about a year) — treat it like a password. From 15 June 2026, Agent-SDK usage on subscription plans draws from a capped monthly credit.'}
+      </p>
+    </div>
+  )
+}
+
 function SubscriptionForm({
   protocol,
   entry,
@@ -588,6 +617,32 @@ function SubscriptionForm({
   const [phase, setPhase] = useState<Phase>('enter')
   const [message, setMessage] = useState<string | null>(null)
 
+  // Auto-run capture state. We detect the `claude` CLI on mount; if present
+  // the primary action runs `claude setup-token` for the operator and parses
+  // the printed token. Otherwise (or on failure) we reveal the manual
+  // copy-the-command-and-paste flow.
+  const [claudePath, setClaudePath] = useState<string | null>(null)
+  const [claudeChecked, setClaudeChecked] = useState(false)
+  const [manualFallback, setManualFallback] = useState(false)
+  const [minting, setMinting] = useState(false)
+  const [statusLine, setStatusLine] = useState<string | null>(null)
+  const mintRunId = useRef<string | null>(null)
+  const mintLines = useRef<string[]>([])
+
+  useEffect(() => {
+    if (!api) return
+    void (async () => {
+      try {
+        const r = await api.claude.detect()
+        setClaudePath(r.path)
+      } catch {
+        setClaudePath(null)
+      } finally {
+        setClaudeChecked(true)
+      }
+    })()
+  }, [api])
+
   useEffect(() => {
     if (phase !== 'done') return
     const t = setTimeout(onNext, 800)
@@ -597,22 +652,22 @@ function SubscriptionForm({
   const trimmed = token.trim()
   const tokenLooksValid = trimmed.startsWith('sk-ant-oat')
 
-  async function handlePasteToken() {
+  // Register the token with OneCLI (Bearer injection is resolved in the main
+  // process by token prefix) then verify it through the proxy. Shared by the
+  // auto-capture and manual-paste paths.
+  async function registerAndVerify(tok: string) {
     if (!api || !sub) return
     setMessage(null)
     try {
-      // Register the token FIRST — the proxy probe validates whatever
-      // OneCLI currently holds (there's no way to validate an oat token
-      // except through the configured proxy with the secret in place).
       setPhase('registering')
-      const reg = await api.providers.updateCredential(protocol, trimmed, orchestratorRoot)
+      const reg = await api.providers.updateCredential(protocol, tok, orchestratorRoot)
       if (!reg.success) {
         setPhase('error')
         setMessage(reg.error ?? 'Failed to register the token with OneCLI.')
         return
       }
       setPhase('testing')
-      const probe = await api.providers.probeSubscription(protocol, trimmed, orchestratorRoot)
+      const probe = await api.providers.probeSubscription(protocol, tok, orchestratorRoot)
       if (!probe.ok) {
         setPhase('error')
         setMessage(probe.message)
@@ -629,6 +684,63 @@ function SubscriptionForm({
       setPhase('error')
       setMessage((err as Error).message)
     }
+  }
+
+  // Spawn `claude setup-token`, stream progress (redacted), and parse the
+  // printed token on exit. Falls back to manual paste if nothing is captured.
+  async function handleAutoConnect() {
+    if (!api || !claudePath) return
+    setMessage(null)
+    setManualFallback(false)
+    setPhase('enter')
+    setMinting(true)
+    setStatusLine('Opening your browser to approve…')
+    mintLines.current = []
+    try {
+      const { runId } = await api.subprocess.start({
+        cmd: claudePath,
+        args: ['setup-token']
+      })
+      mintRunId.current = runId
+      const offLine = api.subprocess.onLine(runId, (line) => {
+        mintLines.current.push(line)
+        const r = redactToken(line).trim()
+        if (r) setStatusLine(r)
+      })
+      const offExit = api.subprocess.onExit(runId, (info) => {
+        offLine()
+        offExit()
+        mintRunId.current = null
+        setMinting(false)
+        const matches = mintLines.current.join('\n').match(/sk-ant-oat[A-Za-z0-9_-]+/g)
+        const tok = matches ? matches[matches.length - 1] : null
+        if (tok) {
+          setToken(tok)
+          setStatusLine('Token received ✓')
+          void registerAndVerify(tok)
+        } else {
+          setManualFallback(true)
+          setStatusLine(null)
+          setMessage(
+            info.code === 0
+              ? 'Finished, but no token was captured. Run the command below and paste the token it prints.'
+              : 'Couldn’t complete `claude setup-token` automatically. Run it yourself and paste the token below.'
+          )
+        }
+      })
+    } catch (err) {
+      setMinting(false)
+      setManualFallback(true)
+      setStatusLine(null)
+      setMessage((err as Error).message)
+    }
+  }
+
+  function cancelMint() {
+    if (mintRunId.current && api) void api.subprocess.cancel(mintRunId.current)
+    mintRunId.current = null
+    setMinting(false)
+    setStatusLine(null)
   }
 
   async function handleEnableKeychain() {
@@ -656,41 +768,86 @@ function SubscriptionForm({
   }
 
   const busy = phase === 'testing' || phase === 'registering'
+  const autoAvailable = claudePath !== null
+  // Show the manual copy/paste flow when the operator chose it, when the CLI
+  // isn't installed, or when an auto-capture attempt fell back.
+  const showManual =
+    source === 'setup-token' && (manualFallback || (claudeChecked && !autoAvailable))
+  const showAutoCta =
+    source === 'setup-token' && autoAvailable && !manualFallback
 
   return (
     <>
-      {keychainOffered && (
-        <div className="flex flex-col gap-2.5 mb-4">
-          <MethodCard
-            name="sub-source"
-            value="setup-token"
-            active={source === 'setup-token'}
-            onSelect={() => {
-              setSource('setup-token')
-              if (phase === 'error') setPhase('enter')
-            }}
-            title="Paste a long-lived token"
-            badge="Recommended"
-            detail="Run one command, paste the token. Works anywhere; valid ~1 year."
-            disabled={busy}
-          />
-          <MethodCard
-            name="sub-source"
-            value="keychain"
-            active={source === 'keychain'}
-            onSelect={() => {
-              setSource('keychain')
-              if (phase === 'error') setPhase('enter')
-            }}
-            title="Auto-rotate from Claude Code on this Mac"
-            detail="Tracks the token in your macOS keychain and refreshes it automatically. macOS only; requires Claude Code logged in on this machine, and is less reliable when you also use Claude Code interactively."
-            disabled={busy}
-          />
+      {source === 'setup-token' && <HonestyNote note={sub?.docs_note} />}
+
+      {/* Auto-run capture: primary path when the claude CLI is present. */}
+      {showAutoCta && (
+        <div className="panel px-5 py-4 mb-3">
+          {!minting && phase !== 'done' && (
+            <>
+              <p className="text-sm mb-1" style={{ color: 'var(--color-ink)', lineHeight: 1.5 }}>
+                We&apos;ll run <code>{sub?.setup_command ?? 'claude setup-token'}</code> and open
+                your browser to approve once — no copy-paste.
+              </p>
+              <div className="mt-3">
+                <Button variant="primary" onClick={handleAutoConnect}>
+                  Connect my Claude subscription
+                </Button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setManualFallback(true)}
+                className="text-[11px] mt-3 underline"
+                style={{ color: 'var(--color-ink-muted)' }}
+              >
+                Paste a token manually instead
+              </button>
+            </>
+          )}
+          {minting && (
+            <>
+              <p className="text-sm mb-2" style={{ color: 'var(--color-ink)', lineHeight: 1.5 }}>
+                Approve in your browser to finish connecting…
+              </p>
+              {statusLine && (
+                <p
+                  className="text-[11px] font-mono px-3 py-2 rounded mb-3"
+                  style={{ color: 'var(--color-ink-muted)', background: 'var(--color-bg-subtle)' }}
+                >
+                  {statusLine}
+                </p>
+              )}
+              <Button variant="ghost" onClick={cancelMint}>
+                Cancel
+              </Button>
+            </>
+          )}
         </div>
       )}
 
-      {source === 'setup-token' && (
+      {!claudeChecked && source === 'setup-token' && (
+        <p className="text-sm mb-3" style={{ color: 'var(--color-ink-muted)' }}>
+          Checking for Claude Code…
+        </p>
+      )}
+
+      {/* Manual fallback: copy the command, run it, paste the token back. */}
+      {showManual && (
         <>
+          {!autoAvailable && (
+            <div className="panel px-5 py-4 mb-3">
+              <p className="text-sm mb-2" style={{ color: 'var(--color-ink)', lineHeight: 1.5 }}>
+                Claude Code isn&apos;t installed on this machine, so we can&apos;t mint the token for
+                you. Install it (free) or paste a token you minted elsewhere.
+              </p>
+              <Button
+                variant="ghost"
+                onClick={() => api?.shell.openExternal('https://docs.claude.com/en/docs/claude-code/overview')}
+              >
+                Install Claude Code →
+              </Button>
+            </div>
+          )}
           <p className="text-sm mb-1" style={{ color: 'var(--color-ink)', lineHeight: 1.5 }}>
             Run this in a terminal, then paste the token it prints:
           </p>
@@ -719,12 +876,23 @@ function SubscriptionForm({
               disabled={busy || phase === 'done'}
             />
           </label>
-          {sub?.docs_note && (
-            <p className="text-[11px] mb-3" style={{ color: 'var(--color-ink-muted)', lineHeight: 1.5 }}>
-              {sub.docs_note}
-            </p>
-          )}
         </>
+      )}
+
+      {/* Advanced: keychain auto-rotation, tucked behind a quiet link so the
+          primary path stays a single decision. macOS only. */}
+      {source === 'setup-token' && keychainOffered && !minting && phase !== 'done' && (
+        <button
+          type="button"
+          onClick={() => {
+            setSource('keychain')
+            if (phase === 'error') setPhase('enter')
+          }}
+          className="text-[11px] underline mt-1"
+          style={{ color: 'var(--color-ink-muted)' }}
+        >
+          Advanced: auto-rotate from Claude Code on this Mac instead
+        </button>
       )}
 
       {source === 'keychain' && (
@@ -734,10 +902,21 @@ function SubscriptionForm({
             sync via a background watcher. Make sure you&apos;ve run <code>claude</code> and logged
             in on this Mac first.
           </p>
-          <p className="text-[11px]" style={{ color: 'var(--color-warning)', lineHeight: 1.5 }}>
+          <p className="text-[11px] mb-3" style={{ color: 'var(--color-warning)', lineHeight: 1.5 }}>
             Heads up: a single subscription token shared across several Claude Code sessions can be
-            invalidated by the others. The pasted long-lived token above is steadier.
+            invalidated by the others. The long-lived token option is steadier.
           </p>
+          <button
+            type="button"
+            onClick={() => {
+              setSource('setup-token')
+              if (phase === 'error') setPhase('enter')
+            }}
+            className="text-[11px] underline"
+            style={{ color: 'var(--color-ink-muted)' }}
+          >
+            ← Use a long-lived token instead (recommended)
+          </button>
         </div>
       )}
 
@@ -753,6 +932,11 @@ function SubscriptionForm({
           {message}
         </p>
       )}
+      {phase !== 'error' && message && phase !== 'done' && !minting && (
+        <p className="text-sm mb-3" style={{ color: 'var(--color-ink-muted)' }}>
+          {message}
+        </p>
+      )}
       {phase === 'done' && message && (
         <p className="text-sm mb-3" style={{ color: 'var(--color-ink)' }}>
           ✓ {message}
@@ -765,22 +949,22 @@ function SubscriptionForm({
       )}
 
       <div className="flex gap-3 justify-end mt-auto pt-4">
-        <Button variant="ghost" onClick={onBack} disabled={busy}>
+        <Button variant="ghost" onClick={onBack} disabled={busy || minting}>
           Back
         </Button>
-        {source === 'setup-token' ? (
+        {source === 'keychain' ? (
+          <Button variant="primary" onClick={handleEnableKeychain} disabled={busy || phase === 'done'}>
+            {busy ? 'Working…' : phase === 'done' ? 'Continuing…' : 'Enable auto-rotation'}
+          </Button>
+        ) : showManual ? (
           <Button
             variant="primary"
-            onClick={handlePasteToken}
+            onClick={() => registerAndVerify(trimmed)}
             disabled={!tokenLooksValid || busy || phase === 'done'}
           >
             {busy ? 'Working…' : phase === 'done' ? 'Continuing…' : 'Connect subscription'}
           </Button>
-        ) : (
-          <Button variant="primary" onClick={handleEnableKeychain} disabled={busy || phase === 'done'}>
-            {busy ? 'Working…' : phase === 'done' ? 'Continuing…' : 'Enable auto-rotation'}
-          </Button>
-        )}
+        ) : null}
       </div>
     </>
   )

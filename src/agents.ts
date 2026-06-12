@@ -18,7 +18,12 @@
 
 import { getDb } from './db.js';
 import { logger } from './logger.js';
-import type { Agent, MountAllowlist, Provider, RegisteredGroup } from './types.js';
+import type {
+  Agent,
+  MountAllowlist,
+  Provider,
+  RegisteredGroup,
+} from './types.js';
 
 interface AgentRow {
   id: string;
@@ -419,10 +424,13 @@ export function deleteAgent(id: string): void {
   const defaultAgent = getDefaultAgent();
   const db = getDb();
   const tx = db.transaction(() => {
-    db.prepare(`UPDATE registered_groups SET agent_id = ? WHERE agent_id = ?`)
-      .run(defaultAgent.id, id);
-    db.prepare(`UPDATE sessions SET agent_id = ? WHERE agent_id = ?`)
-      .run(defaultAgent.id, id);
+    db.prepare(
+      `UPDATE registered_groups SET agent_id = ? WHERE agent_id = ?`,
+    ).run(defaultAgent.id, id);
+    db.prepare(`UPDATE sessions SET agent_id = ? WHERE agent_id = ?`).run(
+      defaultAgent.id,
+      id,
+    );
     db.prepare(`DELETE FROM agents WHERE id = ?`).run(id);
   });
   tx();

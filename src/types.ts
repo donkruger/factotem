@@ -92,7 +92,7 @@ export type ProviderProtocol = string;
 export interface Provider {
   /** lowercase identifier, e.g. 'anthropic', 'gemini', 'ollama' */
   protocol: ProviderProtocol;
-  /** model name, e.g. 'claude-opus-4.6' or 'gemini-2.5-pro' */
+  /** model name, e.g. 'claude-opus-4-6' or 'gemini-2.5-pro' */
   model: string;
   /** non-null for local providers (Ollama, vLLM); null for cloud providers */
   base_url: string | null;

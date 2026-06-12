@@ -327,9 +327,7 @@ function createSchema(database: Database.Database): void {
   // future PR is a small append-to-insert change rather than a
   // schema migration on top of a hot table.
   try {
-    database.exec(
-      `ALTER TABLE agent_turns ADD COLUMN queue_wait_ms INTEGER`,
-    );
+    database.exec(`ALTER TABLE agent_turns ADD COLUMN queue_wait_ms INTEGER`);
   } catch {
     /* column already exists */
   }
@@ -361,9 +359,7 @@ function createSchema(database: Database.Database): void {
   // agent's spend for the day exceeds this value. Independent from
   // the group-level open-DM budget; both apply (either trips).
   try {
-    database.exec(
-      `ALTER TABLE agents ADD COLUMN daily_budget_cents INTEGER`,
-    );
+    database.exec(`ALTER TABLE agents ADD COLUMN daily_budget_cents INTEGER`);
   } catch {
     /* column already exists */
   }
@@ -425,9 +421,9 @@ function createSchema(database: Database.Database): void {
   // gets its pairing_id backfilled to 'whatsapp-shared'; every
   // existing agent gets channel_pairing_id pointing there too.
   const existingPairingCount = (
-    database
-      .prepare(`SELECT COUNT(*) AS n FROM channel_pairings`)
-      .get() as { n: number }
+    database.prepare(`SELECT COUNT(*) AS n FROM channel_pairings`).get() as {
+      n: number;
+    }
   ).n;
   if (existingPairingCount === 0) {
     const sharedPairingId = 'whatsapp-shared';
@@ -487,7 +483,7 @@ function createSchema(database: Database.Database): void {
 
   // Synthesise the default agent on first run. The agent's name and
   // provider come from ASSISTANT_NAME and ANTHROPIC_MODEL (with the
-  // existing claude-opus-4.6 fallback that the Claude container already
+  // existing claude-opus-4-6 fallback that the Claude container already
   // uses). The agent's id is the lowercased + slugified assistant name.
   // Operators on a v1/v2 install see no UX change — they keep their
   // assistant, they just now have a stable agent_id behind it that the
@@ -552,7 +548,12 @@ function synthesiseDefaultAgent(): {
   id: string;
   name: string;
   persona: string;
-  provider: { protocol: string; model: string; base_url: string | null; credential_id: string | null };
+  provider: {
+    protocol: string;
+    model: string;
+    base_url: string | null;
+    credential_id: string | null;
+  };
   memory_namespace: string;
   default_trigger: string;
   parent_agent_id: string | null;
@@ -570,9 +571,9 @@ function synthesiseDefaultAgent(): {
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '') || 'andy';
   // Provider defaults: the existing Claude install today routes through
-  // claude-opus-4.6 unless ANTHROPIC_MODEL overrides it. Mirror that here
+  // claude-opus-4-6 unless ANTHROPIC_MODEL overrides it. Mirror that here
   // so the synthesised agent reflects the current operator's reality.
-  const model = process.env.ANTHROPIC_MODEL || 'claude-opus-4.6';
+  const model = process.env.ANTHROPIC_MODEL || 'claude-opus-4-6';
   return {
     id,
     name,
@@ -1181,10 +1182,7 @@ export function recordOpenSpend(date: string, addCents: number): void {
  * Today's cumulative spend for an agent, in cents. Returns 0 when the
  * agent has no rows for today. Used by the pre-spawn budget gate.
  */
-export function getAgentSpendForDate(
-  date: string,
-  agentId: string,
-): number {
+export function getAgentSpendForDate(date: string, agentId: string): number {
   const row = db
     .prepare(
       'SELECT cents FROM agent_spend_log WHERE date = ? AND agent_id = ?',

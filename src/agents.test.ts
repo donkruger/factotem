@@ -342,7 +342,9 @@ describe('agents — backfill of existing groups and sessions', () => {
     // wipes the DB. Instead test backfill semantics directly:
     const defaultId = getDefaultAgent().id;
     getDb()
-      .prepare(`UPDATE registered_groups SET agent_id = ? WHERE agent_id IS NULL`)
+      .prepare(
+        `UPDATE registered_groups SET agent_id = ? WHERE agent_id IS NULL`,
+      )
       .run(defaultId);
     const row = getDb()
       .prepare(`SELECT agent_id FROM registered_groups WHERE jid = ?`)

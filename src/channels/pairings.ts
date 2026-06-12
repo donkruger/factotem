@@ -255,9 +255,7 @@ export function deletePairing(id: string): void {
   const pairing = getPairing(id);
   if (!pairing) throw new Error(`Unknown pairing id: ${id}`);
   if (pairing.is_shared) {
-    throw new Error(
-      `Cannot delete the shared pairing. Promote another first.`,
-    );
+    throw new Error(`Cannot delete the shared pairing. Promote another first.`);
   }
   const fallback = getDefaultPairing(pairing.kind);
   if (!fallback || fallback.id === id) {

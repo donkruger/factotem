@@ -23,7 +23,7 @@ const AssistantNameSchema = z
 export const ProviderSchema = z.object({
   /** lowercase identifier, e.g. 'anthropic', 'gemini', 'ollama' */
   protocol: z.string(),
-  /** model name, e.g. 'claude-opus-4.6' or 'gemini-2.5-pro' */
+  /** model name, e.g. 'claude-opus-4-6' or 'gemini-2.5-pro' */
   model: z.string(),
   /** non-null for local providers (Ollama, vLLM); null for cloud */
   base_url: z.string().nullable(),
@@ -113,7 +113,7 @@ function slugifyAgentId(name: string): string {
 function defaultAnthropicProvider(): Provider {
   return {
     protocol: 'anthropic',
-    model: 'claude-opus-4.6',
+    model: 'claude-opus-4-6',
     base_url: null,
     credential_id: 'Anthropic',
   };

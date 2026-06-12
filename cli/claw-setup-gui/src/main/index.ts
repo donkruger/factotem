@@ -113,11 +113,43 @@ function wireWindow(win: BrowserWindow): void {
 // the old one so the user sees a continuous frame rather than a flash
 // of empty desktop between window destruction and re-creation. Bounds
 // are preserved so the new window appears in the same place.
-async function ensureWindowFor(mode: Mode): Promise<BrowserWindow> {
-  if (mainWindow && currentMode === mode) return mainWindow
+//
+// `loadInto` kicks off the renderer load on the new window — *before*
+// we await `ready-to-show`. Without it, the new window is empty
+// (no URL, no `about:blank`-equivalent) and ready-to-show never
+// fires, hanging the swap and making the operator's click look
+// unresponsive. The loader's returned promise can resolve later (or
+// reject if the load fails); ready-to-show fires from the renderer
+// itself the moment it paints, so we don't need to await the load.
+async function ensureWindowFor(
+  mode: Mode,
+  loadInto?: (win: BrowserWindow) => Promise<unknown>
+): Promise<BrowserWindow> {
+  if (mainWindow && currentMode === mode) {
+    if (loadInto) {
+      // Same-mode reload (e.g. wizard → wizard with a fresh step
+      // hint). No window swap; just kick the load into the existing
+      // window and return it.
+      void loadInto(mainWindow).catch((err) =>
+        console.error('Window content reload failed:', err)
+      )
+    }
+    return mainWindow
+  }
 
   const bounds = mainWindow?.getBounds()
   const next = mode === 'wizard' ? createWizardWindow(bounds) : createDashboardWindow(bounds)
+
+  // Start the load now so the renderer has something to paint. The
+  // promise is intentionally not awaited here — ready-to-show fires
+  // from the renderer's first paint, which is what we actually care
+  // about for the visual swap. The caller may await its own loader
+  // separately if it needs the load to finish first.
+  const loadPromise: Promise<unknown> = loadInto
+    ? loadInto(next).catch((err) => {
+        console.error('Window content load failed:', err)
+      })
+    : Promise.resolve()
 
   if (mainWindow) {
     const old = mainWindow
@@ -129,6 +161,11 @@ async function ensureWindowFor(mode: Mode): Promise<BrowserWindow> {
 
   mainWindow = next
   currentMode = mode
+
+  // Surface load errors to the caller (if the loader rejected) so a
+  // dashboard-missing condition still shows an inline error rather
+  // than a silent blank window.
+  await loadPromise
   return next
 }
 
@@ -137,18 +174,23 @@ async function ensureWindowFor(mode: Mode): Promise<BrowserWindow> {
 // to jump to that step — used by the dashboard's "Setup" affordances
 // to deep-link back into a specific part of the journey.
 //
-// `ensureWindowFor('wizard')` recreates the window with the wizard's
-// chrome-less title-bar style if we were previously on the dashboard.
+// The renderer load is threaded into `ensureWindowFor` as the
+// `loadInto` callback so it starts the moment the new wizard window
+// is constructed. Without that, the swap from dashboard → wizard
+// would hang on `await ready-to-show` (the new window has nothing
+// to paint until something tells it to). `ensureWindowFor` recreates
+// the window with the wizard's chrome-less title-bar style if we
+// were previously on the dashboard.
 async function loadWizard(stepHint?: string): Promise<void> {
-  const win = await ensureWindowFor('wizard')
   const hash = stepHint ? `#${stepHint}` : ''
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    await win.loadURL(process.env['ELECTRON_RENDERER_URL'] + hash)
-  } else {
-    await win.loadFile(join(__dirname, '../renderer/index.html'), {
+  await ensureWindowFor('wizard', (win) => {
+    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+      return win.loadURL(process.env['ELECTRON_RENDERER_URL'] + hash)
+    }
+    return win.loadFile(join(__dirname, '../renderer/index.html'), {
       hash: stepHint
     })
-  }
+  })
 }
 
 // Probe the dashboard URL, swap to the dashboard window if reachable,
@@ -178,8 +220,20 @@ async function openDashboard(): Promise<{
         'or run `npm run dev` inside the dashboard package for hot-reload.'
     }
   }
-  const win = await ensureWindowFor('dashboard')
-  return loadDashboardInWindow(win)
+  // Thread the dashboard load into ensureWindowFor's `loadInto`
+  // callback so the swap's `ready-to-show` await fires — the new
+  // window needs *some* content load in flight before its renderer
+  // can paint and emit ready-to-show. loadDashboardInWindow does its
+  // own cache-clear + no-cache headers, so we use it as the loader
+  // and capture its result for the IPC reply.
+  let loadResult: Awaited<ReturnType<typeof loadDashboardInWindow>> = {
+    success: false,
+    error: 'dashboard load did not run'
+  }
+  await ensureWindowFor('dashboard', async (w) => {
+    loadResult = await loadDashboardInWindow(w)
+  })
+  return loadResult
 }
 
 // Load the Factotem dashboard into the dashboard window. Returns true

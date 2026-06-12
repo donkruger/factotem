@@ -1,5 +1,6 @@
 import type { ElectronAPI as ToolkitElectronAPI } from '@electron-toolkit/preload'
 import type {
+  ClaudeDetectResult,
   CreateCredentialResult,
   EnvCheckResult,
   HealthSummary,
@@ -11,6 +12,7 @@ import type {
   ProfileWriteResult,
   ProviderRegistry,
   ServiceInstallResult,
+  ServiceStartResult,
   SetAuthModeResult,
   SetupState
 } from '../shared/types'
@@ -117,9 +119,13 @@ interface ElectronAPI {
       orchestratorRoot: string | null
     ) => Promise<SetAuthModeResult>
   }
+  claude: {
+    detect: () => Promise<ClaudeDetectResult>
+  }
   service: {
     status: () => Promise<boolean>
     install: (orchestratorRoot: string) => Promise<ServiceInstallResult>
+    start: () => Promise<ServiceStartResult>
     unload: () => Promise<{ success: boolean; error?: string }>
   }
   mounts: {

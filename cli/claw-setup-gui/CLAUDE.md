@@ -31,6 +31,30 @@ Channel names use `area:verb` (e.g. `env:check`, `health:probe`, `dashboard:open
 
 Renderer code talks to the main process **only** through `useElectronAPI()` (the hook handles the cold-start race where preload may not be attached yet). Never reach for `window.electronAPI.*` directly inside a component — always go through the hook so the readiness guard runs. The hook's existence is the response to the original "preload not loaded" crash; preserve that abstraction.
 
+## Service-dependency remediation philosophy (READ BEFORE ADDING ANY STEP THAT CALLS A BACKEND)
+
+Every wizard intervention or remediation must solve failures **at the wizard level**, not by sending the operator to a terminal or leaking a raw error. When something breaks for one operator, fix it so the *next* operator who hits the same condition is guided through it by the wizard itself. This is the standing rule for all Wizard GUI and setup work.
+
+The wizard talks to three backend dependencies. Any of them can be down when a step needs it:
+
+- **Orchestrator HTTP API** — `http://127.0.0.1:7842` (`/health`, `/api/*`). Used by pairings, group registration, open-mode, dashboard handoff.
+- **OneCLI gateway** — `http://127.0.0.1:10254`. Used by credential/secret steps.
+- **Docker** — agent container runtime.
+
+When a step depends on one of these, it MUST:
+
+1. **Probe before presenting.** Check reachability *before* rendering the step's primary action. Don't show a form whose submit will fail with a connection error. For the orchestrator, call `api.health.probe()` and gate on `summary.reachable`.
+2. **Translate, don't leak.** Never surface raw `fetch failed` / `ECONNREFUSED` / `connection refused` / `Failed to fetch` / `dial tcp … connect: connection refused` strings. Run errors through `isConnectionError()` / `describeServiceError()` in [`src/renderer/src/lib/serviceErrors.ts`](src/renderer/src/lib/serviceErrors.ts) and render operator-language copy.
+3. **Offer one-click recovery + retry.** Render [`OrchestratorUnreachable`](src/renderer/src/components/OrchestratorUnreachable.tsx): a "Start the orchestrator" button (`api.service.start()` → `service:start` → `launchctl kickstart`), a "Retry" that re-probes, and a copy / Open-in-Terminal command fallback.
+4. **Re-probe on retry.** After a start/retry, re-probe and only advance when the dependency actually answers. The orchestrator can take ~20–30s to bind `:7842` (it initialises every agent first), so probe with a generous bounded loop, not a single shot.
+5. **Escalate to the real cause when start doesn't stick.** If the service starts but never becomes reachable, say so and name the common cause: a **logged-out WhatsApp session makes the orchestrator `process.exit(0)` before its HTTP server binds** (`src/channels/whatsapp.ts`), so the API never comes up. Point the operator at re-pairing WhatsApp / `npm run claw-setup`.
+
+Canonical helpers to reuse (don't reinvent): `serviceErrors.ts`, `OrchestratorUnreachable.tsx`, `api.health.probe`, `api.service.start`, `CommandBlock`.
+
+**Adopt-targets** (steps that still call the orchestrator/gateway without this preflight — wire them through the helpers above when you next touch them): `RegisterGroupStep`, `OpenModeStep`, `CredentialsStep`. `PairingChoiceStep` is the reference implementation.
+
+This philosophy mirrors the operator-layer rule in the repo-root [`CLAUDE.md`](../../../CLAUDE.md) (verification before claiming success) and the recurring incidents in `ben-log/` (OneCLI gateway down, orchestrator crash-loop) — the wizard is where those failure modes should become self-service.
+
 ## Visual system rules
 
 - **Don't introduce new colour tokens.** Pull from `dashboard/src/styles/tokens.css`. If the dashboard doesn't define what you need, the dashboard should define it first.

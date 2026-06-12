@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Button } from '../components/Button'
+import { OrchestratorUnreachable } from '../components/OrchestratorUnreachable'
 import { useElectronAPI } from '../hooks/useElectronAPI'
+import { isConnectionError } from '../lib/serviceErrors'
 import type { StepId } from '../hooks/useWizard'
 
 interface Props {
@@ -48,6 +50,7 @@ export function PairingChoiceStep({ onJump, onBack }: Props) {
   const [pairings, setPairings] = useState<PairingSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [orchestratorDown, setOrchestratorDown] = useState(false)
   const [pendingAgentId, setPendingAgentId] = useState<string | null>(null)
   const [pendingAgentName, setPendingAgentName] = useState<string | null>(null)
   const [displayName, setDisplayName] = useState('')
@@ -55,52 +58,75 @@ export function PairingChoiceStep({ onJump, onBack }: Props) {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
 
-  useEffect(() => {
+  const load = useCallback(async () => {
     if (!api) return
-    void (async () => {
-      try {
-        const existing = await api.state.read()
-        // First gate: are we in add-agent mode at all? PairingChoice
-        // is only meaningful when there's a freshly-created agent to
-        // attach a pairing to. First-run installs see no flags here,
-        // and we fall through to the next step (Mounts) silently.
-        const agentId =
-          (existing?.data['__pending_credential_agent_id'] as
-            | string
-            | undefined) ?? null
-        if (!agentId) {
-          // No add-agent hand-off — auto-advance to Mounts (the step
-          // that linearly follows Credentials in STEPS) so a stale
-          // back-navigation to this branch doesn't dead-end. The
-          // operator never sees this screen in the first-run path
-          // because Credentials only routes here when the flag is set.
-          onJump('mounts')
+    setLoading(true)
+    setLoadError(null)
+    setOrchestratorDown(false)
+    try {
+      const existing = await api.state.read()
+      // First gate: are we in add-agent mode at all? PairingChoice
+      // is only meaningful when there's a freshly-created agent to
+      // attach a pairing to. First-run installs see no flags here,
+      // and we fall through to the next step (Mounts) silently.
+      const agentId =
+        (existing?.data['__pending_credential_agent_id'] as
+          | string
+          | undefined) ?? null
+      if (!agentId) {
+        // No add-agent hand-off — auto-advance to Mounts (the step
+        // that linearly follows Credentials in STEPS) so a stale
+        // back-navigation to this branch doesn't dead-end. The
+        // operator never sees this screen in the first-run path
+        // because Credentials only routes here when the flag is set.
+        onJump('mounts')
+        return
+      }
+      setPendingAgentId(agentId)
+      const agent = existing?.agents.find((a) => a.id === agentId)
+      if (agent) {
+        setPendingAgentName(agent.name)
+        // Don't clobber an operator edit on retry — only seed the
+        // default the first time the field is empty.
+        setDisplayName((prev) => prev || `${agent.name}'s WhatsApp`)
+      }
+      // Service-dependency preflight: every pairing call (list, create,
+      // assign) lives on the orchestrator's HTTP API. Probe it before
+      // presenting the form — if it's down, render the remediation panel
+      // instead of a form whose submit would die with a raw "fetch
+      // failed". See CLAUDE.md § Service-dependency remediation.
+      const health = await api.health.probe()
+      if (!health.reachable) {
+        setOrchestratorDown(true)
+        return
+      }
+      const result = await api.pairings.list()
+      if (result.error) {
+        if (isConnectionError(result.error)) {
+          // Orchestrator went down between the health probe and the
+          // list call — treat it as the unreachable case, not a soft
+          // "use shared unavailable".
+          setOrchestratorDown(true)
           return
         }
-        setPendingAgentId(agentId)
-        const agent = existing?.agents.find((a) => a.id === agentId)
-        if (agent) {
-          setPendingAgentName(agent.name)
-          setDisplayName(`${agent.name}'s WhatsApp`)
-        }
-        const result = await api.pairings.list()
-        if (result.error) {
-          // Soft-fail: orchestrator may be down. The operator can
-          // still pair a new number; we just lose the "use shared"
-          // affordance until it's reachable. The empty list flows
-          // through to the radio below — "Use shared" disables itself
-          // when there's no pairing to point at.
-          setLoadError(result.error)
-        }
-        setPairings(result.pairings ?? [])
-      } catch (err) {
-        setLoadError((err as Error).message)
-      } finally {
-        setLoading(false)
+        // Soft-fail: the orchestrator answered but listing failed for a
+        // non-connection reason. The operator can still pair a new
+        // number; we just lose the "use shared" affordance.
+        setLoadError(result.error)
       }
-    })()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api])
+      setPairings(result.pairings ?? [])
+    } catch (err) {
+      const msg = (err as Error).message
+      if (isConnectionError(msg)) setOrchestratorDown(true)
+      else setLoadError(msg)
+    } finally {
+      setLoading(false)
+    }
+  }, [api, onJump])
+
+  useEffect(() => {
+    void load()
+  }, [load])
 
   // Pick a sensible shared default — first WhatsApp pairing flagged
   // shared, or the first WhatsApp pairing overall as a fallback.
@@ -140,6 +166,10 @@ export function PairingChoiceStep({ onJump, onBack }: Props) {
         // orchestrator does the persistence + audit + reload.
         const r = await api.pairings.assignAgent(pendingAgentId, sharedPairing.id)
         if (!r.success) {
+          if (isConnectionError(r.error)) {
+            setOrchestratorDown(true)
+            return
+          }
           setSaveError(r.error ?? 'Could not assign the shared pairing.')
           return
         }
@@ -169,6 +199,10 @@ export function PairingChoiceStep({ onJump, onBack }: Props) {
         is_shared: false
       })
       if (!created.success || !created.pairing) {
+        if (isConnectionError(created.error)) {
+          setOrchestratorDown(true)
+          return
+        }
         setSaveError(created.error ?? 'Could not register the new pairing.')
         return
       }
@@ -179,6 +213,10 @@ export function PairingChoiceStep({ onJump, onBack }: Props) {
         newPairing.id
       )
       if (!assigned.success) {
+        if (isConnectionError(assigned.error)) {
+          setOrchestratorDown(true)
+          return
+        }
         setSaveError(
           assigned.error ?? 'Pairing created but agent assignment failed.'
         )
@@ -199,7 +237,9 @@ export function PairingChoiceStep({ onJump, onBack }: Props) {
 
       onJump('whatsapp')
     } catch (err) {
-      setSaveError((err as Error).message)
+      const msg = (err as Error).message
+      if (isConnectionError(msg)) setOrchestratorDown(true)
+      else setSaveError(msg)
     } finally {
       setSaving(false)
     }
@@ -210,6 +250,74 @@ export function PairingChoiceStep({ onJump, onBack }: Props) {
     return (
       <div className="step-enter flex-1 flex items-center justify-center p-10">
         <p style={{ color: 'var(--color-ink-muted)' }}>Loading pairings…</p>
+      </div>
+    )
+  }
+
+  // Orchestrator unreachable: the pairing API is down, so neither
+  // listing the shared pairing nor creating a new one can succeed.
+  // Render the actionable remediation (start + retry) rather than a
+  // form that would dead-end on submit. `load()` re-runs once the
+  // orchestrator answers again.
+  if (orchestratorDown && api) {
+    const label = pendingAgentName ?? 'this agent'
+    return (
+      <div className="step-enter flex-1 flex flex-col px-10 py-7 max-w-2xl mx-auto w-full">
+        <div className="mb-6">
+          <h2
+            className="text-2xl mb-1"
+            style={{
+              color: 'var(--color-ink)',
+              letterSpacing: 'var(--tracking-display)',
+              fontWeight: 600
+            }}
+          >
+            Which WhatsApp number should {label} use?
+          </h2>
+          <p
+            className="text-sm"
+            style={{ color: 'var(--color-ink-muted)', lineHeight: 1.55 }}
+          >
+            Before you can choose, the orchestrator needs to be running so we
+            can read and create WhatsApp pairings.
+          </p>
+        </div>
+        <OrchestratorUnreachable
+          api={api}
+          rawError={loadError ?? saveError}
+          onResolved={() => void load()}
+          onRepairWhatsApp={async () => {
+            // The dominant cause of an unreachable orchestrator is a
+            // logged-out *shared* WhatsApp session, which makes the
+            // process exit before its HTTP server binds. Re-pairing the
+            // shared account (store/auth/) is what brings it back —
+            // not the new agent's number. Stop the crash-looping service
+            // first so it doesn't fight the auth subprocess for the
+            // store/auth/ files (creds.json corruption on concurrent
+            // writes is a known failure mode), then clear any per-pairing
+            // hand-off so WhatsAppStep targets the shared account, and
+            // open the QR journey. "Start the orchestrator" re-bootstraps
+            // the service afterward (startOrchestrator handles the
+            // unloaded case).
+            try {
+              await api.service.unload()
+            } catch {
+              /* best-effort — the panel still proceeds to the QR journey */
+            }
+            await api.state.patch({
+              data: {
+                __pending_pairing_id: undefined,
+                __pending_pairing_auth_dir: undefined
+              }
+            })
+            onJump('whatsapp')
+          }}
+        />
+        <div className="flex gap-3 justify-end mt-auto pt-4">
+          <Button type="button" variant="ghost" onClick={onBack}>
+            Back
+          </Button>
+        </div>
       </div>
     )
   }

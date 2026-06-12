@@ -44,6 +44,13 @@ export interface ProviderRegistryEntry {
     header_name: string;
     value_format: string;
   } | null;
+  /**
+   * Optional headers the provider's models-endpoint probe needs that
+   * aren't auth (e.g. `anthropic-version` on Anthropic). The runtime
+   * SDK sets these automatically inside the agent container; this
+   * field exists so the wizard's curl-based probe matches.
+   */
+  probe_headers?: Record<string, string>;
   capabilities: {
     tool_use: string;
     vision: boolean;

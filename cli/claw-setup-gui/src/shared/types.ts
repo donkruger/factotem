@@ -203,10 +203,25 @@ export interface SetAuthModeResult {
   error?: string
 }
 
+export interface ClaudeDetectResult {
+  installed: boolean
+  /** Absolute path to the resolved `claude` binary, or null when not found. */
+  path: string | null
+}
+
 export interface ServiceInstallResult {
   success: boolean
   plistPath: string
   bootstrapped: boolean
+  error?: string
+}
+
+// Result of a one-click "start the orchestrator" attempt. `reason`
+// lets the UI tailor its copy: `not-installed` → finish setup first,
+// `unsupported` → non-macOS manual start, `error` → launchctl failed.
+export interface ServiceStartResult {
+  success: boolean
+  reason: 'started' | 'not-installed' | 'unsupported' | 'error'
   error?: string
 }
 

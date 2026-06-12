@@ -101,7 +101,7 @@ function slugifyAgentId(name: string): string {
 function defaultAnthropicProvider(): Provider {
   return {
     protocol: 'anthropic',
-    model: 'claude-opus-4.6',
+    model: 'claude-opus-4-6',
     base_url: null,
     credential_id: 'Anthropic'
   }

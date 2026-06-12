@@ -37,6 +37,21 @@ export const SENDER_ALLOWLIST_PATH = path.join(
   'nanoclaw',
   'sender-allowlist.json',
 );
+// Anthropic auth-mode marker (single source of truth shared with
+// scripts/set-auth-mode.sh and the Setup GUI). Lives outside Documents/
+// so the launchd-spawned watcher can read it past TCC. Values:
+//   'api-key'          — OneCLI holds a non-rotating sk-ant-api… key; the
+//                        container authenticates with x-api-key.
+//   'subscription'     — OneCLI holds a long-lived sk-ant-oat… setup-token.
+//   'oauth-workaround' — OneCLI holds a keychain-rotated sk-ant-oat… token.
+// Both subscription paths use an OAuth token, which Anthropic only accepts
+// via Authorization: Bearer (NOT x-api-key — see readAnthropicAuthMode).
+export const AUTH_MODE_PATH = path.join(
+  HOME_DIR,
+  '.config',
+  'nanoclaw',
+  'auth-mode',
+);
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');

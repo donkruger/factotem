@@ -27,11 +27,7 @@ import {
   writeAudit,
 } from '../audit-log.js';
 import { AgentTurnRow, getAllTasks, setRegisteredGroup } from '../db.js';
-import {
-  getAgent,
-  listAgents,
-  updateAgent,
-} from '../agents.js';
+import { getAgent, listAgents, updateAgent } from '../agents.js';
 import type { Provider } from '../types.js';
 import { loadProviderRegistry } from '../providers-registry.js';
 import {
@@ -231,14 +227,15 @@ export function mountApi(app: Express, deps: ApiDeps): void {
     const pairing = pairingId ? getPairing(pairingId) : null;
     // PR 10 — today's spend for this agent, for the budget meter.
     const today = new Date().toISOString().slice(0, 10);
-    const spentTodayCents = (
-      db()
-        .prepare(
-          `SELECT COALESCE(cents, 0) AS cents FROM agent_spend_log
+    const spentTodayCents =
+      (
+        db()
+          .prepare(
+            `SELECT COALESCE(cents, 0) AS cents FROM agent_spend_log
             WHERE date = ? AND agent_id = ?`,
-        )
-        .get(today, agent.id) as { cents: number } | undefined
-    )?.cents ?? 0;
+          )
+          .get(today, agent.id) as { cents: number } | undefined
+      )?.cents ?? 0;
     res.json({
       ...agent,
       groups: ownedGroups,
@@ -319,8 +316,12 @@ export function mountApi(app: Express, deps: ApiDeps): void {
         machineId: machine.id,
         action: 'agent.budget.update',
         target: id,
-        payloadBefore: { daily_budget_cents: existing.daily_budget_cents ?? null },
-        payloadAfter: { daily_budget_cents: updated.daily_budget_cents ?? null },
+        payloadBefore: {
+          daily_budget_cents: existing.daily_budget_cents ?? null,
+        },
+        payloadAfter: {
+          daily_budget_cents: updated.daily_budget_cents ?? null,
+        },
       });
     }
     deps.reloadConfig();
@@ -661,21 +662,23 @@ export function mountApi(app: Express, deps: ApiDeps): void {
     }
     // execFile (not execSync) so a hung OneCLI doesn't block the
     // Express thread. 8s is generous — secrets delete is local.
-    const r = await new Promise<{ code: number; stderr: string }>(
-      (resolve) => {
-        childProcess.execFile(
-          onecliBin,
-          ['secrets', 'delete', name],
-          { timeout: 8_000 },
-          (err, _stdout, stderr) => {
-            resolve({
-              code: err ? ((err as NodeJS.ErrnoException).code === 'ETIMEDOUT' ? 124 : 1) : 0,
-              stderr: stderr ?? '',
-            });
-          },
-        );
-      },
-    );
+    const r = await new Promise<{ code: number; stderr: string }>((resolve) => {
+      childProcess.execFile(
+        onecliBin,
+        ['secrets', 'delete', name],
+        { timeout: 8_000 },
+        (err, _stdout, stderr) => {
+          resolve({
+            code: err
+              ? (err as NodeJS.ErrnoException).code === 'ETIMEDOUT'
+                ? 124
+                : 1
+              : 0,
+            stderr: stderr ?? '',
+          });
+        },
+      );
+    });
     if (r.code !== 0) {
       logger.warn(
         { name, stderr: r.stderr.slice(-400) },

@@ -18,6 +18,43 @@
 import { runCommand } from './subprocess'
 import { probeHealth } from './health-probe'
 
+/**
+ * Strip ANSI SGR escape sequences (colours, bold, etc.) so the
+ * wizard's error UI shows readable text instead of `[35m…[39m`
+ * fragments. The orchestrator's pino logger writes coloured stderr
+ * when its stream is a TTY (which it is when spawned via `npx tsx`),
+ * and those bytes were leaking through verbatim.
+ */
+function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '')
+}
+
+/**
+ * Pull a useful error tail out of a failed setup-CLI run. Returns
+ * the last N non-empty stderr lines after stripping ANSI escapes —
+ * if stderr was empty (the script printed only to stdout, or died
+ * silently), fall back to stdout. Two-line tails routinely catch
+ * just the closing `}` of a pino JSON dump; six is enough to land
+ * on the actual error message in practice.
+ */
+function summariseCommandError(
+  r: { code: number; stdout: string; stderr: string },
+  fallback: string
+): string {
+  const tail = (s: string): string[] =>
+    stripAnsi(s)
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0)
+      .slice(-6)
+  const stderrTail = tail(r.stderr)
+  if (stderrTail.length > 0) return stderrTail.join(' · ')
+  const stdoutTail = tail(r.stdout)
+  if (stdoutTail.length > 0) return stdoutTail.join(' · ')
+  return fallback
+}
+
 export interface WhatsAppGroup {
   jid: string
   name: string
@@ -35,9 +72,7 @@ export async function listGroups(orchestratorRoot: string): Promise<{
   if (r.code !== 0) {
     return {
       groups: [],
-      error:
-        r.stderr.trim().split('\n').slice(-2).join(' · ') ||
-        `groups --list exited ${r.code}`
+      error: summariseCommandError(r, `groups --list exited ${r.code}`)
     }
   }
   const groups: WhatsAppGroup[] = r.stdout
@@ -91,9 +126,7 @@ export async function registerGroup(
     return {
       success: false,
       sighup: false,
-      error:
-        r.stderr.trim().split('\n').slice(-3).join(' · ') ||
-        `register exited ${r.code}`
+      error: summariseCommandError(r, `register exited ${r.code}`)
     }
   }
 
