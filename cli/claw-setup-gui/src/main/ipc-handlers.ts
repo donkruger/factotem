@@ -237,7 +237,13 @@ export function registerIpcHandlers(): void {
     (
       _e,
       orchestratorRoot: string,
-      opts?: { pairingId?: string; authDir?: string }
+      opts?: {
+        pairingId?: string
+        authDir?: string
+        method?: 'qr' | 'pairing-code'
+        phone?: string
+        reset?: boolean
+      }
     ) => startWhatsAppAuth(orchestratorRoot, opts ?? {})
   )
   ipcMain.handle('whatsapp:cancel', (_e, runId: string) => ({

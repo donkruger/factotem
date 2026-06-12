@@ -211,7 +211,13 @@ interface ElectronAPI {
   whatsapp: {
     start: (
       orchestratorRoot: string,
-      opts?: { pairingId?: string; authDir?: string }
+      opts?: {
+        pairingId?: string
+        authDir?: string
+        method?: 'qr' | 'pairing-code'
+        phone?: string
+        reset?: boolean
+      }
     ) => Promise<{
       runId: string
       qrPath: string
