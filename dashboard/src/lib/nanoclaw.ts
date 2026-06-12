@@ -283,6 +283,26 @@ export async function getHealth(): Promise<Health> {
   return getJson<Health>('/health');
 }
 
+/**
+ * True when the deployment authenticates Anthropic via a subscription /
+ * OAuth token rather than a metered API key. In these modes there is no
+ * per-token dollar billing (the plan is flat, and from 2026-06-15 a capped
+ * monthly Agent-SDK credit), so the dashboard pivots cost panels to token
+ * usage instead of dollars. Mirrors `anthropicUsesBearerAuth()` in
+ * src/container-runner.ts (subscription | oauth-workaround), and also
+ * accepts a bare `oauth` marker for forward-compatibility.
+ *
+ * Reads `Health.onecli.auth_mode`, the raw value of
+ * `~/.config/nanoclaw/auth-mode` surfaced by the orchestrator.
+ */
+export function isUsageMode(authMode: string | null | undefined): boolean {
+  return (
+    authMode === 'subscription' ||
+    authMode === 'oauth-workaround' ||
+    authMode === 'oauth'
+  );
+}
+
 export async function getGroups(): Promise<Group[]> {
   const res = await getJson<{ groups: Group[] }>('/api/groups');
   return res.groups;
@@ -477,7 +497,7 @@ const BUNDLED_REGISTRY_FALLBACK: Record<string, ProviderRegistryEntry> = {
     wire_protocol: 'anthropic',
     base_url: 'https://api.anthropic.com',
     auth_kind: 'api-key',
-    default_model: 'claude-opus-4.6',
+    default_model: 'claude-opus-4-6',
     models_endpoint: 'https://api.anthropic.com/v1/models',
     key_signup_url: 'https://console.anthropic.com/settings/keys',
     key_format_hint: 'Starts with sk-ant-',

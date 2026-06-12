@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Download, MessageSquare } from 'lucide-react';
 
 import { Card } from '@/components/ui/Card';
+import { useAuthMode } from '@/hooks/useAuthMode';
 import { usePoll } from '@/hooks/usePoll';
 import {
   type CostDaily,
@@ -88,6 +89,7 @@ function writeFiltersToUrl(filters: FilterState): URLSearchParams {
 export function ActivityFeed() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { usageMode } = useAuthMode();
 
   const [filters, setFilters] = useState<FilterState>(() =>
     readFiltersFromUrl(new URLSearchParams(searchParams.toString())),
@@ -247,6 +249,7 @@ export function ActivityFeed() {
           rows={costRows ?? []}
           selectedDay={selectedDay}
           onSelectDay={setSelectedDay}
+          mode={usageMode ? 'usage' : 'cost'}
         />
 
         <div className="min-w-0 flex-1">
@@ -288,6 +291,7 @@ export function ActivityFeed() {
                       key={t.turn_id}
                       turn={t}
                       groupName={folderToName.get(t.group_folder)}
+                      mode={usageMode ? 'usage' : 'cost'}
                     />
                   ))}
                 </div>

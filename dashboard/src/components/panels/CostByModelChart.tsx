@@ -14,10 +14,15 @@ import {
 
 import { Card } from '@/components/ui/Card';
 import type { CostDaily } from '@/lib/nanoclaw';
-import { formatCostCents } from '@/lib/format';
+import { formatCostCents, formatTokens } from '@/lib/format';
 
 interface Props {
   rows: CostDaily[];
+  /**
+   * 'cost' (default) stacks dollar cents per model; 'usage' stacks total
+   * tokens (input + output) per model — subscription/oauth deployments.
+   */
+  mode?: 'cost' | 'usage';
 }
 
 interface PivotedRow {
@@ -26,25 +31,33 @@ interface PivotedRow {
 }
 
 /**
- * 30-day stacked bar chart: x = day, y = cents, stacked by model.
+ * 30-day stacked bar chart: x = day, stacked by model. The y metric is
+ * dollar cents in 'cost' mode and total tokens (input + output) in 'usage'
+ * mode.
  *
  * `/api/cost/daily` returns one row per (day, model). We pivot client-side
  * so each chart row carries one cell per model. Models are derived from
  * the data and rendered with stable colours via `modelColor`.
  */
-export function CostByModelChart({ rows }: Props) {
-  const { pivoted, models } = useMemo(() => pivotRows(rows), [rows]);
+export function CostByModelChart({ rows, mode = 'cost' }: Props) {
+  const usage = mode === 'usage';
+  const { pivoted, models } = useMemo(
+    () => pivotRows(rows, usage),
+    [rows, usage],
+  );
+  const fmt = usage ? formatTokens : formatCostCents;
+  const title = usage ? 'Tokens by model' : 'Cost by model';
 
   if (rows.length === 0) {
     return (
       <Card>
         <div className="space-y-2">
           <p className="text-sm font-medium text-[var(--color-ink)]">
-            Cost by model
+            {title}
           </p>
           <p className="text-xs text-[var(--color-ink-muted)]">
-            No cost data yet — telemetry began with Wave 2 deploy. The first
-            agent reply will populate this chart within 5s.
+            No {usage ? 'usage' : 'cost'} data yet — telemetry began with Wave 2
+            deploy. The first agent reply will populate this chart within 5s.
           </p>
         </div>
       </Card>
@@ -56,10 +69,11 @@ export function CostByModelChart({ rows }: Props) {
       <div className="space-y-4">
         <div>
           <p className="text-sm font-medium text-[var(--color-ink)]">
-            Cost by model
+            {title}
           </p>
           <p className="text-xs text-[var(--color-ink-muted)]">
-            Last 30 days, stacked by model.
+            Last 30 days, stacked by model
+            {usage ? ' (input + output tokens).' : '.'}
           </p>
         </div>
 
@@ -76,13 +90,13 @@ export function CostByModelChart({ rows }: Props) {
               stroke="var(--color-hairline)"
             />
             <YAxis
-              tickFormatter={(v) => formatCostCents(Number(v))}
+              tickFormatter={(v) => fmt(Number(v))}
               tick={{ fill: 'var(--color-ink-muted)', fontSize: 11 }}
               stroke="var(--color-hairline)"
               width={64}
             />
             <Tooltip
-              content={<CostTooltip />}
+              content={<CostTooltip fmt={fmt} unit={usage ? 'tokens' : undefined} />}
               cursor={{ fill: 'var(--color-bg-subtle)' }}
             />
             <Legend
@@ -118,14 +132,17 @@ interface TooltipProps {
   active?: boolean;
   payload?: TooltipPayloadEntry[];
   label?: string;
+  fmt?: (n: number) => string;
+  unit?: string;
 }
 
-function CostTooltip({ active, payload, label }: TooltipProps) {
+function CostTooltip({ active, payload, label, fmt = formatCostCents, unit }: TooltipProps) {
   if (!active || !payload || payload.length === 0) return null;
   const total = payload.reduce(
     (sum, entry) => sum + (Number(entry.value) || 0),
     0,
   );
+  const suffix = unit ? ` ${unit}` : '';
   return (
     <div className="rounded-xl border border-[var(--color-hairline)] bg-[var(--color-bg)] px-3 py-2 text-xs shadow-[var(--shadow-2)]">
       <p className="mb-1 font-medium text-[var(--color-ink)]">{label}</p>
@@ -145,14 +162,16 @@ function CostTooltip({ active, payload, label }: TooltipProps) {
               </span>
             </span>
             <span className="font-medium text-[var(--color-ink)]">
-              {formatCostCents(Number(entry.value) || 0)}
+              {fmt(Number(entry.value) || 0)}
+              {suffix}
             </span>
           </li>
         ))}
         <li className="mt-1 flex items-center justify-between gap-3 border-t border-[var(--color-hairline)] pt-1">
           <span className="text-[var(--color-ink-muted)]">Total</span>
           <span className="font-medium text-[var(--color-ink)]">
-            {formatCostCents(total)}
+            {fmt(total)}
+            {suffix}
           </span>
         </li>
       </ul>
@@ -160,7 +179,10 @@ function CostTooltip({ active, payload, label }: TooltipProps) {
   );
 }
 
-function pivotRows(rows: CostDaily[]): {
+function pivotRows(
+  rows: CostDaily[],
+  usage: boolean,
+): {
   pivoted: PivotedRow[];
   models: string[];
 } {
@@ -173,7 +195,10 @@ function pivotRows(rows: CostDaily[]): {
       bucket = { day: r.day };
       byDay.set(r.day, bucket);
     }
-    bucket[r.model] = ((bucket[r.model] as number | undefined) ?? 0) + (r.cents ?? 0);
+    const metric = usage
+      ? (r.in_tok ?? 0) + (r.out_tok ?? 0)
+      : (r.cents ?? 0);
+    bucket[r.model] = ((bucket[r.model] as number | undefined) ?? 0) + metric;
   }
   const models = Array.from(modelSet).sort();
   // Ensure every day has every model key (recharts is more forgiving with

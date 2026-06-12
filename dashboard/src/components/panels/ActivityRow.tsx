@@ -9,6 +9,7 @@ import {
   formatCostCents,
   formatDurationMs,
   formatRelativeTime,
+  formatTokens,
 } from '@/lib/format';
 
 interface Props {
@@ -19,6 +20,12 @@ interface Props {
    * in the expanded Identity section.
    */
   groupName?: string;
+  /**
+   * 'cost' (default) shows the per-turn dollar estimate in the summary row;
+   * 'usage' shows total tokens instead — subscription/oauth deployments
+   * where the dollar estimate is always $0.00.
+   */
+  mode?: 'cost' | 'usage';
 }
 
 function shortenModel(m: string | null | undefined): string {
@@ -87,7 +94,7 @@ function outcomeVariant(o: Turn['outcome']) {
  * retries" pattern from R9 is approximated here as a stat block; a true
  * per-tool-call timeline requires per-message capture (R8 follow-up).
  */
-export function ActivityRow({ turn, groupName }: Props) {
+export function ActivityRow({ turn, groupName, mode = 'cost' }: Props) {
   const [open, setOpen] = useState(false);
 
   const totalTokens =
@@ -130,8 +137,13 @@ export function ActivityRow({ turn, groupName }: Props) {
         <span className="w-32 flex-shrink-0 text-xs text-[var(--color-ink-muted)]">
           {tokensLabel}
         </span>
-        <span className="w-16 flex-shrink-0 text-right text-xs text-[var(--color-ink)]">
-          {formatCostCents(turn.est_cost_cents ?? 0)}
+        <span
+          className="w-16 flex-shrink-0 text-right text-xs text-[var(--color-ink)]"
+          title={mode === 'usage' ? 'Total tokens (input + output)' : undefined}
+        >
+          {mode === 'usage'
+            ? formatTokens(totalTokens)
+            : formatCostCents(turn.est_cost_cents ?? 0)}
         </span>
         <span className="w-20 flex-shrink-0 text-right text-xs text-[var(--color-ink-muted)]">
           {formatDurationMs(turn.duration_ms ?? 0)}

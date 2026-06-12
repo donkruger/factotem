@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
+import { useAuthMode } from '@/hooks/useAuthMode';
+
 // Agents sits first because the agent-first navigation is the new primary
 // mental model (PROVIDER_PLAYBOOK § 0). Server Health, Groups, etc. stay
 // available — they're cross-cutting views. The /agents/<id> detail page
@@ -17,6 +19,8 @@ const LINKS = [
   { href: '/', label: 'Server Health' },
   { href: '/activity', label: 'Activity' },
   { href: '/groups', label: 'Groups' },
+  // The /cost route is labelled "Usage" on subscription/oauth deployments,
+  // where the page shows token usage rather than dollar spend.
   { href: '/cost', label: 'Cost' },
   { href: '/alerts', label: 'Alerts' },
   { href: '/errors', label: 'Errors' },
@@ -25,9 +29,12 @@ const LINKS = [
 
 export function NavLinks() {
   const pathname = usePathname();
+  const { usageMode } = useAuthMode();
   return (
     <ul className="flex items-center gap-1">
       {LINKS.map((link) => {
+        const label =
+          usageMode && link.href === '/cost' ? 'Usage' : link.label;
         const isActive =
           link.href === '/'
             ? pathname === '/' || pathname === ''
@@ -42,7 +49,7 @@ export function NavLinks() {
                   : 'text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]'
               }`}
             >
-              {link.label}
+              {label}
             </Link>
           </li>
         );

@@ -12,24 +12,34 @@ import {
 } from '@/components/ui/Table';
 import type { Turn } from '@/lib/nanoclaw';
 import { getTurns } from '@/lib/nanoclaw';
-import { formatCostCents } from '@/lib/format';
+import { formatCostCents, formatTokens } from '@/lib/format';
 
 import { shortenModel } from './CostByModelChart';
 
 interface GroupAggregate {
   group: string;
-  todayCents: number;
-  sevenDayCents: number;
-  thirtyDayCents: number;
+  today: number;
+  sevenDay: number;
+  thirtyDay: number;
   topModel: string | null;
 }
 
+interface Props {
+  /**
+   * 'cost' (default) rolls up dollar cents per group; 'usage' rolls up total
+   * tokens (input + output) per group — subscription/oauth deployments.
+   */
+  mode?: 'cost' | 'usage';
+}
+
 /**
- * Per-group cost breakdown. /api/cost/daily aggregates by day+model only,
- * so this component fetches up to 5000 raw turns from the last 30 days
- * and rolls them up client-side. Sorted by 30-day spend descending.
+ * Per-group breakdown. /api/cost/daily aggregates by day+model only, so this
+ * component fetches up to 5000 raw turns from the last 30 days and rolls
+ * them up client-side. In 'cost' mode the metric is dollar spend; in 'usage'
+ * mode it is total tokens (input + output). Sorted by 30-day total desc.
  */
-export function CostByGroupTable() {
+export function CostByGroupTable({ mode = 'cost' }: Props) {
+  const usage = mode === 'usage';
   const [turns, setTurns] = useState<Turn[] | null>(null);
   const [error, setError] = useState<Error | null>(null);
 
@@ -51,19 +61,21 @@ export function CostByGroupTable() {
   }, []);
 
   const aggregates = useMemo(
-    () => (turns ? rollupByGroup(turns) : null),
-    [turns],
+    () => (turns ? rollupByGroup(turns, usage) : null),
+    [turns, usage],
   );
+  const fmt = usage ? formatTokens : formatCostCents;
 
   return (
     <Card>
       <div className="space-y-4">
         <div>
           <p className="text-sm font-medium text-[var(--color-ink)]">
-            Cost by group
+            {usage ? 'Tokens by group' : 'Cost by group'}
           </p>
           <p className="text-xs text-[var(--color-ink-muted)]">
-            Rolled up from raw turns over the last 30 days.
+            Rolled up from raw turns over the last 30 days
+            {usage ? ' (input + output tokens).' : '.'}
           </p>
         </div>
 
@@ -107,13 +119,13 @@ export function CostByGroupTable() {
                 <TableRow key={row.group}>
                   <TableCell className="font-medium">{row.group}</TableCell>
                   <TableCell className="text-right font-mono text-xs">
-                    {formatCostCents(row.todayCents)}
+                    {fmt(row.today)}
                   </TableCell>
                   <TableCell className="text-right font-mono text-xs">
-                    {formatCostCents(row.sevenDayCents)}
+                    {fmt(row.sevenDay)}
                   </TableCell>
                   <TableCell className="text-right font-mono text-xs">
-                    {formatCostCents(row.thirtyDayCents)}
+                    {fmt(row.thirtyDay)}
                   </TableCell>
                   <TableCell className="text-xs text-[var(--color-ink-muted)]">
                     {row.topModel ? shortenModel(row.topModel) : '—'}
@@ -128,7 +140,7 @@ export function CostByGroupTable() {
   );
 }
 
-function rollupByGroup(turns: Turn[]): GroupAggregate[] {
+function rollupByGroup(turns: Turn[], usage: boolean): GroupAggregate[] {
   const now = Date.now();
   const todayMidnight = Date.UTC(
     new Date(now).getUTCFullYear(),
@@ -139,9 +151,9 @@ function rollupByGroup(turns: Turn[]): GroupAggregate[] {
   const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
 
   interface Bucket {
-    todayCents: number;
-    sevenDayCents: number;
-    thirtyDayCents: number;
+    today: number;
+    sevenDay: number;
+    thirtyDay: number;
     modelCounts: Map<string, number>;
   }
   const buckets = new Map<string, Bucket>();
@@ -154,17 +166,19 @@ function rollupByGroup(turns: Turn[]): GroupAggregate[] {
     let b = buckets.get(key);
     if (!b) {
       b = {
-        todayCents: 0,
-        sevenDayCents: 0,
-        thirtyDayCents: 0,
+        today: 0,
+        sevenDay: 0,
+        thirtyDay: 0,
         modelCounts: new Map(),
       };
       buckets.set(key, b);
     }
-    const cents = t.est_cost_cents ?? 0;
-    b.thirtyDayCents += cents;
-    if (ts >= sevenDaysAgo) b.sevenDayCents += cents;
-    if (ts >= todayMidnight) b.todayCents += cents;
+    const metric = usage
+      ? (t.input_tokens ?? 0) + (t.output_tokens ?? 0)
+      : t.est_cost_cents ?? 0;
+    b.thirtyDay += metric;
+    if (ts >= sevenDaysAgo) b.sevenDay += metric;
+    if (ts >= todayMidnight) b.today += metric;
     if (t.model) {
       b.modelCounts.set(t.model, (b.modelCounts.get(t.model) ?? 0) + 1);
     }
@@ -182,13 +196,13 @@ function rollupByGroup(turns: Turn[]): GroupAggregate[] {
     }
     out.push({
       group,
-      todayCents: b.todayCents,
-      sevenDayCents: b.sevenDayCents,
-      thirtyDayCents: b.thirtyDayCents,
+      today: b.today,
+      sevenDay: b.sevenDay,
+      thirtyDay: b.thirtyDay,
       topModel,
     });
   }
 
-  out.sort((a, b) => b.thirtyDayCents - a.thirtyDayCents);
+  out.sort((a, b) => b.thirtyDay - a.thirtyDay);
   return out;
 }

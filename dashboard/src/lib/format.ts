@@ -40,6 +40,28 @@ export function formatCostCents(cents: number): string {
   return `$${dollars.toFixed(2)}`;
 }
 
+/**
+ * Compact token count: 1_200_000 → "1.2M", 84_000 → "84k", 512 → "512".
+ * Used by the usage-mode cost panels (subscription/oauth deployments where
+ * per-token dollar costs aren't meaningful — see `isUsageMode`).
+ */
+export function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  if (n < 1_000) return String(Math.round(n));
+  if (n < 1_000_000) {
+    const k = n / 1_000;
+    // 1 decimal under 100k (1.2k, 84.0k → 84k), whole numbers above.
+    return `${k < 100 ? trimZero(k.toFixed(1)) : Math.round(k)}k`;
+  }
+  const m = n / 1_000_000;
+  return `${m < 100 ? trimZero(m.toFixed(1)) : Math.round(m)}M`;
+}
+
+/** Drop a trailing ".0" so "84.0" → "84" but "1.2" stays. */
+function trimZero(s: string): string {
+  return s.endsWith('.0') ? s.slice(0, -2) : s;
+}
+
 /** Format a millisecond duration with progressive units. */
 export function formatDurationMs(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '0ms';

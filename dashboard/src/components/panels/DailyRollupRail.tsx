@@ -3,39 +3,53 @@
 import { Calendar } from 'lucide-react';
 
 import type { CostDaily } from '@/lib/nanoclaw';
-import { formatCostCents } from '@/lib/format';
+import { formatCostCents, formatTokens } from '@/lib/format';
 
 interface Props {
   rows: CostDaily[];
   selectedDay: string | null;
   onSelectDay: (day: string | null) => void;
+  /**
+   * 'cost' (default) shows per-day dollar spend; 'usage' shows per-day total
+   * tokens (input + output) — subscription/oauth deployments.
+   */
+  mode?: 'cost' | 'usage';
 }
 
 interface DayAggregate {
   day: string;
-  cents: number;
+  value: number;
   turns: number;
 }
 
 /**
- * Left rail showing per-day totals (cents + turn count) aggregated across
- * all models from /api/cost/daily. Clicking a day filters the feed to
- * that day; clicking the same day again clears the filter.
+ * Left rail showing per-day totals (turn count + headline metric) aggregated
+ * across all models from /api/cost/daily. The metric is dollar spend in
+ * 'cost' mode and total tokens (input + output) in 'usage' mode. Clicking a
+ * day filters the feed to that day; clicking the same day again clears it.
  *
  * Empty state: when no historical telemetry exists yet (turns table just
  * started filling), the rail shows the start moment so the operator
  * understands why there's no historical data.
  */
-export function DailyRollupRail({ rows, selectedDay, onSelectDay }: Props) {
+export function DailyRollupRail({
+  rows,
+  selectedDay,
+  onSelectDay,
+  mode = 'cost',
+}: Props) {
+  const usage = mode === 'usage';
+  const fmt = usage ? formatTokens : formatCostCents;
   // Aggregate per-day across all models
   const byDay = new Map<string, DayAggregate>();
   for (const r of rows) {
+    const metric = usage ? (r.in_tok ?? 0) + (r.out_tok ?? 0) : r.cents ?? 0;
     const existing = byDay.get(r.day);
     if (existing) {
-      existing.cents += r.cents ?? 0;
+      existing.value += metric;
       existing.turns += r.turns ?? 0;
     } else {
-      byDay.set(r.day, { day: r.day, cents: r.cents ?? 0, turns: r.turns ?? 0 });
+      byDay.set(r.day, { day: r.day, value: metric, turns: r.turns ?? 0 });
     }
   }
   const days = Array.from(byDay.values()).sort((a, b) =>
@@ -88,7 +102,7 @@ export function DailyRollupRail({ rows, selectedDay, onSelectDay }: Props) {
                     >
                       <span>{d.turns}</span>
                       <span>·</span>
-                      <span>{formatCostCents(d.cents)}</span>
+                      <span>{fmt(d.value)}</span>
                     </span>
                   </button>
                 </li>

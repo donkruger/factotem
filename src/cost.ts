@@ -66,6 +66,23 @@ const MODEL_COSTS: Record<string, ModelCost> = {
 };
 
 /**
+ * Normalise a model identifier to its `MODEL_COSTS` key. Containers report
+ * Anthropic models wire-prefixed (e.g. `anthropic/claude-opus-4-7`) while
+ * the Anthropic entries in the table are bare (`claude-opus-4-7`); strip the
+ * `anthropic/` prefix so the lookup hits. Gemini entries are keyed WITH
+ * their `gemini/` prefix (matching how the OAI container reports them), so
+ * those are left untouched.
+ *
+ * Without this, every Anthropic turn missed the table and estimated $0 — a
+ * silent under-report that also rendered the daily budget gate inert.
+ */
+function normalizeModelKey(model: string): string {
+  return model.startsWith('anthropic/')
+    ? model.slice('anthropic/'.length)
+    : model;
+}
+
+/**
  * Estimate cost in cents for a single turn, given token counts.
  * Returns 0 if the model isn't in the rate table — better to under-
  * report than to fabricate. Logs handled by caller (this is a pure
@@ -80,7 +97,7 @@ export function estimateCostCents(
   cacheCreationTokens: number = 0,
   cacheReadTokens: number = 0,
 ): number {
-  const rates = MODEL_COSTS[model];
+  const rates = MODEL_COSTS[normalizeModelKey(model)];
   if (!rates) return 0;
   const totalCents =
     (rates.input * (inputTokens || 0) +
@@ -92,7 +109,7 @@ export function estimateCostCents(
 }
 
 export function knownModel(model: string): boolean {
-  return model in MODEL_COSTS;
+  return normalizeModelKey(model) in MODEL_COSTS;
 }
 
 export function listKnownModels(): string[] {

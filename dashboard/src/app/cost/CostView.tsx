@@ -8,6 +8,8 @@ import { CostAlertsConfig } from '@/components/panels/CostAlertsConfig';
 import { CostByGroupTable } from '@/components/panels/CostByGroupTable';
 import { CostByModelChart } from '@/components/panels/CostByModelChart';
 import { CostHeroStat } from '@/components/panels/CostHeroStat';
+import { SubscriptionUsageBanner } from '@/components/panels/SubscriptionUsageBanner';
+import { useAuthMode } from '@/hooks/useAuthMode';
 import { usePoll } from '@/hooks/usePoll';
 import {
   type CostDaily,
@@ -23,6 +25,11 @@ import {
  * export buttons live in the header.
  */
 export function CostView() {
+  // Subscription/oauth deployments can't meter per-token dollars, so the
+  // page pivots to token-usage monitoring (no dollar figures, no $ budget
+  // alerts). api-key deployments keep the dollar dashboard verbatim.
+  const { usageMode } = useAuthMode();
+
   // Reload counter for the alerts panel — incremented after a successful
   // PATCH so the groups poll re-fires immediately rather than waiting for
   // the next 60s tick.
@@ -78,8 +85,9 @@ export function CostView() {
       budgetCents,
       alertThresholds,
       mainGroupName: mainGroup?.name ?? null,
+      usageMode,
     }),
-    [rows7d, rows30d, budgetCents, alertThresholds, mainGroup],
+    [rows7d, rows30d, budgetCents, alertThresholds, mainGroup, usageMode],
   );
 
   const csvHref = useMemo(() => buildCsvHref(exportCtx), [exportCtx]);
@@ -93,11 +101,12 @@ export function CostView() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-3xl font-medium tracking-tight text-[var(--color-ink)]">
-            Cost
+            {usageMode ? 'Usage' : 'Cost'}
           </h1>
           <p className="mt-2 text-sm text-[var(--color-ink-muted)]">
-            Spend across all agent turns. Hero polled every 30s; charts every
-            60s.
+            {usageMode
+              ? 'Token usage across all agent turns. Hero polled every 30s; charts every 60s.'
+              : 'Spend across all agent turns. Hero polled every 30s; charts every 60s.'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -122,21 +131,31 @@ export function CostView() {
 
       {firstError && <ConnectionLossBanner error={firstError} />}
 
-      <CostHeroStat rows={rows7d ?? []} budgetCents={budgetCents} />
+      {usageMode && <SubscriptionUsageBanner />}
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <CostByModelChart rows={rows30d ?? []} />
-        </div>
-        <div className="lg:col-span-1">
-          <CostAlertsConfig
-            mainGroup={mainGroup}
-            onSaved={() => setReloadKey((k) => k + 1)}
-          />
-        </div>
-      </div>
+      <CostHeroStat
+        rows={rows7d ?? []}
+        budgetCents={budgetCents}
+        mode={usageMode ? 'usage' : 'cost'}
+      />
 
-      <CostByGroupTable />
+      {usageMode ? (
+        <CostByModelChart rows={rows30d ?? []} mode="usage" />
+      ) : (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          <div className="lg:col-span-2">
+            <CostByModelChart rows={rows30d ?? []} />
+          </div>
+          <div className="lg:col-span-1">
+            <CostAlertsConfig
+              mainGroup={mainGroup}
+              onSaved={() => setReloadKey((k) => k + 1)}
+            />
+          </div>
+        </div>
+      )}
+
+      <CostByGroupTable mode={usageMode ? 'usage' : 'cost'} />
     </div>
   );
 }
@@ -149,6 +168,8 @@ interface ExportContext {
   budgetCents: number | null;
   alertThresholds: number[];
   mainGroupName: string | null;
+  /** Subscription/oauth: emit token/turn exports, drop dollar+budget fields. */
+  usageMode: boolean;
 }
 
 function sumCents(rows: CostDaily[], dayFilter?: string): number {
@@ -156,6 +177,24 @@ function sumCents(rows: CostDaily[], dayFilter?: string): number {
   for (const r of rows) {
     if (dayFilter && r.day !== dayFilter) continue;
     total += r.cents ?? 0;
+  }
+  return total;
+}
+
+function sumTokens(rows: CostDaily[], dayFilter?: string): number {
+  let total = 0;
+  for (const r of rows) {
+    if (dayFilter && r.day !== dayFilter) continue;
+    total += (r.in_tok ?? 0) + (r.out_tok ?? 0);
+  }
+  return total;
+}
+
+function sumTurns(rows: CostDaily[], dayFilter?: string): number {
+  let total = 0;
+  for (const r of rows) {
+    if (dayFilter && r.day !== dayFilter) continue;
+    total += r.turns ?? 0;
   }
   return total;
 }
@@ -180,6 +219,7 @@ function modelBreakdown(rows: CostDaily[]): Record<
 }
 
 function buildCsvHref(ctx: ExportContext): string {
+  if (ctx.usageMode) return buildUsageCsvHref(ctx);
   const todayCents = sumCents(ctx.rows30d, ctx.todayIso);
   const sevenDayCents = sumCents(ctx.rows7d);
   const thirtyDayCents = sumCents(ctx.rows30d);
@@ -234,7 +274,53 @@ function buildCsvHref(ctx: ExportContext): string {
   return `data:text/csv;charset=utf-8,${encodeURIComponent(body)}`;
 }
 
+// Usage-mode CSV: token/turn columns, no dollar or budget fields. Models
+// stay as-is; the totals mirror the dollar export's structure so operators
+// reading both modes see a familiar layout.
+function buildUsageCsvHref(ctx: ExportContext): string {
+  const todayTokens = sumTokens(ctx.rows30d, ctx.todayIso);
+  const todayTurns = sumTurns(ctx.rows30d, ctx.todayIso);
+  const sevenDayTokens = sumTokens(ctx.rows7d);
+  const thirtyDayTokens = sumTokens(ctx.rows30d);
+
+  const meta = [
+    `# Usage summary export (subscription/oauth — token usage, not dollars)`,
+    `# generated_at=${ctx.generatedAt}`,
+    `# today=${ctx.todayIso}`,
+    `# main_group=${ctx.mainGroupName ?? '(none)'}`,
+    `# today_tokens=${todayTokens}  today_turns=${todayTurns}`,
+    `# 7d_tokens=${sevenDayTokens}`,
+    `# 30d_tokens=${thirtyDayTokens}`,
+  ];
+
+  const byModel = modelBreakdown(ctx.rows30d);
+  const modelLines = ['#', '# 30d totals by model:'];
+  for (const [model, m] of Object.entries(byModel).sort((a, b) =>
+    a[0] < b[0] ? -1 : 1,
+  )) {
+    modelLines.push(
+      `# model_${escapeCsvComment(model)} in_tok=${m.in_tok} out_tok=${m.out_tok} total_tok=${m.in_tok + m.out_tok} turns=${m.turns}`,
+    );
+  }
+
+  const header = 'day,model,in_tok,out_tok,total_tok,turns';
+  const lines = ctx.rows30d.map((r) =>
+    [
+      escapeCsv(r.day),
+      escapeCsv(r.model),
+      String(r.in_tok ?? 0),
+      String(r.out_tok ?? 0),
+      String((r.in_tok ?? 0) + (r.out_tok ?? 0)),
+      String(r.turns ?? 0),
+    ].join(','),
+  );
+
+  const body = [...meta, ...modelLines, '#', '# daily breakdown:', header, ...lines].join('\n');
+  return `data:text/csv;charset=utf-8,${encodeURIComponent(body)}`;
+}
+
 function buildJsonHref(ctx: ExportContext): string {
+  if (ctx.usageMode) return buildUsageJsonHref(ctx);
   const todayCents = sumCents(ctx.rows30d, ctx.todayIso);
   const sevenDayCents = sumCents(ctx.rows7d);
   const thirtyDayCents = sumCents(ctx.rows30d);
@@ -270,6 +356,42 @@ function buildJsonHref(ctx: ExportContext): string {
     daily_breakdown_30d: ctx.rows30d.map((r) => ({
       ...r,
       dollars: Number(((r.cents ?? 0) / 100).toFixed(4)),
+    })),
+  };
+  const body = JSON.stringify(payload, null, 2);
+  return `data:application/json;charset=utf-8,${encodeURIComponent(body)}`;
+}
+
+// Usage-mode JSON: token/turn fields, no dollar or budget fields. Mirrors
+// the dollar export's shape so downstream tooling can branch on `mode`.
+function buildUsageJsonHref(ctx: ExportContext): string {
+  const todayTokens = sumTokens(ctx.rows30d, ctx.todayIso);
+  const payload = {
+    generated_at: ctx.generatedAt,
+    mode: 'usage' as const,
+    deployment: {
+      today: ctx.todayIso,
+      main_group: ctx.mainGroupName,
+      note: 'Subscription/oauth token — per-token dollar costs are not metered; token usage shown instead.',
+    },
+    today_summary: {
+      tokens: todayTokens,
+      turns: sumTurns(ctx.rows30d, ctx.todayIso),
+    },
+    totals: {
+      window_7d_tokens: sumTokens(ctx.rows7d),
+      window_7d_turns: sumTurns(ctx.rows7d),
+      window_30d_tokens: sumTokens(ctx.rows30d),
+      window_30d_turns: sumTurns(ctx.rows30d),
+      model_breakdown_30d: modelBreakdown(ctx.rows30d),
+    },
+    daily_breakdown_30d: ctx.rows30d.map((r) => ({
+      day: r.day,
+      model: r.model,
+      in_tok: r.in_tok ?? 0,
+      out_tok: r.out_tok ?? 0,
+      total_tok: (r.in_tok ?? 0) + (r.out_tok ?? 0),
+      turns: r.turns ?? 0,
     })),
   };
   const body = JSON.stringify(payload, null, 2);

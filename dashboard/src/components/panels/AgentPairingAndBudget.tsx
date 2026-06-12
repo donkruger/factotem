@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { useAuthMode } from '@/hooks/useAuthMode';
 import {
   type AgentDetail,
   type ChannelPairing,
@@ -42,13 +43,37 @@ export function AgentPairingAndBudget({
   agent: AgentDetail;
   onChange?: () => void;
 }) {
+  // On a subscription/oauth token there's no per-token dollar billing, so a
+  // $ daily cap can never trip (est_cost is always 0) — Anthropic enforces
+  // the monthly Agent-SDK credit server-side. Replace the budget editor with
+  // a short explainer rather than show an inert control.
+  const { usageMode } = useAuthMode();
   return (
     <Card>
       <div className="grid grid-cols-1 gap-5 p-5 md:grid-cols-2">
         <PairingField agent={agent} onChange={onChange} />
-        <BudgetField agent={agent} onChange={onChange} />
+        {usageMode ? <BudgetUnavailable /> : <BudgetField agent={agent} onChange={onChange} />}
       </div>
     </Card>
+  );
+}
+
+// --- Budget unavailable (subscription/oauth) ------------------------------
+
+function BudgetUnavailable() {
+  return (
+    <div className="space-y-2">
+      <h3 className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)]">
+        Daily budget
+      </h3>
+      <p className="text-sm text-[var(--color-ink)]">Not applicable</p>
+      <p className="text-xs text-[var(--color-ink-muted)]">
+        This deployment uses a Claude subscription token, which isn&apos;t
+        metered per token — a dollar cap can&apos;t be enforced locally.
+        Anthropic enforces the monthly Agent-SDK credit server-side. Track
+        consumption via token usage on the Usage page.
+      </p>
+    </div>
   );
 }
 

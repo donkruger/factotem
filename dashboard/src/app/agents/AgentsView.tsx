@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { ConnectionLossBanner } from '@/components/panels/ConnectionLossBanner';
 import { OrphanCredentialsBanner } from '@/components/panels/OrphanCredentialsBanner';
+import { useAuthMode } from '@/hooks/useAuthMode';
 import { usePoll } from '@/hooks/usePoll';
 import { getAgents, type Agent } from '@/lib/nanoclaw';
 
@@ -33,6 +34,9 @@ export function AgentsView() {
     fetchAgents,
     POLL_INTERVAL_MS,
   );
+  // Subscription/oauth: the per-agent dollar figure is always $0.00 (no
+  // per-token metering), so hide it rather than show a misleading zero.
+  const { usageMode } = useAuthMode();
 
   return (
     <div className="space-y-6">
@@ -72,7 +76,7 @@ export function AgentsView() {
       {data && data.length > 0 && (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {data.map((agent) => (
-            <AgentCard key={agent.id} agent={agent} />
+            <AgentCard key={agent.id} agent={agent} usageMode={usageMode} />
           ))}
         </div>
       )}
@@ -87,7 +91,13 @@ export function AgentsView() {
   );
 }
 
-function AgentCard({ agent }: { agent: Agent }) {
+function AgentCard({
+  agent,
+  usageMode,
+}: {
+  agent: Agent;
+  usageMode: boolean;
+}) {
   const costToday = agent.cost_today_cents
     ? `$${(agent.cost_today_cents / 100).toFixed(2)}`
     : '$0.00';
@@ -132,12 +142,14 @@ function AgentCard({ agent }: { agent: Agent }) {
               {agent.active_group_count ?? 0}
             </dd>
           </div>
-          <div>
-            <dt className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)]">
-              Today
-            </dt>
-            <dd className="text-[var(--color-ink)]">{costToday}</dd>
-          </div>
+          {!usageMode && (
+            <div>
+              <dt className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)]">
+                Today
+              </dt>
+              <dd className="text-[var(--color-ink)]">{costToday}</dd>
+            </div>
+          )}
           </dl>
         </div>
       </Card>
