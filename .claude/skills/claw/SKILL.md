@@ -100,17 +100,22 @@ claw -v "Hello"
 claw --timeout 600 "Run the full analysis"
 ```
 
-## Operator verbs (doctor / status / logs)
+## Operator verbs (doctor / status / logs / reset-session)
 
 Beyond sending prompts, `claw` exposes a small diagnostic verb surface for the
 headless / SSH operator (inspired by `hermes doctor`). These send no prompt and
 reuse NanoClaw's existing probes — they never reimplement them.
 
 ```bash
-# Full health check — service, container runtime, credentials, channels, groups.
-# Reuses the setup wizard's own probe (setup/verify.ts) and renders it for humans
-# with a "what to do next" hint per problem. Exits 0 when healthy, nonzero otherwise
-# (CI/cron-friendly). Works even when the orchestrator is down.
+# Full health check. Reuses the setup wizard's own probe (setup/verify.ts) and
+# renders it for humans with a "what to do next" hint per problem. Exits 0 when
+# healthy, nonzero otherwise (CI/cron-friendly). Works even when the orchestrator
+# is down. Covers:
+#   service · container runtime · credentials · channels · registered groups ·
+#   mount allowlist · Auth (live — real Anthropic probe via set-auth-mode.sh) ·
+#   OneCLI gateway reachability · WhatsApp connected (live, not the stale
+#   auth-dir heuristic) · model-id validity (catches the claude-X.Y dot-vs-dash
+#   typo) · large-session warning (resume-hang risk).
 claw doctor
 
 # Quick liveness read from the running orchestrator's /health endpoint
@@ -118,22 +123,32 @@ claw doctor
 # OneCLI, WhatsApp. Friendly "not responding → run claw doctor" if it's down.
 claw status
 
-# Recent orchestrator log lines (last ~40); -f to follow.
+# Recent orchestrator log lines (last ~40); -f to follow. Tails the LIVE log
+# (.logs/nanoclaw.out.log since the 2026-06-09 plist; falls back to the legacy
+# logs/nanoclaw.log for older installs).
 claw logs
 claw logs -f
 claw logs --setup        # show the setup log (logs/setup.log) instead
+
+# Archive a group's Claude session transcript and clear its pinned session, so
+# the next turn starts fresh. The fix for a stuck/oversized session that hangs
+# resume (the doctor's "Session size" warning points here). Requires an
+# orchestrator restart afterwards — the session map is held in memory.
+claw reset-session <group-folder>     # e.g. claw reset-session gga
 
 # List the verbs.
 claw help
 ```
 
-All three honour `--no-color` and the `NO_COLOR` env var, and suppress colour when
+All verbs honour `--no-color` and the `NO_COLOR` env var, and suppress colour when
 stdout isn't a TTY. `claw doctor` parses (never modifies) the machine-readable
-`VERIFY` block from `setup/verify.ts`, so the wizard's status contract is untouched.
+`VERIFY` block from `setup/verify.ts`, so the wizard's status contract is untouched;
+it computes its own verdict (a rejected live-auth, unreachable OneCLI, logged-out
+WhatsApp, or invalid model id makes it ✗ even when the narrower wizard gate passes).
 
 > Verbs only trigger when the **first** bare token is exactly `doctor` / `status` /
-> `logs` / `help`. A quoted prompt that merely starts with one of those words
-> (`claw "status of the deploy?"`) still goes to the agent as a normal prompt.
+> `logs` / `reset-session` / `help`. A quoted prompt that merely starts with one of
+> those words (`claw "status of the deploy?"`) still goes to the agent as a normal prompt.
 
 ## Troubleshooting
 

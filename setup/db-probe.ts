@@ -84,3 +84,58 @@ export function readRegisteredGroupCount(dbPath: string): RegisteredGroupProbe {
     db?.close();
   }
 }
+
+export interface AgentModel {
+  id: string;
+  name: string;
+  provider_model: string;
+}
+
+export interface AgentModelsProbe {
+  /**
+   * One entry per agent (id, name, provider_model), or `null` when the DB
+   * existed but could not be read (same "unknown ≠ empty" semantics as
+   * `readRegisteredGroupCount`). An empty array means the DB read fine but has
+   * no agents (a pre-v3 / fresh install).
+   */
+  models: AgentModel[] | null;
+  /** Single-line error when the read threw (e.g. ABI mismatch); else null. */
+  error: string | null;
+}
+
+/**
+ * Read each agent's configured model from the `agents` table, so the doctor can
+ * validate model IDs (catching the dot-vs-dash typo class — e.g.
+ * `claude-opus-4.6` instead of `claude-opus-4-6` — that silently 404s every
+ * turn; see ben-log 2026-06-12). Mirrors `readRegisteredGroupCount`'s three
+ * states and never reports a read failure as "no agents". The `agents` table is
+ * the v3 primary entity; on a pre-v3 DB the table is absent and we return an
+ * empty list (the read itself succeeded), distinct from a throw.
+ */
+export function readAgentModels(dbPath: string): AgentModelsProbe {
+  if (!fs.existsSync(dbPath)) {
+    return { models: [], error: null };
+  }
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    const tbl = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agents'",
+      )
+      .get();
+    if (!tbl) {
+      // Pre-v3 schema: no agents table. Read succeeded; just nothing to check.
+      return { models: [], error: null };
+    }
+    const rows = db
+      .prepare('SELECT id, name, provider_model FROM agents')
+      .all() as AgentModel[];
+    return { models: rows, error: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { models: null, error: message.replace(/\s+/g, ' ').trim() };
+  } finally {
+    db?.close();
+  }
+}

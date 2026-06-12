@@ -20,10 +20,12 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 # ── Globals ─────────────────────────────────────────────────────────────────
@@ -291,7 +293,7 @@ def run_container(runtime: str, image: str, payload: dict,
 # Dispatch (in main) only triggers when the first bare token is exactly a known
 # verb; any other invocation falls through to the prompt-send path unchanged.
 
-VERBS = ("doctor", "status", "logs", "help")
+VERBS = ("doctor", "status", "logs", "reset-session", "help")
 
 
 class _Palette:
@@ -472,8 +474,68 @@ def cmd_doctor(rest_args: list) -> int:
         _row(pal, "warn", "Mount allowlist", "not set",
              "Optional — folders the agent may read/write. Configured during setup.")
 
+    # ── Incident-grounded checks (ben-log 2026-06). A `critical_fail` here makes
+    #    the verdict ✗ even when verify.ts STATUS is success (the wizard gate is
+    #    intentionally narrower than the operator doctor).
+    critical_fail = False
+
+    # Live auth — the disguised-429 / Bearer-vs-x-api-key saga went undiagnosed
+    # for hours; surface the real probe result.
+    auth_mode = f.get("AUTH_MODE", "unknown")
+    auth_live = f.get("AUTH_LIVE", "unknown")
+    if auth_live == "live":
+        _row(pal, "ok", "Auth (live)", f"{auth_mode} · Anthropic accepted the credential")
+    elif auth_live == "rejected":
+        critical_fail = True
+        _row(pal, "bad", "Auth (live)", f"{auth_mode} · Anthropic REJECTED the credential",
+             f.get("AUTH_HINT") or "Re-mint/rotate the credential, then re-run `claw doctor`.")
+    elif auth_mode != "unknown":
+        _row(pal, "warn", "Auth (live)", f"{auth_mode} · couldn't verify live",
+             "OneCLI/proxy may be down, or this is api-key mode. Check `claw status`.")
+
+    # OneCLI credential gateway — agents can't authenticate without it.
+    onecli = f.get("ONECLI", "unknown")
+    if onecli == "reachable":
+        _row(pal, "ok", "OneCLI gateway", ":10254 reachable")
+    elif onecli == "down":
+        critical_fail = True
+        _row(pal, "bad", "OneCLI gateway", "unreachable",
+             "Credential gateway down — agents can't authenticate. "
+             "Start it: cd ~/.onecli && docker compose up -d")
+
+    # WhatsApp — the LIVE connected state (replaces the stale dir heuristic that
+    # reported 'authenticated' while the session was logged out, 401).
+    wa = f.get("WHATSAPP_CONNECTED", "unknown")
+    if wa == "true":
+        _row(pal, "ok", "WhatsApp", "connected")
+    elif wa == "false":
+        critical_fail = True
+        _row(pal, "bad", "WhatsApp", "logged out / not connected",
+             "Re-pair: open the setup wizard, or run the WhatsApp auth step. "
+             "A logged-out session also crash-loops the orchestrator.")
+
+    # Model-ID validity — the claude-opus-4.6 (dot vs dash) typo silently 404'd
+    # every turn for 30 minutes.
+    model_check = f.get("MODEL_CHECK", "ok")
+    if model_check == "bad":
+        critical_fail = True
+        _row(pal, "bad", "Model", "invalid model id",
+             f.get("MODEL_HINT") or "An agent's provider_model isn't a valid Anthropic id.")
+    elif model_check == "unknown":
+        _row(pal, "warn", "Model", "couldn't read agents",
+             f.get("MODEL_HINT") or "Couldn't read the agents table to validate models.")
+    else:
+        _row(pal, "ok", "Model", "valid")
+
+    # Large pinned session → slow/hung resume.
+    big = f.get("BIG_SESSION")
+    if big:
+        grp = big.split(":")[0]
+        _row(pal, "warn", "Session size", big.replace(":", " · "),
+             f"Large transcript can hang resume. Archive it: claw reset-session {grp}")
+
     print()
-    if f.get("STATUS") == "success":
+    if f.get("STATUS") == "success" and not critical_fail:
         print("  " + pal.green(pal.bold("✓ Everything looks healthy.")))
         return 0
     log = f.get("LOG", "logs/setup.log")
@@ -545,11 +607,23 @@ def cmd_status(rest_args: list) -> int:
     return 0
 
 
+def _resolve_orchestrator_log() -> Path:
+    """The live orchestrator log. Since the 2026-06-09 plist regeneration the
+    service writes `.logs/nanoclaw.out.log`; the old `logs/nanoclaw.log` is
+    stale and silently misleads (ben-log 2026-06-12). Prefer the new path, fall
+    back to the legacy one for older installs."""
+    new = NANOCLAW_DIR / ".logs" / "nanoclaw.out.log"
+    legacy = NANOCLAW_DIR / "logs" / "nanoclaw.log"
+    return new if new.exists() else legacy
+
+
 def cmd_logs(rest_args: list) -> int:
     pal = _Palette(_color_enabled(rest_args))
     follow = "-f" in rest_args or "--follow" in rest_args
-    which = "setup.log" if "--setup" in rest_args else "nanoclaw.log"
-    log_path = NANOCLAW_DIR / "logs" / which
+    if "--setup" in rest_args:
+        log_path = NANOCLAW_DIR / "logs" / "setup.log"
+    else:
+        log_path = _resolve_orchestrator_log()
 
     if not log_path.exists():
         print(pal.yellow(f"⚠ No log yet at {log_path}"))
@@ -574,6 +648,86 @@ def cmd_logs(rest_args: list) -> int:
         return 0
 
 
+def cmd_reset_session(rest_args: list) -> int:
+    """Archive a group's Claude session transcript and clear its `sessions`
+    row, so the next turn starts a fresh session. The operator fix for the
+    stale/oversized-session resume hang (ben-log 2026-06-12): a large or
+    poisoned transcript can wedge the agent before any API call.
+
+    Reuses Python's stdlib sqlite3 (reads/writes the same messages.db the
+    orchestrator uses — no better-sqlite3 ABI concern). The session map is
+    held in memory by the running orchestrator, so a restart is required for
+    the cleared pointer to take effect — we print that explicitly."""
+    pal = _Palette(_color_enabled(rest_args))
+    positional = [a for a in rest_args if not a.startswith("-")]
+    if not positional:
+        print(pal.yellow("Usage: claw reset-session <group-folder>"))
+        print(pal.dim("  e.g. claw reset-session gga    (see folders via: claw --list-groups)"))
+        return 1
+    group = positional[0].strip().lower()
+
+    if not DB_PATH.exists():
+        print(pal.red(f"✗ No database at {DB_PATH}"))
+        return 1
+
+    # Look up the pinned session for this group.
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=rw", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT session_id FROM sessions WHERE group_folder = ?", (group,)
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        print(pal.red(f"✗ Couldn't read sessions table: {e}"))
+        return 1
+
+    if row is None:
+        print(pal.yellow(f"⚠ No pinned session for group '{group}'."))
+        print(pal.dim("  Nothing to reset — the next turn already starts fresh. "
+                      "Check the folder name with `claw --list-groups`."))
+        return 1
+    session_id = row[0]
+
+    # Archive the transcript + project dir (best-effort; never block the reset).
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    proj = NANOCLAW_DIR / "data" / "sessions" / group / ".claude" / "projects" / "-workspace-group"
+    archived = NANOCLAW_DIR / "data" / "sessions" / group / ".claude" / f"_archived-{ts}"
+    moved = []
+    for src in (proj / f"{session_id}.jsonl", proj / session_id):
+        if src.exists():
+            try:
+                archived.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(archived / src.name))
+                moved.append(src.name)
+            except OSError as e:
+                print(pal.yellow(f"⚠ Couldn't archive {src.name}: {e}"))
+
+    # Clear the pinned session so the next turn starts a new one.
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=rw", uri=True)
+        try:
+            conn.execute("DELETE FROM sessions WHERE group_folder = ?", (group,))
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        print(pal.red(f"✗ Couldn't clear the session pointer: {e}"))
+        return 1
+
+    print(pal.green(pal.bold(f"✓ Reset session for '{group}'.")))
+    print(pal.dim(f"  cleared sessions row (was {session_id})"))
+    if moved:
+        print(pal.dim(f"  archived {', '.join(moved)} → .claude/_archived-{ts}/"))
+    print()
+    print("  " + pal.bold("Restart the orchestrator for this to take effect:"))
+    print(pal.dim("    launchctl kickstart -k gui/$(id -u)/com.nanoclaw   "
+                  "(Linux: systemctl --user restart nanoclaw)"))
+    print(pal.dim("  The next message to the group then starts a fresh session."))
+    return 0
+
+
 def _print_verb_help() -> None:
     print(
         "claw — NanoClaw CLI\n\n"
@@ -583,10 +737,12 @@ def _print_verb_help() -> None:
         "  claw --list-groups\n"
         "  (full prompt options: claw --help)\n\n"
         "Operator verbs (diagnostics — no prompt sent):\n"
-        "  claw doctor          full health check (service, runtime, creds, channels)\n"
-        "  claw status          quick liveness read from the orchestrator's /health\n"
-        "  claw logs [-f]       recent orchestrator log lines (-f to follow)\n"
-        "  claw logs --setup    show the setup log instead\n"
+        "  claw doctor                full health check (service, runtime, creds,\n"
+        "                             live auth, OneCLI, WhatsApp, model, sessions)\n"
+        "  claw status                quick liveness read from the orchestrator's /health\n"
+        "  claw logs [-f]             recent orchestrator log lines (-f to follow)\n"
+        "  claw logs --setup          show the setup log instead\n"
+        "  claw reset-session <grp>   archive a stuck/large session + clear its pointer\n"
     )
 
 
@@ -609,15 +765,18 @@ def main():
             sys.exit(cmd_status(rest))
         if verb == "logs":
             sys.exit(cmd_logs(rest))
+        if verb == "reset-session":
+            sys.exit(cmd_reset_session(rest))
 
     parser = argparse.ArgumentParser(
         prog="claw",
         description="Run a NanoClaw agent from the command line.",
         epilog=(
             "operator verbs (diagnostics, no prompt sent):\n"
-            "  claw doctor        full health check (reuses setup/verify.ts)\n"
-            "  claw status        quick /health liveness read\n"
-            "  claw logs [-f]     recent orchestrator log lines (-f follows)\n"
+            "  claw doctor               full health check (reuses setup/verify.ts)\n"
+            "  claw status               quick /health liveness read\n"
+            "  claw logs [-f]            recent orchestrator log lines (-f follows)\n"
+            "  claw reset-session <grp>  archive a stuck/large session + clear pointer\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

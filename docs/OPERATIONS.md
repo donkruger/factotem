@@ -112,9 +112,18 @@ grep "OneCLI gateway not reachable" logs/nanoclaw.log | tail -1
 
 ## Logs
 
+> **Live-log path (since the 2026-06-09 plist regeneration):** the launchd
+> service writes to **`.logs/nanoclaw.out.log`** / `.logs/nanoclaw.err.log`.
+> The legacy `logs/nanoclaw.log` may be **stale** on such installs — grepping it
+> after a restart silently returns only historical hits (a verification trap;
+> ben-log 2026-06-12). `claw logs` resolves the live path automatically (falling
+> back to `logs/nanoclaw.log` for older installs); prefer it over a raw `tail`.
+> `claw doctor` also now reports live auth, OneCLI reachability, WhatsApp
+> connected-state, model-id validity, and oversized sessions — run it first.
+
 ```bash
-# Main log (info, warnings, message flow)
-tail -f logs/nanoclaw.log
+# Live orchestrator log (prefer `claw logs -f`, which finds the right path)
+tail -f .logs/nanoclaw.out.log    # legacy installs: logs/nanoclaw.log
 
 # Error log (fatal errors, container crashes)
 tail -f logs/nanoclaw.error.log
